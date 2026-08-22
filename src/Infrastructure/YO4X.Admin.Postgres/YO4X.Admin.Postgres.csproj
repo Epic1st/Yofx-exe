@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Application\YO4X.Admin.Application\YO4X.Admin.Application.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.BuildingBlocks\YO4X.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.Persistence.Postgres\YO4X.Persistence.Postgres.csproj" />
+    <ProjectReference Include="..\..\Modules\Audit\YO4X.Audit\YO4X.Audit.csproj" />
+    <ProjectReference Include="..\..\Modules\Outbox\YO4X.Outbox\YO4X.Outbox.csproj" />
+    <ProjectReference Include="..\..\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="YO4X.Admin.Postgres.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Apps\YO4X.ControlPlane.Workers\YO4X.ControlPlane.Workers.csproj" />
+    <ProjectReference Include="..\..\src\Apps\YO4X.Conversion.Worker\YO4X.Conversion.Worker.csproj" />
+    <ProjectReference Include="..\..\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\YO4X.StrategyGovernance.csproj" />
+  </ItemGroup>
+
+</Project>

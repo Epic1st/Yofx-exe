@@ -1,0 +1,25 @@
+name: yo4x
+
+services:
+  postgres:
+    image: postgres:18.6-alpine3.23@sha256:697c180dbf244d3ce4a8f4cbc0156cde840af055c1bf8b76aebe422a4822086f
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${YO4X_POSTGRES_DATABASE:-yo4x}
+      POSTGRES_USER: ${YO4X_POSTGRES_MIGRATOR_USER:-yo4x_migrator}
+      POSTGRES_PASSWORD: ${YO4X_POSTGRES_PASSWORD:?Set YO4X_POSTGRES_PASSWORD in your environment}
+    ports:
+      - "127.0.0.1:${YO4X_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - yo4x-postgres-data:/var/lib/postgresql
+
+volumes:
+  yo4x-postgres-data:

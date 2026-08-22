@@ -1,0 +1,196 @@
+{
+    "SchemaVersion":  "yo4x.mt5-toolchain-isolation-evidence.v3",
+    "EvidenceAuthority":  "unsigned-local-observation",
+    "CryptographicallyAttested":  false,
+    "GeneratedAtUtc":  "2026-08-22T18:01:21.352Z",
+    "InspectionMode":  "read-only-host-query-no-vendor-code-execution",
+    "Probe":  {
+                  "ScriptSha256":  "481ecd95fe3fb72eae254ee790c20516e7e2ee2c31bb0bd45f2c7cf433359d56",
+                  "StableRead":  true,
+                  "Binding":  "consistent-file-bytes-two-pass-sha256-under-nonwrite-nondelete-share"
+              },
+    "Host":  {
+                 "OperatingSystem":  "Microsoft Windows Server 2022 Standard Evaluation",
+                 "Version":  "10.0.20348",
+                 "BuildNumber":  "20348",
+                 "Architecture":  "64-bit",
+                 "Manufacturer":  "Microsoft Corporation",
+                 "Model":  "Virtual Machine"
+             },
+    "VendorBundle":  {
+                         "Dll":  {
+                                     "Exists":  true,
+                                     "SignatureStatus":  "NotSigned",
+                                     "SignerSubject":  null,
+                                     "Sha256":  "eb238c958a4d9f80c8a3eeaca07636ae53bc5a78a093bc3fe63923fa50a309c6",
+                                     "FileVersion":  "5.3677.1.2",
+                                     "ProductVersion":  "5.4850.0.0+d5195c9f9a21dd4cddd904d2ec857fc0b6de54fc",
+                                     "Length":  500736,
+                                     "ReparsePoint":  false,
+                                     "StableRead":  true
+                                 },
+                         "TopLevelLicenseOrNoticeFileCount":  0,
+                         "TopLevelLicenseOrNoticeFileNames":  [
+
+                                                              ],
+                         "ExampleCredentialLikeLineCount":  1,
+                         "ExampleOrderSendReferenceCount":  33,
+                         "ExampleValuesRendered":  false
+                     },
+    "InstalledMetaTrader":  {
+                                "Binaries":  {
+                                                 "MetaEditor64":  {
+                                                                      "Exists":  true,
+                                                                      "SignatureStatus":  "Valid",
+                                                                      "SignerSubject":  "CN=MetaQuotes Ltd., O=MetaQuotes Ltd., S=Lemesos, C=CY",
+                                                                      "Sha256":  "05718f3fa55f3f59fd2f024d8c433b457fbd58fcf39e947a16ccdad00a614ec7",
+                                                                      "FileVersion":  "5.0.0.6140",
+                                                                      "ProductVersion":  "5.0.0.6140",
+                                                                      "Length":  116791384,
+                                                                      "ReparsePoint":  false,
+                                                                      "StableRead":  true
+                                                                  },
+                                                 "Terminal64":  {
+                                                                    "Exists":  true,
+                                                                    "SignatureStatus":  "Valid",
+                                                                    "SignerSubject":  "CN=MetaQuotes Ltd., O=MetaQuotes Ltd., S=Lemesos, C=CY",
+                                                                    "Sha256":  "7b3aaedfd3a3998f2138d399f601f46ed49ddbc9762697ce1170f8b325055b05",
+                                                                    "FileVersion":  "5.0.0.6140",
+                                                                    "ProductVersion":  "5.0.0.6140",
+                                                                    "Length":  121845920,
+                                                                    "ReparsePoint":  false,
+                                                                    "StableRead":  true
+                                                                },
+                                                 "MetaTester64":  {
+                                                                      "Exists":  true,
+                                                                      "SignatureStatus":  "Valid",
+                                                                      "SignerSubject":  "CN=MetaQuotes Ltd., O=MetaQuotes Ltd., S=Lemesos, C=CY",
+                                                                      "Sha256":  "46da12974ea4b393fa6855576da57549a1e3255dbe5c667cce60d7f32c1a889f",
+                                                                      "FileVersion":  "5.0.0.6140",
+                                                                      "ProductVersion":  "5.0.0.6140",
+                                                                      "Length":  21810944,
+                                                                      "ReparsePoint":  false,
+                                                                      "StableRead":  true
+                                                                  }
+                                             },
+                                "RelatedProcessCount":  0,
+                                "ExecutablesLaunchedByProbe":  false
+                            },
+    "Isolation":  {
+                      "ServerFeatures":  [
+                                             {
+                                                 "Name":  "Hyper-V",
+                                                 "QuerySucceeded":  true,
+                                                 "Found":  true,
+                                                 "Installed":  false
+                                             },
+                                             {
+                                                 "Name":  "Containers",
+                                                 "QuerySucceeded":  true,
+                                                 "Found":  true,
+                                                 "Installed":  false
+                                             }
+                                         ],
+                      "OptionalFeatures":  [
+                                               {
+                                                   "Name":  "Containers",
+                                                   "QuerySucceeded":  true,
+                                                   "Found":  true,
+                                                   "InstallState":  2,
+                                                   "Enabled":  false
+                                               },
+                                               {
+                                                   "Name":  "HypervisorPlatform",
+                                                   "QuerySucceeded":  true,
+                                                   "Found":  true,
+                                                   "InstallState":  2,
+                                                   "Enabled":  false
+                                               },
+                                               {
+                                                   "Name":  "VirtualMachinePlatform",
+                                                   "QuerySucceeded":  true,
+                                                   "Found":  true,
+                                                   "InstallState":  2,
+                                                   "Enabled":  false
+                                               },
+                                               {
+                                                   "Name":  "Microsoft-Windows-Subsystem-Linux",
+                                                   "QuerySucceeded":  true,
+                                                   "Found":  true,
+                                                   "InstallState":  2,
+                                                   "Enabled":  false
+                                               }
+                                           ],
+                      "HypervisorPresent":  true,
+                      "VirtualizationFirmwareEnabled":  false,
+                      "SecondLevelAddressTranslation":  false,
+                      "WindowsSandboxExecutablePresent":  false,
+                      "ToolCommands":  [
+                                           {
+                                               "Name":  "docker",
+                                               "Available":  false,
+                                               "CommandType":  null
+                                           },
+                                           {
+                                               "Name":  "podman",
+                                               "Available":  false,
+                                               "CommandType":  null
+                                           },
+                                           {
+                                               "Name":  "VBoxManage",
+                                               "Available":  false,
+                                               "CommandType":  null
+                                           },
+                                           {
+                                               "Name":  "vmrun",
+                                               "Available":  false,
+                                               "CommandType":  null
+                                           }
+                                       ],
+                      "Wsl":  {
+                                  "CommandAvailable":  true,
+                                  "QuerySucceeded":  true,
+                                  "InspectionMethod":  "registry-only-no-wsl-execution",
+                                  "DistributionCount":  0
+                              },
+                      "DeviceGuardAvailable":  true,
+                      "DeviceGuardQuerySucceeded":  true,
+                      "VirtualizationBasedSecurityStatus":  0,
+                      "AppLocker":  {
+                                        "QuerySucceeded":  true,
+                                        "EnforcedCollectionCount":  0
+                                    },
+                      "FirewallQuerySucceeded":  true,
+                      "FirewallProfiles":  [
+                                               {
+                                                   "Name":  "Domain",
+                                                   "Enabled":  true,
+                                                   "DefaultOutboundAction":  "NotConfigured"
+                                               },
+                                               {
+                                                   "Name":  "Private",
+                                                   "Enabled":  true,
+                                                   "DefaultOutboundAction":  "NotConfigured"
+                                               },
+                                               {
+                                                   "Name":  "Public",
+                                                   "Enabled":  true,
+                                                   "DefaultOutboundAction":  "NotConfigured"
+                                               }
+                                           ],
+                      "Defender":  {
+                                       "Available":  true,
+                                       "QuerySucceeded":  true,
+                                       "AntivirusEnabled":  true,
+                                       "RealTimeProtectionEnabled":  true
+                                   },
+                      "DiscoveredThirdPartyContainerOrVmCommandCount":  0
+                  },
+    "Verdict":  {
+                    "IsolatedRunnerConfigured":  false,
+                    "SafeToCompileUntrustedMqlOnHost":  false,
+                    "SafeToExecuteSuppliedMqlOnHost":  false,
+                    "Code":  "isolated_runner_not_configured"
+                },
+    "EvidenceContentSha256":  "9c4517230820ec90fc110afa37bd20266f041dd922803842acf2f2e16bd51d02"
+}

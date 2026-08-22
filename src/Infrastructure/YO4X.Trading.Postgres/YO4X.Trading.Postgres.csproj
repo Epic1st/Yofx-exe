@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Application\YO4X.Trading.Application\YO4X.Trading.Application.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.BuildingBlocks\YO4X.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.Persistence.Postgres\YO4X.Persistence.Postgres.csproj" />
+    <ProjectReference Include="..\..\Modules\Risk\YO4X.Risk\YO4X.Risk.csproj" />
+    <ProjectReference Include="..\..\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
+    <ProjectReference Include="..\..\Runtime\YO4X.Runtime.Contracts\YO4X.Runtime.Contracts.csproj" />
+    <ProjectReference Include="..\..\Runtime\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,115 @@
+//+------------------------------------------------------------------+
+//|              Simple Classic Trailing Stop (MT5)                  |
+//+------------------------------------------------------------------+
+#property strict
+#property version   "1.00"
+
+// Inputs
+input int  TrailingStart    = 300;   // Points before trailing starts
+input int  TrailingDistance = 100;   // Step size in points
+input bool ApplyToAllSymbols = false;
+input bool EnableAlert       = true;
+
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+      return;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      if(!ApplyToAllSymbols && symbol != Symbol())
+         continue;
+
+      ENUM_POSITION_TYPE type =
+         (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+      if(type != POSITION_TYPE_BUY && type != POSITION_TYPE_SELL)
+         continue;
+
+      ProcessTrailingStop(ticket, symbol, type);
+   }
+}
+
+//+------------------------------------------------------------------+
+void ProcessTrailingStop(ulong ticket, string symbol, ENUM_POSITION_TYPE type)
+{
+   double point  = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   int    digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double bid    = SymbolInfoDouble(symbol, SYMBOL_BID);
+   double ask    = SymbolInfoDouble(symbol, SYMBOL_ASK);
+
+   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+   double currentSL = PositionGetDouble(POSITION_SL);
+
+   // Profit in points
+   double profitPoints;
+   if(type == POSITION_TYPE_BUY)
+      profitPoints = (bid - openPrice) / point;
+   else
+      profitPoints = (openPrice - ask) / point;
+
+   // Not enough profit
+   if(profitPoints < TrailingStart)
+      return;
+
+   // Number of completed steps
+   int steps = (int)((profitPoints - TrailingStart) / TrailingDistance);
+
+   double newSL;
+
+   if(type == POSITION_TYPE_BUY)
+      newSL = openPrice +
+              (TrailingStart + steps * TrailingDistance - TrailingDistance) * point;
+   else
+      newSL = openPrice -
+              (TrailingStart + steps * TrailingDistance - TrailingDistance) * point;
+
+   newSL = NormalizeDouble(newSL, digits);
+
+   // Only move SL forward
+   if(currentSL != 0)
+   {
+      if(type == POSITION_TYPE_BUY && newSL <= currentSL)
+         return;
+      if(type == POSITION_TYPE_SELL && newSL >= currentSL)
+         return;
+   }
+
+   // Stop level check
+   double stopLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
+   if(stopLevel > 0)
+   {
+      if(type == POSITION_TYPE_BUY && (bid - newSL) < stopLevel)
+         return;
+      if(type == POSITION_TYPE_SELL && (newSL - ask) < stopLevel)
+         return;
+   }
+
+   // Modify position
+   MqlTradeRequest req;
+   MqlTradeResult  res;
+   ZeroMemory(req);
+   ZeroMemory(res);
+
+   req.action   = TRADE_ACTION_SLTP;
+   req.position = ticket;
+   req.symbol   = symbol;
+   req.sl       = newSL;
+   req.tp       = PositionGetDouble(POSITION_TP);
+
+   if(OrderSend(req, res) && res.retcode == TRADE_RETCODE_DONE)
+   {
+      if(EnableAlert)
+         Alert("Trailing Stop moved: ", symbol,
+               " Ticket: ", ticket,
+               " New SL: ", DoubleToString(newSL, digits));
+   }
+}
+
+//+------------------------------------------------------------------+

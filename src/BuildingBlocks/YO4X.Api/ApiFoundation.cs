@@ -1,0 +1,134 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Json;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using YO4X.BuildingBlocks;
+
+namespace YO4X.Api;
+
+public sealed class ApiFoundationOptions
+{
+    public string ErrorTypeBase { get; set; } = "https://errors.yo4x.invalid";
+}
+
+public static class ApiFoundation
+{
+    public static IServiceCollection AddYo4xApiFoundation(
+        this IServiceCollection services,
+        Action<ApiFoundationOptions>? configure = null)
+    {
+        var options = new ApiFoundationOptions();
+        configure?.Invoke(options);
+
+        services.AddSingleton(options);
+        services.AddSingleton<IClock>(SystemClock.Instance);
+        services.AddProblemDetails(problemOptions =>
+        {
+            problemOptions.CustomizeProblemDetails = context =>
+            {
+                context.ProblemDetails.Extensions["correlationId"] = CorrelationIdMiddleware.Get(context.HttpContext);
+                context.ProblemDetails.Extensions.Remove("traceId");
+            };
+        });
+        services.AddExceptionHandler<Yo4xExceptionHandler>();
+        services.Configure<JsonOptions>(json =>
+        {
+            json.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+            json.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
+            json.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseUpper));
+        });
+
+        return services;
+    }
+
+    public static WebApplication UseYo4xApiFoundation(this WebApplication app)
+    {
+        app.UseMiddleware<CorrelationIdMiddleware>();
+        app.UseExceptionHandler();
+        app.Use(async (context, next) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers.XContentTypeOptions = "nosniff";
+            context.Response.Headers.XFrameOptions = "DENY";
+            context.Response.Headers.ContentSecurityPolicy = "default-src 'none'; frame-ancestors 'none'";
+            await next(context).ConfigureAwait(false);
+        });
+
+        return app;
+    }
+
+    public static IEndpointRouteBuilder MapYo4xHealth(
+        this IEndpointRouteBuilder endpoints,
+        Func<CancellationToken, ValueTask<bool>> startup,
+        Func<CancellationToken, ValueTask<bool>> ready)
+    {
+        endpoints.MapGet("/health/live", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
+        endpoints.MapGet("/health/startup", async (CancellationToken cancellationToken) =>
+            await startup(cancellationToken).ConfigureAwait(false)
+                ? Results.Ok(new { status = "healthy" })
+                : Results.Json(new { status = "unhealthy" }, statusCode: StatusCodes.Status503ServiceUnavailable))
+            .AllowAnonymous();
+        endpoints.MapGet("/health/ready", async (CancellationToken cancellationToken) =>
+            await ready(cancellationToken).ConfigureAwait(false)
+                ? Results.Ok(new { status = "healthy" })
+                : Results.Json(new { status = "unhealthy" }, statusCode: StatusCodes.Status503ServiceUnavailable))
+            .AllowAnonymous();
+
+        return endpoints;
+    }
+}
+
+internal sealed class Yo4xExceptionHandler : IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(
+        HttpContext httpContext,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        int status = exception switch
+        {
+            BackendCapabilityUnavailableException => StatusCodes.Status503ServiceUnavailable,
+            ResourceNotFoundException => StatusCodes.Status404NotFound,
+            ResourceConflictException => StatusCodes.Status409Conflict,
+            AuthorizationDeniedException => StatusCodes.Status403Forbidden,
+            UnauthorizedAccessException => StatusCodes.Status401Unauthorized,
+            DomainException => StatusCodes.Status422UnprocessableEntity,
+            BadHttpRequestException badRequest => badRequest.StatusCode,
+            _ => StatusCodes.Status500InternalServerError
+        };
+
+        string code = exception switch
+        {
+            BackendCapabilityUnavailableException => "CAPABILITY_UNAVAILABLE",
+            ResourceNotFoundException => "RESOURCE_NOT_FOUND",
+            ResourceConflictException conflict => conflict.Code,
+            AuthorizationDeniedException denied => denied.Code,
+            UnauthorizedAccessException => "AUTHENTICATION_REQUIRED",
+            DomainException domain => domain.Code,
+            BadHttpRequestException badRequest when badRequest.StatusCode == StatusCodes.Status413PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            BadHttpRequestException badRequest when badRequest.StatusCode == StatusCodes.Status415UnsupportedMediaType => "UNSUPPORTED_MEDIA_TYPE",
+            BadHttpRequestException => "INVALID_REQUEST",
+            _ => "INTERNAL_ERROR"
+        };
+
+        string title = exception switch
+        {
+            BackendCapabilityUnavailableException unavailable => unavailable.Message,
+            ResourceNotFoundException notFound => notFound.Message,
+            ResourceConflictException conflict => conflict.Message,
+            AuthorizationDeniedException denied => denied.Message,
+            UnauthorizedAccessException => "Authentication is required.",
+            DomainException domain => domain.Message,
+            BadHttpRequestException => "The request is invalid.",
+            _ => "The service could not complete the request."
+        };
+
+        IResult problem = ApiProblems.Create(httpContext, status, code, title);
+        await problem.ExecuteAsync(httpContext).ConfigureAwait(false);
+        return true;
+    }
+}

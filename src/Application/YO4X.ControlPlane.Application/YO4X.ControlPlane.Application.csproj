@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.BuildingBlocks\YO4X.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\Modules\Identity\YO4X.Identity\YO4X.Identity.csproj" />
+    <ProjectReference Include="..\..\Modules\BrokerAccounts\YO4X.BrokerAccounts\YO4X.BrokerAccounts.csproj" />
+    <ProjectReference Include="..\..\Modules\SecretCoordination\YO4X.SecretCoordination\YO4X.SecretCoordination.csproj" />
+    <ProjectReference Include="..\..\Modules\Deployments\YO4X.Deployments\YO4X.Deployments.csproj" />
+    <ProjectReference Include="..\..\Modules\RuntimeOperations\YO4X.RuntimeOperations\YO4X.RuntimeOperations.csproj" />
+    <ProjectReference Include="..\..\Modules\StrategyGovernance\YO4X.StrategyGovernance\YO4X.StrategyGovernance.csproj" />
+    <ProjectReference Include="..\..\Modules\Audit\YO4X.Audit\YO4X.Audit.csproj" />
+    <ProjectReference Include="..\..\Modules\Outbox\YO4X.Outbox\YO4X.Outbox.csproj" />
+    <ProjectReference Include="..\..\Runtime\YO4X.Runtime.Contracts\YO4X.Runtime.Contracts.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BuildingBlocks\YO4X.BuildingBlocks\YO4X.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Policy\YO4X.Policy\YO4X.Policy.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Risk\YO4X.Risk\YO4X.Risk.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Commands\YO4X.Commands\YO4X.Commands.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Approvals\YO4X.Approvals\YO4X.Approvals.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Authorization\YO4X.Authorization\YO4X.Authorization.csproj" />
+    <ProjectReference Include="..\..\src\Modules\SecretCoordination\YO4X.SecretCoordination\YO4X.SecretCoordination.csproj" />
+    <ProjectReference Include="..\..\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\YO4X.StrategyGovernance.csproj" />
+  </ItemGroup>
+
+</Project>

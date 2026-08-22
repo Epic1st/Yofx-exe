@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.Api\YO4X.Api.csproj" />
+    <ProjectReference Include="..\..\Application\YO4X.Admin.Application\YO4X.Admin.Application.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\YO4X.Admin.Postgres\YO4X.Admin.Postgres.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

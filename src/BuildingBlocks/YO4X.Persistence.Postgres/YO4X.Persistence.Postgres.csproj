@@ -1,0 +1,42 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Migrations\*.sql" />
+    <None Update="Security\*.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Security\README.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\YO4X.BuildingBlocks\YO4X.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\Modules\AdminIdentity\YO4X.AdminIdentity\YO4X.AdminIdentity.csproj" />
+    <ProjectReference Include="..\..\Modules\Approvals\YO4X.Approvals\YO4X.Approvals.csproj" />
+    <ProjectReference Include="..\..\Modules\Audit\YO4X.Audit\YO4X.Audit.csproj" />
+    <ProjectReference Include="..\..\Modules\Authorization\YO4X.Authorization\YO4X.Authorization.csproj" />
+    <ProjectReference Include="..\..\Modules\BrokerAccounts\YO4X.BrokerAccounts\YO4X.BrokerAccounts.csproj" />
+    <ProjectReference Include="..\..\Modules\Commands\YO4X.Commands\YO4X.Commands.csproj" />
+    <ProjectReference Include="..\..\Modules\Deployments\YO4X.Deployments\YO4X.Deployments.csproj" />
+    <ProjectReference Include="..\..\Modules\GatewayGovernance\YO4X.GatewayGovernance\YO4X.GatewayGovernance.csproj" />
+    <ProjectReference Include="..\..\Modules\Identity\YO4X.Identity\YO4X.Identity.csproj" />
+    <ProjectReference Include="..\..\Modules\Incidents\YO4X.Incidents\YO4X.Incidents.csproj" />
+    <ProjectReference Include="..\..\Modules\Outbox\YO4X.Outbox\YO4X.Outbox.csproj" />
+    <ProjectReference Include="..\..\Modules\Policy\YO4X.Policy\YO4X.Policy.csproj" />
+    <ProjectReference Include="..\..\Modules\Privacy\YO4X.Privacy\YO4X.Privacy.csproj" />
+    <ProjectReference Include="..\..\Modules\ReadModels\YO4X.ReadModels\YO4X.ReadModels.csproj" />
+    <ProjectReference Include="..\..\Modules\RuntimeOperations\YO4X.RuntimeOperations\YO4X.RuntimeOperations.csproj" />
+    <ProjectReference Include="..\..\Modules\SecretCoordination\YO4X.SecretCoordination\YO4X.SecretCoordination.csproj" />
+    <ProjectReference Include="..\..\Modules\StrategyGovernance\YO4X.StrategyGovernance\YO4X.StrategyGovernance.csproj" />
+    <ProjectReference Include="..\..\Modules\Support\YO4X.Support\YO4X.Support.csproj" />
+    <ProjectReference Include="..\..\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
+  </ItemGroup>
+
+</Project>

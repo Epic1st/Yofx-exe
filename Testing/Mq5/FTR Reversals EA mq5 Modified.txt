@@ -1,0 +1,802 @@
+//+------------------------------------------------------------------+
+//|                                          FTR_Reversals_EA.mq5    |
+//|                                    Compatible with Exness Broker |
+////|                      Optimized for Small Accounts ($10-$100)      |
+//+------------------------------------------------------------------+
+#property copyright "FTR Reversals EA - Exness Edition"
+#property version   "1.31"
+#property description "EA for XAUUSD/BTC based on FTR Reversals Indicator"
+#property description "Works with Small/Medium/Big Arrow Signals"
+#property description "Now with automatic stop adjustment – always trades on signal"
+
+#include <Trade\Trade.mqh>
+CTrade trade;
+
+//+------------------------------------------------------------------+
+//| Trailing Mode Enum                                               |
+//+------------------------------------------------------------------+
+enum ENUM_TRAILING_MODE
+{
+   TRAILING_NONE,      // No trailing
+   TRAILING_CLASSIC,   // Classic trailing (fixed distance + step)
+   TRAILING_STEP       // Step trailing (lock profit in steps)
+};
+
+//+------------------------------------------------------------------+
+//| Input Parameters                                                  |
+//+------------------------------------------------------------------+
+
+//--- Indicator Settings
+input string    IndicatorName = "FTR_REVERSALS_ARROW_mq5_modified"; // Indicator File Name (without .ex5)
+input int       SmallBarCount = 36;          // Small Left Bars (must match indicator)
+input int       MediumBarCount = 60;         // Medium Left Bars (must match indicator)
+input int       BigBarCount = 156;           // Big Left Bars (must match indicator)
+input int       ConfirmBars = 45;             // Confirmation Bars (must match indicator)
+input double    ArrowGap = 2.0;               // Arrow Gap (must match indicator)
+
+//--- Signal Type Selection
+input bool      UseSmallSignals = true;      // Use Small Arrow Signals
+input bool      UseMediumSignals = true;     // Use Medium Arrow Signals
+input bool      UseBigSignals = true;        // Use Big Arrow Signals
+
+//--- Money Management
+input double    RiskPercent = 2.0;           // Risk Per Trade (% of balance)
+input double    MinLotSize = 0.01;           // Minimum Lot Size
+input double    MaxLotSize = 10.0;           // Maximum Lot Size
+input bool      UseDynamicLots = true;       // Use Dynamic Lot Sizing
+
+//--- Take Profit & Stop Loss Settings (all in POINTS)
+input bool      UseAutoTP = true;            // Use Automatic Take Profit
+input int       TPPointsSmall = 100;         // TP in Points for Small Signals
+input int       TPPointsMedium = 150;        // TP in Points for Medium Signals
+input int       TPPointsBig = 200;           // TP in Points for Big Signals
+input int       SLPoints = 50;                // Stop Loss in Points (0 = no SL)
+
+//--- Trailing Settings
+input ENUM_TRAILING_MODE TrailingMode = TRAILING_STEP; // Trailing mode
+
+// Classic trailing parameters (used if TrailingMode == TRAILING_CLASSIC)
+input int       ClassicTrailingStop = 30;     // Classic: Stop distance (points)
+input int       ClassicTrailingStep = 10;     // Classic: Step (points)
+
+// Step trailing parameters (used if TrailingMode == TRAILING_STEP)
+input int       StepTrailingStart = 400;      // Step: Start after profit points
+input int       StepTrailingLock = 100;       // Step: Lock profit at start (points)
+input int       StepTrailingStep = 350;       // Step: Increment for next lock (points)
+
+//--- Stop Adjustment
+input bool      AdjustStopsToMinDistance = true; // Automatically adjust stops to meet broker minimum
+
+//--- Trade Management
+input bool      CloseOppositeOnSignal = true; // Close Opposite Trades on New Signal
+input bool      OneTradePerSignal = true;    // Only One Trade Per Signal Type
+input int       MagicNumber = 77777;         // Magic Number
+input string    TradeComment = "FTR_EA";     // Trade Comment
+
+//--- Advanced Settings (all in POINTS)
+input int       MaxSpreadPoints = 300;        // Max Spread to Trade (points) - e.g., 300 points = 3 pips for 5-digit
+input bool      IgnoreSpread = true;           // Ignore spread check and trade always
+input int       MaxSlippagePoints = 100;      // Max Slippage (points)
+input int       CheckSignalBar = 1;           // Bar to Check for Signal (0=current, 1=closed)
+
+//--- Dashboard Settings
+input bool      ShowDashboard = true;         // Show Dashboard on Chart
+input int       DashboardX = 10;               // Dashboard X offset (pixels)
+input int       DashboardY = 20;               // Dashboard Y offset (pixels)
+input int       DashboardFontSize = 8;         // Font size
+input color     DashboardTextColor = clrWhite; // Text color
+input color     DashboardBgColor = clrBlack;   // Background color
+input uchar     DashboardBgOpacity = 200;      // Background opacity (0-255) – now works with ARGB
+
+//+------------------------------------------------------------------+
+//| Global Variables                                                  |
+//+------------------------------------------------------------------+
+int      indicatorHandle = INVALID_HANDLE;
+double   smallUpBuffer[], smallDnBuffer[];
+double   mediumUpBuffer[], mediumDnBuffer[];
+double   bigUpBuffer[], bigDnBuffer[];
+
+datetime lastSignalTime = 0;
+string   lastSignalType = "";
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                    |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    //--- Load the FTR Reversals Indicator
+    indicatorHandle = iCustom(_Symbol, _Period, IndicatorName,
+                              SmallBarCount, MediumBarCount, BigBarCount,
+                              ArrowGap, ConfirmBars);
+    
+    if(indicatorHandle == INVALID_HANDLE)
+    {
+        Print("ERROR: Failed to load indicator: ", IndicatorName);
+        Print("Make sure the indicator file is in: Indicators folder");
+        return(INIT_FAILED);
+    }
+    
+    Print("✓ FTR Reversals EA Initialized Successfully!");
+    Print("✓ Indicator loaded: ", IndicatorName);
+    Print("✓ Risk per trade: ", RiskPercent, "%");
+    Print("✓ Working on: ", _Symbol, " ", EnumToString((ENUM_TIMEFRAMES)_Period));
+    Print("✓ Trailing mode: ", TrailingMode);
+    
+    //--- Set buffer indices to retrieve indicator values
+    ArraySetAsSeries(smallUpBuffer, true);
+    ArraySetAsSeries(smallDnBuffer, true);
+    ArraySetAsSeries(mediumUpBuffer, true);
+    ArraySetAsSeries(mediumDnBuffer, true);
+    ArraySetAsSeries(bigUpBuffer, true);
+    ArraySetAsSeries(bigDnBuffer, true);
+    
+    //--- Configure trade settings
+    trade.SetExpertMagicNumber(MagicNumber);
+    trade.SetDeviationInPoints(MaxSlippagePoints);
+    trade.SetTypeFilling(ORDER_FILLING_FOK);
+    
+    //--- Create dashboard
+    if(ShowDashboard)
+        CreateDashboard();
+    
+    return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    if(indicatorHandle != INVALID_HANDLE)
+        IndicatorRelease(indicatorHandle);
+    
+    if(ShowDashboard)
+        DeleteDashboard();
+    
+    Print("EA Deinitialized. Reason: ", reason);
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+    //--- Check if new bar formed
+    static datetime lastBarTime = 0;
+    datetime currentBarTime = iTime(_Symbol, _Period, 0);
+    
+    if(currentBarTime == lastBarTime)
+        return; // No new bar, skip
+    
+    lastBarTime = currentBarTime;
+    
+    //--- Check spread (only if not ignored)
+    if(!IgnoreSpread)
+    {
+        long spreadPoints = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+        if(spreadPoints > MaxSpreadPoints)
+        {
+            Print("Spread too high: ", spreadPoints, " points. Skipping tick.");
+            return;
+        }
+    }
+    
+    //--- Get indicator values
+    if(!GetIndicatorBuffers())
+    {
+        Print("Error getting indicator buffers!");
+        return;
+    }
+    
+    //--- Check for signals and execute trades
+    CheckAndExecuteSignals();
+    
+    //--- Update trailing stops if not NONE
+    if(TrailingMode != TRAILING_NONE)
+        UpdateTrailingStops();
+    
+    //--- Update dashboard
+    if(ShowDashboard)
+        UpdateDashboard();
+}
+
+//+------------------------------------------------------------------+
+//| Get Indicator Buffer Values                                      |
+//+------------------------------------------------------------------+
+bool GetIndicatorBuffers()
+{
+    if(CopyBuffer(indicatorHandle, 0, 0, 3, smallUpBuffer) <= 0) return false;
+    if(CopyBuffer(indicatorHandle, 1, 0, 3, smallDnBuffer) <= 0) return false;
+    if(CopyBuffer(indicatorHandle, 2, 0, 3, mediumUpBuffer) <= 0) return false;
+    if(CopyBuffer(indicatorHandle, 3, 0, 3, mediumDnBuffer) <= 0) return false;
+    if(CopyBuffer(indicatorHandle, 4, 0, 3, bigUpBuffer) <= 0) return false;
+    if(CopyBuffer(indicatorHandle, 5, 0, 3, bigDnBuffer) <= 0) return false;
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Check Signals and Execute Trades                                 |
+//+------------------------------------------------------------------+
+void CheckAndExecuteSignals()
+{
+    int bar = CheckSignalBar;
+    
+    // Priority: Big > Medium > Small
+    if(UseBigSignals)
+    {
+        if(bigUpBuffer[bar] != 0.0 && bigUpBuffer[bar] != EMPTY_VALUE)
+        {
+            ProcessBuySignal("BIG", TPPointsBig);
+            return;
+        }
+        if(bigDnBuffer[bar] != 0.0 && bigDnBuffer[bar] != EMPTY_VALUE)
+        {
+            ProcessSellSignal("BIG", TPPointsBig);
+            return;
+        }
+    }
+    
+    if(UseMediumSignals)
+    {
+        if(mediumUpBuffer[bar] != 0.0 && mediumUpBuffer[bar] != EMPTY_VALUE)
+        {
+            ProcessBuySignal("MEDIUM", TPPointsMedium);
+            return;
+        }
+        if(mediumDnBuffer[bar] != 0.0 && mediumDnBuffer[bar] != EMPTY_VALUE)
+        {
+            ProcessSellSignal("MEDIUM", TPPointsMedium);
+            return;
+        }
+    }
+    
+    if(UseSmallSignals)
+    {
+        if(smallUpBuffer[bar] != 0.0 && smallUpBuffer[bar] != EMPTY_VALUE)
+        {
+            ProcessBuySignal("SMALL", TPPointsSmall);
+            return;
+        }
+        if(smallDnBuffer[bar] != 0.0 && smallDnBuffer[bar] != EMPTY_VALUE)
+        {
+            ProcessSellSignal("SMALL", TPPointsSmall);
+            return;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Adjust stops to meet minimum distance                            |
+//+------------------------------------------------------------------+
+void AdjustStopsToMin(ENUM_POSITION_TYPE type, double entry, double &sl, double &tp)
+{
+    int minStops = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+    if(minStops <= 0) return; // no minimum
+    
+    double minDist = minStops * _Point;
+    
+    if(type == POSITION_TYPE_BUY)
+    {
+        // Adjust SL (must be below entry)
+        if(sl != 0)
+        {
+            double minSL = entry - minDist;
+            if(sl > minSL) // sl is too close (higher than minSL)
+            {
+                sl = minSL;
+                Print("⚠️ SL adjusted to minimum distance: ", DoubleToString(sl, _Digits));
+            }
+        }
+        // Adjust TP (must be above entry)
+        if(tp != 0)
+        {
+            double minTP = entry + minDist;
+            if(tp < minTP) // tp is too close
+            {
+                tp = minTP;
+                Print("⚠️ TP adjusted to minimum distance: ", DoubleToString(tp, _Digits));
+            }
+        }
+    }
+    else // SELL
+    {
+        // Adjust SL (must be above entry)
+        if(sl != 0)
+        {
+            double minSL = entry + minDist;
+            if(sl < minSL) // sl is too close
+            {
+                sl = minSL;
+                Print("⚠️ SL adjusted to minimum distance: ", DoubleToString(sl, _Digits));
+            }
+        }
+        // Adjust TP (must be below entry)
+        if(tp != 0)
+        {
+            double minTP = entry - minDist;
+            if(tp > minTP) // tp is too close
+            {
+                tp = minTP;
+                Print("⚠️ TP adjusted to minimum distance: ", DoubleToString(tp, _Digits));
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Process Buy Signal                                               |
+//+------------------------------------------------------------------+
+void ProcessBuySignal(string signalType, int tpPoints)
+{
+    datetime currentTime = iTime(_Symbol, _Period, CheckSignalBar);
+    
+    if(lastSignalTime == currentTime && lastSignalType == "BUY_" + signalType)
+        return;
+    
+    Print("🔵 ", signalType, " BUY Signal Detected!");
+    
+    if(CloseOppositeOnSignal)
+        CloseAllPositions(POSITION_TYPE_SELL);
+    
+    if(OneTradePerSignal && CountPositions(POSITION_TYPE_BUY) > 0)
+    {
+        Print("Already have BUY position. Skipping.");
+        return;
+    }
+    
+    double lotSize = CalculateLotSize();
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    double tp = 0, sl = 0;
+    if(UseAutoTP && tpPoints > 0)
+        tp = NormalizeDouble(ask + tpPoints * _Point, _Digits);
+    if(SLPoints > 0)
+        sl = NormalizeDouble(ask - SLPoints * _Point, _Digits);
+    
+    //--- Adjust stops if requested
+    if(AdjustStopsToMinDistance)
+    {
+        AdjustStopsToMin(POSITION_TYPE_BUY, ask, sl, tp);
+    }
+    
+    //--- Validate (optional, but we already adjusted)
+    if(!ValidateStops(POSITION_TYPE_BUY, ask, sl, tp))
+    {
+        Print("❌ Stops still invalid after adjustment. Order not sent.");
+        return;
+    }
+    
+    //--- Execute Buy Order
+    if(trade.Buy(lotSize, _Symbol, ask, sl, tp, TradeComment + " " + signalType))
+    {
+        Print("✅ BUY Order Opened | Lot: ", lotSize, " | TP: ", tpPoints, " points | Signal: ", signalType);
+        lastSignalTime = currentTime;
+        lastSignalType = "BUY_" + signalType;
+    }
+    else
+    {
+        Print("❌ Failed to open BUY order. Error: ", GetLastError());
+        Print("Ask: ", ask, " SL: ", sl, " TP: ", tp, " Lot: ", lotSize);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Process Sell Signal                                              |
+//+------------------------------------------------------------------+
+void ProcessSellSignal(string signalType, int tpPoints)
+{
+    datetime currentTime = iTime(_Symbol, _Period, CheckSignalBar);
+    
+    if(lastSignalTime == currentTime && lastSignalType == "SELL_" + signalType)
+        return;
+    
+    Print("🔴 ", signalType, " SELL Signal Detected!");
+    
+    if(CloseOppositeOnSignal)
+        CloseAllPositions(POSITION_TYPE_BUY);
+    
+    if(OneTradePerSignal && CountPositions(POSITION_TYPE_SELL) > 0)
+    {
+        Print("Already have SELL position. Skipping.");
+        return;
+    }
+    
+    double lotSize = CalculateLotSize();
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    
+    double tp = 0, sl = 0;
+    if(UseAutoTP && tpPoints > 0)
+        tp = NormalizeDouble(bid - tpPoints * _Point, _Digits);
+    if(SLPoints > 0)
+        sl = NormalizeDouble(bid + SLPoints * _Point, _Digits);
+    
+    //--- Adjust stops if requested
+    if(AdjustStopsToMinDistance)
+    {
+        AdjustStopsToMin(POSITION_TYPE_SELL, bid, sl, tp);
+    }
+    
+    //--- Validate
+    if(!ValidateStops(POSITION_TYPE_SELL, bid, sl, tp))
+    {
+        Print("❌ Stops still invalid after adjustment. Order not sent.");
+        return;
+    }
+    
+    //--- Execute Sell Order
+    if(trade.Sell(lotSize, _Symbol, bid, sl, tp, TradeComment + " " + signalType))
+    {
+        Print("✅ SELL Order Opened | Lot: ", lotSize, " | TP: ", tpPoints, " points | Signal: ", signalType);
+        lastSignalTime = currentTime;
+        lastSignalType = "SELL_" + signalType;
+    }
+    else
+    {
+        Print("❌ Failed to open SELL order. Error: ", GetLastError());
+        Print("Bid: ", bid, " SL: ", sl, " TP: ", tp, " Lot: ", lotSize);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Validate Stop Loss and Take Profit                              |
+//+------------------------------------------------------------------+
+bool ValidateStops(ENUM_POSITION_TYPE type, double entry, double sl, double tp)
+{
+    //--- Check that SL and TP are on correct sides
+    if(type == POSITION_TYPE_BUY)
+    {
+        if(sl != 0 && sl >= entry)
+        {
+            Print("SL (", sl, ") must be below entry (", entry, ") for BUY");
+            return false;
+        }
+        if(tp != 0 && tp <= entry)
+        {
+            Print("TP (", tp, ") must be above entry (", entry, ") for BUY");
+            return false;
+        }
+    }
+    else // SELL
+    {
+        if(sl != 0 && sl <= entry)
+        {
+            Print("SL (", sl, ") must be above entry (", entry, ") for SELL");
+            return false;
+        }
+        if(tp != 0 && tp >= entry)
+        {
+            Print("TP (", tp, ") must be below entry (", entry, ") for SELL");
+            return false;
+        }
+    }
+    
+    //--- Check minimum distance from entry if stops are set
+    int minStops = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+    if(minStops > 0)
+    {
+        double minDist = minStops * _Point;
+        if(sl != 0 && MathAbs(entry - sl) < minDist - 0.1 * _Point) // allow tiny rounding
+        {
+            Print("SL distance (", MathAbs(entry - sl), ") less than minimum (", minDist, ")");
+            return false;
+        }
+        if(tp != 0 && MathAbs(entry - tp) < minDist - 0.1 * _Point)
+        {
+            Print("TP distance (", MathAbs(entry - tp), ") less than minimum (", minDist, ")");
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Dynamic Lot Size Based on Account Balance              |
+//+------------------------------------------------------------------+
+double CalculateLotSize()
+{
+    if(!UseDynamicLots)
+        return MinLotSize;
+    
+    double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double riskAmount = accountBalance * (RiskPercent / 100.0);
+    
+    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+    
+    double lotSize = MinLotSize;
+    
+    if(SLPoints > 0)
+    {
+        double slDistance = SLPoints * _Point;
+        double slTicks = slDistance / tickSize;
+        lotSize = riskAmount / (slTicks * tickValue);
+    }
+    else
+    {
+        lotSize = (accountBalance / 100.0) * 0.01;
+    }
+    
+    lotSize = MathFloor(lotSize / lotStep) * lotStep;
+    
+    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+    
+    if(lotSize < minLot) lotSize = minLot;
+    if(lotSize > maxLot) lotSize = maxLot;
+    if(lotSize < MinLotSize) lotSize = MinLotSize;
+    if(lotSize > MaxLotSize) lotSize = MaxLotSize;
+    
+    return NormalizeDouble(lotSize, 2);
+}
+
+//+------------------------------------------------------------------+
+//| Close All Positions of Given Type                                |
+//+------------------------------------------------------------------+
+void CloseAllPositions(ENUM_POSITION_TYPE posType)
+{
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket > 0)
+        {
+            if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+               PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+               (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == posType)
+            {
+                trade.PositionClose(ticket);
+                Print("🔄 Closed ", (posType == POSITION_TYPE_BUY ? "BUY" : "SELL"), " position #", ticket);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Count Positions of Given Type                                    |
+//+------------------------------------------------------------------+
+int CountPositions(ENUM_POSITION_TYPE posType)
+{
+    int count = 0;
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket > 0)
+        {
+            if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+               PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+               (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == posType)
+            {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+//+------------------------------------------------------------------+
+//| Update Trailing Stops for All Positions                          |
+//+------------------------------------------------------------------+
+void UpdateTrailingStops()
+{
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket > 0)
+        {
+            if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+               PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+            {
+                double posOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+                double posSL = PositionGetDouble(POSITION_SL);
+                double posTP = PositionGetDouble(POSITION_TP);
+                ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+                
+                double currentPrice = (posType == POSITION_TYPE_BUY) ? 
+                                      SymbolInfoDouble(_Symbol, SYMBOL_BID) : 
+                                      SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                
+                double point = _Point;
+                
+                //--- Classic Trailing
+                if(TrailingMode == TRAILING_CLASSIC)
+                {
+                    double trailDist = ClassicTrailingStop * point;
+                    double trailStep = ClassicTrailingStep * point;
+                    
+                    if(posType == POSITION_TYPE_BUY)
+                    {
+                        double newSL = currentPrice - trailDist;
+                        if(newSL > posSL + trailStep && newSL < currentPrice)
+                        {
+                            newSL = NormalizeDouble(newSL, _Digits);
+                            trade.PositionModify(ticket, newSL, posTP);
+                            Print("📊 Classic Trailing Updated for BUY #", ticket, " | New SL: ", newSL);
+                        }
+                    }
+                    else // SELL
+                    {
+                        double newSL = currentPrice + trailDist;
+                        if((posSL == 0 || newSL < posSL - trailStep) && newSL > currentPrice)
+                        {
+                            newSL = NormalizeDouble(newSL, _Digits);
+                            trade.PositionModify(ticket, newSL, posTP);
+                            Print("📊 Classic Trailing Updated for SELL #", ticket, " | New SL: ", newSL);
+                        }
+                    }
+                }
+                //--- Step Trailing
+                else if(TrailingMode == TRAILING_STEP)
+                {
+                    double profitPoints = (posType == POSITION_TYPE_BUY) ? 
+                                          (currentPrice - posOpenPrice) / point : 
+                                          (posOpenPrice - currentPrice) / point;
+                    
+                    if(profitPoints >= StepTrailingStart)
+                    {
+                        // Calculate target locked profit (points above/below entry)
+                        double targetLock = StepTrailingLock;
+                        if(profitPoints > StepTrailingStart)
+                        {
+                            int steps = (int)((profitPoints - StepTrailingStart) / StepTrailingStep);
+                            targetLock = StepTrailingLock + steps * StepTrailingStep;
+                        }
+                        // Ensure we don't lock more than current profit (should not happen)
+                        if(targetLock > profitPoints) targetLock = profitPoints;
+                        
+                        double newSL;
+                        if(posType == POSITION_TYPE_BUY)
+                        {
+                            newSL = posOpenPrice + targetLock * point;
+                            // Only move if new SL is higher (for buy) by at least one step
+                            if(posSL == 0 || newSL > posSL + StepTrailingStep * point * 0.9)
+                            {
+                                newSL = NormalizeDouble(newSL, _Digits);
+                                if(newSL < currentPrice) // ensure SL is below price
+                                {
+                                    trade.PositionModify(ticket, newSL, posTP);
+                                    Print("📊 Step Trailing Updated for BUY #", ticket, " | New SL: ", newSL, " (Locked ", targetLock, " pts)");
+                                }
+                            }
+                        }
+                        else // SELL
+                        {
+                            newSL = posOpenPrice - targetLock * point;
+                            // For sell, new SL should be lower (closer to entry)
+                            if(posSL == 0 || newSL < posSL - StepTrailingStep * point * 0.9)
+                            {
+                                newSL = NormalizeDouble(newSL, _Digits);
+                                if(newSL > currentPrice) // ensure SL is above price
+                                {
+                                    trade.PositionModify(ticket, newSL, posTP);
+                                    Print("📊 Step Trailing Updated for SELL #", ticket, " | New SL: ", newSL, " (Locked ", targetLock, " pts)");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Dashboard Functions                                              |
+//+------------------------------------------------------------------+
+void CreateDashboard()
+{
+    string prefix = "FTR_Dash_";
+    int x = DashboardX;
+    int y = DashboardY;
+    int lineHeight = 18;
+    int width = 220;
+    int height = lineHeight * 11 + 10;
+    
+    // Background rectangle with ARGB color
+    string bgName = prefix + "BG";
+    ObjectDelete(0, bgName);
+    ObjectCreate(0, bgName, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, x);
+    ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, y);
+    ObjectSetInteger(0, bgName, OBJPROP_XSIZE, width);
+    ObjectSetInteger(0, bgName, OBJPROP_YSIZE, height);
+    // Convert to ARGB
+    color bg = DashboardBgColor;
+    uchar a = DashboardBgOpacity;
+    uchar r = (uchar)(bg & 0xFF);
+    uchar g = (uchar)((bg >> 8) & 0xFF);
+    uchar b = (uchar)((bg >> 16) & 0xFF);
+    uint argb = (a << 24) | (r << 16) | (g << 8) | b;
+    ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, argb);
+    ObjectSetInteger(0, bgName, OBJPROP_COLOR, argb); // border same
+    ObjectSetInteger(0, bgName, OBJPROP_WIDTH, 1);
+    ObjectSetInteger(0, bgName, OBJPROP_STYLE, STYLE_SOLID);
+    ObjectSetInteger(0, bgName, OBJPROP_BACK, false);
+    
+    // Title
+    string titleName = prefix + "Title";
+    ObjectDelete(0, titleName);
+    ObjectCreate(0, titleName, OBJ_LABEL, 0, 0, 0);
+    ObjectSetInteger(0, titleName, OBJPROP_XDISTANCE, x + 5);
+    ObjectSetInteger(0, titleName, OBJPROP_YDISTANCE, y + 5);
+    ObjectSetInteger(0, titleName, OBJPROP_FONTSIZE, DashboardFontSize + 2);
+    ObjectSetInteger(0, titleName, OBJPROP_COLOR, DashboardTextColor);
+    ObjectSetString(0, titleName, OBJPROP_TEXT, "FTR Reversals EA");
+    ObjectSetString(0, titleName, OBJPROP_FONT, "Arial");
+    
+    // Data labels
+    string labels[] = {"Balance", "Equity", "Floating", "Spread", "OpenTrades", "ClosedTrades", "WinLoss", "WinRate", "TotalProfit"};
+    int posY = y + 5 + lineHeight;
+    for(int i = 0; i < ArraySize(labels); i++)
+    {
+        string objName = prefix + labels[i];
+        ObjectDelete(0, objName);
+        ObjectCreate(0, objName, OBJ_LABEL, 0, 0, 0);
+        ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, x + 5);
+        ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, posY);
+        ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, DashboardFontSize);
+        ObjectSetInteger(0, objName, OBJPROP_COLOR, DashboardTextColor);
+        ObjectSetString(0, objName, OBJPROP_FONT, "Arial");
+        ObjectSetString(0, objName, OBJPROP_TEXT, labels[i] + ": ");
+        posY += lineHeight;
+    }
+}
+
+void UpdateDashboard()
+{
+    string prefix = "FTR_Dash_";
+    
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    double floating = AccountInfoDouble(ACCOUNT_PROFIT);
+    long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+    
+    int openCount = 0;
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+            openCount++;
+    }
+    
+    int totalClosed = 0, wins = 0, losses = 0;
+    double closedProfit = 0.0;
+    
+    HistorySelect(0, TimeCurrent());
+    int deals = HistoryDealsTotal();
+    for(int i = 0; i < deals; i++)
+    {
+        ulong dealTicket = HistoryDealGetTicket(i);
+        if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) == _Symbol &&
+           HistoryDealGetInteger(dealTicket, DEAL_MAGIC) == MagicNumber &&
+           HistoryDealGetInteger(dealTicket, DEAL_ENTRY) == DEAL_ENTRY_OUT)
+        {
+            double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+            if(profit > 0) wins++;
+            else if(profit < 0) losses++;
+            totalClosed++;
+            closedProfit += profit;
+        }
+    }
+    
+    double winRate = (totalClosed > 0) ? (double)wins / totalClosed * 100.0 : 0.0;
+    
+    ObjectSetString(0, prefix + "Balance", OBJPROP_TEXT, "Balance: " + DoubleToString(balance, 2));
+    ObjectSetString(0, prefix + "Equity", OBJPROP_TEXT, "Equity: " + DoubleToString(equity, 2));
+    ObjectSetString(0, prefix + "Floating", OBJPROP_TEXT, "Floating: " + DoubleToString(floating, 2));
+    ObjectSetString(0, prefix + "Spread", OBJPROP_TEXT, "Spread: " + IntegerToString(spread) + " pts");
+    ObjectSetString(0, prefix + "OpenTrades", OBJPROP_TEXT, "Open Trades: " + IntegerToString(openCount));
+    ObjectSetString(0, prefix + "ClosedTrades", OBJPROP_TEXT, "Closed Trades: " + IntegerToString(totalClosed));
+    ObjectSetString(0, prefix + "WinLoss", OBJPROP_TEXT, "Win/Loss: " + IntegerToString(wins) + " / " + IntegerToString(losses));
+    ObjectSetString(0, prefix + "WinRate", OBJPROP_TEXT, "Win Rate: " + DoubleToString(winRate, 1) + "%");
+    ObjectSetString(0, prefix + "TotalProfit", OBJPROP_TEXT, "Total Profit: " + DoubleToString(closedProfit, 2));
+}
+
+void DeleteDashboard()
+{
+    ObjectsDeleteAll(0, "FTR_Dash_");
+}
+//+------------------------------------------------------------------+

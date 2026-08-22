@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.BuildingBlocks\YO4X.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.Persistence.Postgres\YO4X.Persistence.Postgres.csproj" />
+    <ProjectReference Include="..\..\Modules\Audit\YO4X.Audit\YO4X.Audit.csproj" />
+    <ProjectReference Include="..\..\Modules\Outbox\YO4X.Outbox\YO4X.Outbox.csproj" />
+    <ProjectReference Include="..\..\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
+  </ItemGroup>
+
+</Project>

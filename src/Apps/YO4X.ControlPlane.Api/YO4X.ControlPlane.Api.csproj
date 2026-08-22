@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.Api\YO4X.Api.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.Persistence.Postgres\YO4X.Persistence.Postgres.csproj" />
+    <ProjectReference Include="..\..\Modules\Identity\YO4X.Identity\YO4X.Identity.csproj" />
+    <ProjectReference Include="..\..\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
+    <ProjectReference Include="..\..\Modules\BrokerAccounts\YO4X.BrokerAccounts\YO4X.BrokerAccounts.csproj" />
+    <ProjectReference Include="..\..\Modules\SecretCoordination\YO4X.SecretCoordination\YO4X.SecretCoordination.csproj" />
+    <ProjectReference Include="..\..\Modules\Deployments\YO4X.Deployments\YO4X.Deployments.csproj" />
+    <ProjectReference Include="..\..\Modules\RuntimeOperations\YO4X.RuntimeOperations\YO4X.RuntimeOperations.csproj" />
+    <ProjectReference Include="..\..\Modules\StrategyGovernance\YO4X.StrategyGovernance\YO4X.StrategyGovernance.csproj" />
+    <ProjectReference Include="..\..\Application\YO4X.ControlPlane.Application\YO4X.ControlPlane.Application.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\YO4X.ControlPlane.Postgres\YO4X.ControlPlane.Postgres.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\YO4X.RuntimeControl.Postgres\YO4X.RuntimeControl.Postgres.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+</Project>

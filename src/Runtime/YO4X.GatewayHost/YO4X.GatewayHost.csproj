@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\YO4X.Runtime.Contracts\YO4X.Runtime.Contracts.csproj" />
+    <ProjectReference Include="..\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />
+    <ProjectReference Include="..\YO4X.Trading.Mt5\YO4X.Trading.Mt5.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

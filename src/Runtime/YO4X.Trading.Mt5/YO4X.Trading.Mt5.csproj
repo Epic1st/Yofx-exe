@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Mt5VendorArtifactRoot>$(MSBuildThisFileDirectory)..\..\..\mt5-net-api-full-binaries-main</Mt5VendorArtifactRoot>
+    <Mt5VendorArtifactPath>$(Mt5VendorArtifactRoot)\mt5api.dll</Mt5VendorArtifactPath>
+    <Mt5VendorExpectedSha256>EB238C958A4D9F80C8A3EEACA07636AE53BC5A78A093BC3FE63923FA50A309C6</Mt5VendorExpectedSha256>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- U0 pins the user-supplied vendor artifact for compile-time inspection only. It is not redistributed. -->
+    <Reference Include="mt5api">
+      <HintPath>$(Mt5VendorArtifactPath)</HintPath>
+      <Private>false</Private>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+    </Reference>
+    <Compile Remove="$(Mt5VendorArtifactRoot)\Examples.cs" />
+    <Content Remove="$(Mt5VendorArtifactRoot)\**\*" />
+    <None Remove="$(Mt5VendorArtifactRoot)\**\*" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <Target Name="VerifyMt5VendorArtifact" BeforeTargets="ResolveReferences">
+    <Error
+      Condition="!Exists('$(Mt5VendorArtifactPath)')"
+      Text="The pinned MT5 vendor artifact is missing." />
+    <GetFileHash
+      Condition="Exists('$(Mt5VendorArtifactPath)')"
+      Files="$(Mt5VendorArtifactPath)"
+      Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="Mt5VendorArtifactHash" />
+    </GetFileHash>
+    <Error
+      Condition="Exists('$(Mt5VendorArtifactPath)') and '%(Mt5VendorArtifactHash.FileHash)' != '$(Mt5VendorExpectedSha256)'"
+      Text="The MT5 vendor artifact does not match the pinned SHA-256 digest." />
+  </Target>
+
+</Project>

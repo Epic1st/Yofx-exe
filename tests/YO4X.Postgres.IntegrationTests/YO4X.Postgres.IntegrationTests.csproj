@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Application\YO4X.Trading.Application\YO4X.Trading.Application.csproj" />
+    <ProjectReference Include="..\..\src\BuildingBlocks\YO4X.Persistence.Postgres\YO4X.Persistence.Postgres.csproj" />
+    <ProjectReference Include="..\..\src\Apps\YO4X.Conversion.Worker\YO4X.Conversion.Worker.csproj" />
+    <ProjectReference Include="..\..\src\Infrastructure\YO4X.Trading.Postgres\YO4X.Trading.Postgres.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Runtime.Contracts\YO4X.Runtime.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Risk\YO4X.Risk\YO4X.Risk.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Audit\YO4X.Audit\YO4X.Audit.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Outbox\YO4X.Outbox\YO4X.Outbox.csproj" />
+    <ProjectReference Include="..\..\src\Modules\SecretCoordination\YO4X.SecretCoordination\YO4X.SecretCoordination.csproj" />
+  </ItemGroup>
+
+</Project>

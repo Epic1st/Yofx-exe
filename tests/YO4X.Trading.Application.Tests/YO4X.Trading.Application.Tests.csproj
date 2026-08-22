@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Application\YO4X.Trading.Application\YO4X.Trading.Application.csproj" />
+    <ProjectReference Include="..\..\src\BuildingBlocks\YO4X.BuildingBlocks\YO4X.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\src\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Runtime.Contracts\YO4X.Runtime.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Trading.Mt5\YO4X.Trading.Mt5.csproj" />
+  </ItemGroup>
+
+</Project>

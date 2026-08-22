@@ -1,0 +1,23 @@
+{
+  "version": "18.6-1",
+  "postgresVersion": "18.6",
+  "archiveFileName": "postgresql-18.6-1-windows-x64-binaries.zip",
+  "archiveUrl": "https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip",
+  "archiveSha256": "fbe23da234ee31547bf8a36d29dfd81e82b849df2d2b78d2eecb43d360252f8c",
+  "archiveLength": 343808005,
+  "sourcePage": "https://www.postgresql.org/download/windows/",
+  "binaryPage": "https://www.enterprisedb.com/download-postgresql-binaries",
+  "hashCrossCheck": "https://github.com/ScoopInstaller/Main/blob/2f27158986661388cc75ae7f70da97ccbdb34fea/bucket/postgresql.json",
+  "verifiedAtUtc": "2026-08-22T00:00:00Z",
+  "dockerFallback": {
+    "image": "postgres:18.6-alpine3.23",
+    "manifestDigest": "sha256:697c180dbf244d3ce4a8f4cbc0156cde840af055c1bf8b76aebe422a4822086f",
+    "source": "https://hub.docker.com/_/postgres/tags?name=18.6-alpine3.23"
+  },
+  "runtimeExecutables": {
+    "postgres.exe": "af5b897cb69c9ce692a4a15ecd022b540db85db1add0f66d2b9f0697be2451a0",
+    "initdb.exe": "68195f0c6f22694660ba86d914ae8c74bcd38e71eb342f98e065b1962311142e",
+    "pg_ctl.exe": "552049183df455921657c8e498e9745e8508bf77d2c2e5cb9c21b2cbdc798822",
+    "psql.exe": "1e23b7f9ac7649b4717ada9b1f4e1b5b66c343937b6a91583f63528b96a61503"
+  }
+}
