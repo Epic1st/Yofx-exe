@@ -28,6 +28,21 @@ public sealed class LocalCredentialBoundaryTests
         Assert.DoesNotContain("12345678", parsed.Credentials[0].ToString(), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(1UL, "*")]
+    [InlineData(12UL, "**")]
+    [InlineData(123UL, "*23")]
+    public void CredentialRenderingAlwaysMasksAtLeastOneLoginDigit(
+        ulong login,
+        string expected)
+    {
+        using var credential = new LocalMt5Credential(login, "Broker-Demo", "test-only-password"u8);
+
+        Assert.Equal(expected, credential.Describe().MaskedLogin);
+        Assert.Contains($"Login = {expected}", credential.ToString(), StringComparison.Ordinal);
+        Assert.Contains($"Login = {expected}", credential.Describe().ToString(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ParsedCredentialCollectionCannotBeDowncastAndMutatedBeforeDisposal()
     {

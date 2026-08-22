@@ -886,6 +886,48 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, exception.SqlState);
     }
 
+    [PostgresFact]
+    public async Task GlobalAuthorityMutationAfterTenantAuthorityIsRejectedBeforeLockUpgrade()
+    {
+        _postgres.RequireAvailable();
+        await using PostgresTestDatabase database = await _postgres.CreateDatabaseAsync();
+        TenantExecutionContext context = NewContext();
+        await using TenantPostgresTransaction transaction =
+            await database.Application.BeginTenantTransactionAsync(context);
+        await using (NpgsqlCommand tenant = transaction.CreateCommand(
+            """
+            insert into identity.tenants (id, slug, display_name)
+            values (@tenant_id, @slug, 'Lock-order test tenant')
+            """))
+        {
+            tenant.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, context.TenantId);
+            tenant.Parameters.AddWithValue(
+                "slug",
+                NpgsqlDbType.Text,
+                $"lock-order-{context.TenantId:N}");
+            Assert.Equal(1, await tenant.ExecuteNonQueryAsync());
+        }
+
+        await using NpgsqlCommand global = transaction.CreateCommand(
+            """
+            insert into governance.gateway_artifacts
+                (id, vendor_name, vendor_version, sha256, signature_state,
+                 quarantine_reference, provenance, licence_evidence,
+                 sbom_reference, network_evidence, state, created_at, updated_at)
+            values
+                (@id, 'lock-order-test', '1.0', @digest, 'valid',
+                 'quarantine://lock-order-test', '{"source":"test"}'::jsonb,
+                 '{"licence":"test"}'::jsonb, 'sbom://lock-order-test',
+                 '{"network":"isolated"}'::jsonb, 'approved',
+                 statement_timestamp(), statement_timestamp())
+            """);
+        global.Parameters.AddWithValue("id", NpgsqlDbType.Uuid, Guid.CreateVersion7());
+        global.Parameters.AddWithValue("digest", NpgsqlDbType.Text, RandomHexDigest());
+        PostgresException rejected = await Assert.ThrowsAsync<PostgresException>(
+            async () => await global.ExecuteNonQueryAsync());
+        Assert.Equal("25001", rejected.SqlState);
+    }
+
     private static TenantExecutionContext NewContext() => new(
         Guid.CreateVersion7(),
         Guid.CreateVersion7(),
@@ -1921,6 +1963,16 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
             await database.Application.BeginTenantTransactionAsync(seedContext);
         await using NpgsqlCommand command = transaction.CreateCommand(
             """
+            insert into governance.gateway_artifacts
+                (id, vendor_name, vendor_version, sha256, signature_state,
+                 quarantine_reference, provenance, licence_evidence,
+                 sbom_reference, network_evidence, state, created_at, updated_at)
+            values
+                (@gateway_id, 'integration-vendor', '1.0', @gateway_digest, 'valid',
+                 'quarantine://integration', '{"source":"integration"}'::jsonb,
+                 '{"licence":"test"}'::jsonb, 'sbom://integration',
+                 '{"network":"isolated"}'::jsonb, 'approved', @now, @now);
+
             insert into operations.broker_accounts
                 (id, tenant_id, user_id, broker_id, server, masked_login,
                  binding_fingerprint, environment, credential_reference,
@@ -1935,16 +1987,6 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
                 row_version = row_version + 1,
                 updated_at = @now
             where tenant_id = @tenant_id and id = @rotate_account_id;
-
-            insert into governance.gateway_artifacts
-                (id, vendor_name, vendor_version, sha256, signature_state,
-                 quarantine_reference, provenance, licence_evidence,
-                 sbom_reference, network_evidence, state, created_at, updated_at)
-            values
-                (@gateway_id, 'integration-vendor', '1.0', @gateway_digest, 'valid',
-                 'quarantine://integration', '{"source":"integration"}'::jsonb,
-                 '{"licence":"test"}'::jsonb, 'sbom://integration',
-                 '{"network":"isolated"}'::jsonb, 'approved', @now, @now);
 
             insert into governance.risk_policy_versions
                 (id, tenant_id, policy_id, version_number, normalized_policy,

@@ -120,6 +120,12 @@ public sealed class Mt5ProofOnlyGatewayTests
             1.14m,
             10,
             "yo4x-deployment-1",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
             Now);
 
     private static AuthorizedBrokerCommand AuthorizedCommand()
@@ -156,7 +162,11 @@ public sealed class Mt5ProofOnlyGatewayTests
             new string('6', 64),
             new string('7', 64),
             new string('8', 64),
+            "ECDSA_P256_SHA256_DER",
             "strategy-verifier-key",
+            Guid.Parse("7c000000-0000-0000-0000-000000000002"),
+            Now.AddMinutes(-5),
+            true,
             gatewayId,
             new string('9', 64));
         var risk = new NumericRiskAuthorization(
@@ -217,6 +227,8 @@ public sealed class Mt5ProofOnlyGatewayTests
             "test-key",
             new string('A', 86));
         lease = lease with { PayloadSha256 = ExecutionLeaseCanonicalizer.Sha256(lease.Claims) };
+        var safety = new ExecutionSafetyAuthorization(new string('0', 64), 1);
+        string trustedLeaseVerificationKeySha256 = new('a', 64);
         var reconciliation = new BrokerReconciliationCommitment(
             BrokerCommandAuthorizationContractVersions.ReconciliationV1,
             command.CommandId,
@@ -229,12 +241,14 @@ public sealed class Mt5ProofOnlyGatewayTests
             lease,
             ExecutionLeaseEnvelopeDigest.Sha256(lease),
             lease.PayloadSha256,
-            ExecutionLeaseEnvelopeDigest.SignatureSha256(lease));
+            ExecutionLeaseEnvelopeDigest.SignatureSha256(lease),
+            trustedLeaseVerificationKeySha256);
         BrokerCommandAuthorizationDocument document = AuthorizedBrokerCommand.CreateDocument(
             command,
             provenance,
             risk,
             exposure,
+            safety,
             leaseAuthorization,
             reconciliation);
         return AuthorizedBrokerCommand.Create(
@@ -242,7 +256,9 @@ public sealed class Mt5ProofOnlyGatewayTests
             provenance,
             risk,
             exposure,
+            safety,
             lease,
+            trustedLeaseVerificationKeySha256,
             reconciliation,
             CanonicalJson.Sha256(document));
     }

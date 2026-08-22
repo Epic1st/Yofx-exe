@@ -1,0 +1,15 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\bin\Debug\net10.0\YO4X.Incidents.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\bin\Debug\net10.0\YO4X.Incidents.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\bin\Debug\net10.0\YO4X.Incidents.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\bin\Debug\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\bin\Debug\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\YO4X.Incidents.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\YO4X.Incidents.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\YO4X.Incidents.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\YO4X.Incidents.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\YO4X.Incidents.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\YO4X.Inc.70340FF7.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\YO4X.Incidents.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\refint\YO4X.Incidents.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\YO4X.Incidents.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Incidents\YO4X.Incidents\obj\Debug\net10.0\ref\YO4X.Incidents.dll

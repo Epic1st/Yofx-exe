@@ -210,7 +210,7 @@ public sealed class LocalMt5Credential : IDisposable
     private static string MaskLogin(ulong login)
     {
         string value = login.ToString(CultureInfo.InvariantCulture);
-        int visible = Math.Min(2, value.Length);
+        int visible = value.Length <= 2 ? 0 : 2;
         return string.Concat(new string('*', value.Length - visible), value.AsSpan(value.Length - visible));
     }
 }

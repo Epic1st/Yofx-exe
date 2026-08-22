@@ -1,0 +1,16 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\bin\Release\net10.0\YO4X.Identity.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\bin\Release\net10.0\YO4X.Identity.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\bin\Release\net10.0\YO4X.Identity.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\bin\Release\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\bin\Release\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Identity.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Identity.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Identity.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Identity.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Identity.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Ide.5C9A9BC0.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Identity.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\refint\YO4X.Identity.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Identity.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\ref\YO4X.Identity.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Identity\YO4X.Identity\obj\Release\net10.0\YO4X.Identity.sourcelink.json

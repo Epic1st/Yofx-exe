@@ -1,0 +1,190 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "YO4X.ControlPlane.Application/1.0.0": {
+        "dependencies": {
+          "YO4X.Audit": "1.0.0",
+          "YO4X.BrokerAccounts": "1.0.0",
+          "YO4X.BuildingBlocks": "1.0.0",
+          "YO4X.Deployments": "1.0.0",
+          "YO4X.Identity": "1.0.0",
+          "YO4X.Outbox": "1.0.0",
+          "YO4X.Runtime.Contracts": "1.0.0",
+          "YO4X.RuntimeOperations": "1.0.0",
+          "YO4X.SecretCoordination": "1.0.0",
+          "YO4X.StrategyGovernance": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.ControlPlane.Application.dll": {}
+        }
+      },
+      "YO4X.Audit/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.Audit.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.BrokerAccounts/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.BrokerAccounts.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.BuildingBlocks/1.0.0": {
+        "runtime": {
+          "YO4X.BuildingBlocks.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.Deployments/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.Deployments.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.Identity/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.Identity.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.Outbox/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.Outbox.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.Runtime.Contracts/1.0.0": {
+        "runtime": {
+          "YO4X.Runtime.Contracts.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.RuntimeOperations/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0",
+          "YO4X.Runtime.Contracts": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.RuntimeOperations.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.SecretCoordination/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.SecretCoordination.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.StrategyGovernance/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.StrategyGovernance.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "YO4X.ControlPlane.Application/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.Audit/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.BrokerAccounts/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.BuildingBlocks/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.Deployments/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.Identity/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.Outbox/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.Runtime.Contracts/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.RuntimeOperations/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.SecretCoordination/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.StrategyGovernance/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

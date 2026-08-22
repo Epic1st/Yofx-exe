@@ -98,7 +98,7 @@ public sealed class BrokerCommandReconciliationValidatorTests
     }
 
     [Fact]
-    public void ExactProtectionPostStateCanProveAcknowledgement()
+    public void ExactProtectionPostStateRemainsInconclusiveWithoutRequestCorrelation()
     {
         AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized(
             BrokerCommandAction.ModifyProtection);
@@ -133,13 +133,17 @@ public sealed class BrokerCommandReconciliationValidatorTests
 
         ValidatedBrokerCommandReconciliation result = Validate(claim, snapshot);
 
-        Assert.True(result.IsConclusive);
-        Assert.Equal(BrokerReconciliationMatch.Acknowledged, result.Match);
+        Assert.False(result.IsConclusive);
+        Assert.Equal(
+            "broker_reconciliation_protection_correlation_not_proven",
+            result.ReasonCode);
+        Assert.Null(result.SourceSequence);
+        Assert.Null(result.Snapshot);
         Assert.Equal(command.Command.TargetBrokerId, result.TargetBrokerId);
     }
 
     [Fact]
-    public void CancellationRequiresExactHistoricalTargetOrder()
+    public void ExactCancellationPostStateRemainsInconclusiveWithoutRequestCorrelation()
     {
         AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized(
             BrokerCommandAction.Cancel);
@@ -177,9 +181,14 @@ public sealed class BrokerCommandReconciliationValidatorTests
 
         ValidatedBrokerCommandReconciliation result = Validate(claim, snapshot);
 
-        Assert.True(result.IsConclusive);
-        Assert.Equal(BrokerReconciliationMatch.Cancelled, result.Match);
-        Assert.Equal(command.Command.TargetBrokerId, result.OrderId);
+        Assert.False(result.IsConclusive);
+        Assert.Equal(
+            "broker_reconciliation_cancel_correlation_not_proven",
+            result.ReasonCode);
+        Assert.Null(result.SourceSequence);
+        Assert.Null(result.Snapshot);
+        Assert.Null(result.OrderId);
+        Assert.Equal(command.Command.TargetBrokerId, result.TargetBrokerId);
     }
 
     [Fact]

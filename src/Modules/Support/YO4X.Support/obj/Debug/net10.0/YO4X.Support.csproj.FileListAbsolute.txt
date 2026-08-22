@@ -1,0 +1,15 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\YO4X.Support.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\YO4X.Support.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\YO4X.Support.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\YO4X.Support.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\YO4X.Support.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\bin\Debug\net10.0\YO4X.Support.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\bin\Debug\net10.0\YO4X.Support.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\bin\Debug\net10.0\YO4X.Support.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\bin\Debug\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\bin\Debug\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\YO4X.Sup.EDB87A29.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\YO4X.Support.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\refint\YO4X.Support.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\YO4X.Support.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Support\YO4X.Support\obj\Debug\net10.0\ref\YO4X.Support.dll

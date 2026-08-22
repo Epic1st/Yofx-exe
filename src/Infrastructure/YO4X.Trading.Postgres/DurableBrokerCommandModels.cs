@@ -70,6 +70,7 @@ public sealed record BrokerCommandAuthorizationReceipt(
 public sealed record BrokerCommandDispatchClaim(
     AuthorizedBrokerCommand Command,
     Guid ClaimToken,
+    DateTimeOffset AuthorityNowUtc,
     DateTimeOffset ClaimExpiresAtUtc,
     long CommandVersion,
     bool Replayed);
@@ -85,6 +86,7 @@ public sealed record BrokerCommandReconciliationClaim(
     string ScopeSha256,
     DateTimeOffset MustBeginByUtc,
     DateTimeOffset MustCompleteByUtc,
+    DateTimeOffset AuthorityNowUtc,
     DateTimeOffset ClaimExpiresAtUtc,
     int Attempt,
     string? SendDisposition,

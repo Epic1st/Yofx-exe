@@ -277,9 +277,10 @@ public sealed class PostgresBrokerCommandStore
             DateTimeOffset exposureValidUntil = reader.GetFieldValue<DateTimeOffset>(7);
             DateTimeOffset riskEvaluatedAt = reader.GetFieldValue<DateTimeOffset>(8);
             DateTimeOffset riskAuthorizationExpiresAt = reader.GetFieldValue<DateTimeOffset>(9);
-            DateTimeOffset claimExpiresAt = reader.GetFieldValue<DateTimeOffset>(10);
-            long commandVersion = reader.GetInt64(11);
-            bool replayed = reader.GetBoolean(12);
+            DateTimeOffset authorityNow = reader.GetFieldValue<DateTimeOffset>(10);
+            DateTimeOffset claimExpiresAt = reader.GetFieldValue<DateTimeOffset>(11);
+            long commandVersion = reader.GetInt64(12);
+            bool replayed = reader.GetBoolean(13);
             if (reader.GetGuid(0) != reference.CommandId
                 || !FixedTimeEquals(returnedAuthorizationSha256, reference.AuthorizationSha256)
                 || await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -305,6 +306,7 @@ public sealed class PostgresBrokerCommandStore
             return new BrokerCommandDispatchClaim(
                 authorized,
                 claimToken,
+                authorityNow,
                 claimExpiresAt,
                 commandVersion,
                 replayed);
@@ -497,16 +499,17 @@ public sealed class PostgresBrokerCommandStore
                 reader.GetFieldValue<DateTimeOffset>(11),
                 reader.GetFieldValue<DateTimeOffset>(12),
                 reader.GetFieldValue<DateTimeOffset>(13),
-                reader.GetInt32(14),
-                reader.IsDBNull(15) ? null : reader.GetString(15),
+                reader.GetFieldValue<DateTimeOffset>(14),
+                reader.GetInt32(15),
                 reader.IsDBNull(16) ? null : reader.GetString(16),
                 reader.IsDBNull(17) ? null : reader.GetString(17),
                 reader.IsDBNull(18) ? null : reader.GetString(18),
                 reader.IsDBNull(19) ? null : reader.GetString(19),
-                reader.GetInt64(20),
-                reader.GetFieldValue<DateTimeOffset>(21),
+                reader.IsDBNull(20) ? null : reader.GetString(20),
+                reader.GetInt64(21),
                 reader.GetFieldValue<DateTimeOffset>(22),
-                reader.GetBoolean(23));
+                reader.GetFieldValue<DateTimeOffset>(23),
+                reader.GetBoolean(24));
             if (reader.GetGuid(0) != commandId
                 || !FixedTimeEquals(returnedAuthorizationSha256, authorizationSha256)
                 || !FixedTimeEquals(receipt.ScopeSha256, authorized.Reconciliation.ScopeSha256)

@@ -79,6 +79,7 @@ public sealed record BrokerCommandReference
 public sealed record BrokerCommandDispatchClaim(
     AuthorizedBrokerCommand Command,
     Guid ClaimToken,
+    DateTimeOffset AuthorityNowUtc,
     DateTimeOffset ClaimExpiresAtUtc,
     long CommandVersion,
     bool Replayed);
@@ -90,6 +91,7 @@ public sealed record BrokerCommandReconciliationClaim(
     DateTimeOffset QueryWindowStartUtc,
     DateTimeOffset MustBeginByUtc,
     DateTimeOffset MustCompleteByUtc,
+    DateTimeOffset AuthorityNowUtc,
     DateTimeOffset ClaimExpiresAtUtc,
     int Attempt,
     string? SendDisposition,

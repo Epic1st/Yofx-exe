@@ -81,6 +81,7 @@ public sealed class BrokerCommandCoordinator
                 recovery.State);
         }
 
+        long dispatchClaimStartedTimestamp = timeProvider.GetTimestamp();
         BrokerCommandDispatchClaim claim;
         try
         {
@@ -118,21 +119,31 @@ public sealed class BrokerCommandCoordinator
             return DispatchRecovery(reference.CommandId, "broker_command_claim_missing");
         }
 
-        DateTimeOffset now = timeProvider.GetUtcNow();
+        DateTimeOffset now = claim.Command.Command.CreatedAtUtc;
         string? guardFailure;
-        try
+        if (!TryGetConservativeAuthorityNow(
+                claim.AuthorityNowUtc,
+                dispatchClaimStartedTimestamp,
+                out now))
         {
-            guardFailure = BrokerCommandDispatchGuard.RejectReason(
-                context,
-                reference,
-                claim,
-                leaseTrustVerifier,
-                now,
-                options.MinimumAuthorityWindow);
+            guardFailure = "broker_command_authority_clock_invalid";
         }
-        catch (Exception)
+        else
         {
-            guardFailure = "broker_command_dispatch_claim_invalid";
+            try
+            {
+                guardFailure = BrokerCommandDispatchGuard.RejectReason(
+                    context,
+                    reference,
+                    claim,
+                    leaseTrustVerifier,
+                    now,
+                    options.MinimumAuthorityWindow);
+            }
+            catch (Exception)
+            {
+                guardFailure = "broker_command_dispatch_claim_invalid";
+            }
         }
         GatewaySendResult result;
         bool gatewayInvoked = false;
@@ -176,7 +187,11 @@ public sealed class BrokerCommandCoordinator
                 GatewaySendResult raw = await send
                     .WaitAsync(gatewayWindow, cancellationToken)
                     .ConfigureAwait(false);
-                result = NormalizeGatewayResult(raw, claim.Command, timeProvider.GetUtcNow());
+                DateTimeOffset receivedAt = ConservativeAuthorityNowOr(
+                    claim.AuthorityNowUtc,
+                    dispatchClaimStartedTimestamp,
+                    now);
+                result = NormalizeGatewayResult(raw, claim.Command, receivedAt);
             }
             catch (Exception)
             {
@@ -188,7 +203,10 @@ public sealed class BrokerCommandCoordinator
                     null,
                     null,
                     null,
-                    timeProvider.GetUtcNow());
+                    ConservativeAuthorityNowOr(
+                        claim.AuthorityNowUtc,
+                        dispatchClaimStartedTimestamp,
+                        now));
             }
         }
 
@@ -286,6 +304,7 @@ public sealed class BrokerCommandCoordinator
                 "broker_reconciliation_recovery_receipt_invalid");
         }
 
+        long reconciliationClaimStartedTimestamp = timeProvider.GetTimestamp();
         BrokerCommandReconciliationClaim claim;
         try
         {
@@ -328,20 +347,30 @@ public sealed class BrokerCommandCoordinator
                 "broker_reconciliation_claim_missing");
         }
 
-        DateTimeOffset now = timeProvider.GetUtcNow();
+        DateTimeOffset now = claim.Command.Command.CreatedAtUtc;
         string? preflightFailure;
-        try
+        if (!TryGetConservativeAuthorityNow(
+                claim.AuthorityNowUtc,
+                reconciliationClaimStartedTimestamp,
+                out now))
         {
-            preflightFailure = BrokerCommandReconciliationGuard.RejectReason(
-                context,
-                reference,
-                claim,
-                leaseTrustVerifier,
-                now);
+            preflightFailure = "broker_reconciliation_authority_clock_invalid";
         }
-        catch (Exception)
+        else
         {
-            preflightFailure = "broker_reconciliation_claim_invalid";
+            try
+            {
+                preflightFailure = BrokerCommandReconciliationGuard.RejectReason(
+                    context,
+                    reference,
+                    claim,
+                    leaseTrustVerifier,
+                    now);
+            }
+            catch (Exception)
+            {
+                preflightFailure = "broker_reconciliation_claim_invalid";
+            }
         }
 
         bool gatewayInvoked = false;
@@ -371,9 +400,12 @@ public sealed class BrokerCommandCoordinator
                     .ReconcileAsync([reference.CommandId], gatewayCancellation.Token)
                     .WaitAsync(remaining, cancellationToken)
                     .ConfigureAwait(false);
-                receivedAt = timeProvider.GetUtcNow();
+                receivedAt = ConservativeAuthorityNowOr(
+                    claim.AuthorityNowUtc,
+                    reconciliationClaimStartedTimestamp,
+                    now);
                 observation = gatewayResult is { IsSuccess: true, Value: not null }
-                    ? SnapshotObservation(claim, gatewayResult.Value)
+                    ? SnapshotObservation(claim, gatewayResult.Value, receivedAt)
                     : FailureObservation(
                         claim,
                         receivedAt,
@@ -381,7 +413,10 @@ public sealed class BrokerCommandCoordinator
             }
             catch (Exception)
             {
-                receivedAt = timeProvider.GetUtcNow();
+                receivedAt = ConservativeAuthorityNowOr(
+                    claim.AuthorityNowUtc,
+                    reconciliationClaimStartedTimestamp,
+                    now);
                 observation = FailureObservation(
                     claim,
                     receivedAt,
@@ -434,16 +469,17 @@ public sealed class BrokerCommandCoordinator
             receipt.State);
     }
 
-    private BrokerCommandReconciliationObservation SnapshotObservation(
+    private static BrokerCommandReconciliationObservation SnapshotObservation(
         BrokerCommandReconciliationClaim claim,
-        BrokerReconciliationSnapshot snapshot)
+        BrokerReconciliationSnapshot snapshot,
+        DateTimeOffset receivedAtUtc)
     {
         DateTimeOffset windowStart = snapshot.QueryWindowStartUtc.Offset == TimeSpan.Zero
             ? snapshot.QueryWindowStartUtc
             : claim.QueryWindowStartUtc;
         DateTimeOffset windowEnd = snapshot.QueryWindowEndUtc.Offset == TimeSpan.Zero
             ? snapshot.QueryWindowEndUtc
-            : timeProvider.GetUtcNow();
+            : receivedAtUtc;
         var sourceDocument = new BrokerCommandReconciliationValidator
             .BrokerReconciliationSourceDocument(
                 snapshot.SourceSequence,
@@ -523,6 +559,51 @@ public sealed class BrokerCommandCoordinator
         source.CancelAfter(options.DurableWriteTimeout);
         return source;
     }
+
+    private bool TryGetConservativeAuthorityNow(
+        DateTimeOffset authorityNowUtc,
+        long operationStartedTimestamp,
+        out DateTimeOffset currentAuthorityUtc)
+    {
+        currentAuthorityUtc = authorityNowUtc;
+        if (authorityNowUtc.Offset != TimeSpan.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            TimeSpan elapsed = timeProvider.GetElapsedTime(
+                operationStartedTimestamp,
+                timeProvider.GetTimestamp());
+            if (elapsed < TimeSpan.Zero || elapsed > TimeSpan.FromHours(1))
+            {
+                return false;
+            }
+
+            currentAuthorityUtc = authorityNowUtc.Add(elapsed);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private DateTimeOffset ConservativeAuthorityNowOr(
+        DateTimeOffset authorityNowUtc,
+        long operationStartedTimestamp,
+        DateTimeOffset fallbackUtc) =>
+        TryGetConservativeAuthorityNow(
+            authorityNowUtc,
+            operationStartedTimestamp,
+            out DateTimeOffset currentAuthorityUtc)
+            ? currentAuthorityUtc
+            : fallbackUtc;
 
     private static void EnsureContext(TenantExecutionContext context, Guid commandId)
     {

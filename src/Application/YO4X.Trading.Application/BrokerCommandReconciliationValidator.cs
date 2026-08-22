@@ -34,12 +34,10 @@ public static class BrokerCommandReconciliationValidator
         BrokerReconciliationMatch derived = command.Action switch
         {
             BrokerCommandAction.Place => DerivePlace(command, observation.Snapshot!, reported!),
-            BrokerCommandAction.ModifyProtection =>
-                DeriveProtection(command, observation.Snapshot!, reported!),
-            BrokerCommandAction.Cancel => DeriveCancellation(command, observation.Snapshot!, reported!),
-            // The current deal/order snapshots do not bind a closing deal to an
-            // exact hedging position and request. Never infer a close result.
-            BrokerCommandAction.Close => BrokerReconciliationMatch.Inconclusive,
+            // The current snapshots do not bind non-Place post-state to the
+            // exact broker request strongly enough for a terminal result.
+            BrokerCommandAction.ModifyProtection or BrokerCommandAction.Cancel
+                or BrokerCommandAction.Close => BrokerReconciliationMatch.Inconclusive,
             _ => BrokerReconciliationMatch.Inconclusive
         };
 
@@ -49,9 +47,16 @@ public static class BrokerCommandReconciliationValidator
                 claim,
                 observation,
                 receivedAtUtc,
-                command.Action == BrokerCommandAction.Close
-                    ? "broker_reconciliation_close_correlation_not_proven"
-                    : "broker_reconciliation_semantics_not_proven");
+                command.Action switch
+                {
+                    BrokerCommandAction.ModifyProtection =>
+                        "broker_reconciliation_protection_correlation_not_proven",
+                    BrokerCommandAction.Cancel =>
+                        "broker_reconciliation_cancel_correlation_not_proven",
+                    BrokerCommandAction.Close =>
+                        "broker_reconciliation_close_correlation_not_proven",
+                    _ => "broker_reconciliation_semantics_not_proven"
+                });
         }
 
         if (reported!.Match != derived)
@@ -87,6 +92,7 @@ public static class BrokerCommandReconciliationValidator
             || claim.QueryWindowStartUtc.Offset != TimeSpan.Zero
             || claim.MustBeginByUtc.Offset != TimeSpan.Zero
             || claim.MustCompleteByUtc.Offset != TimeSpan.Zero
+            || claim.AuthorityNowUtc.Offset != TimeSpan.Zero
             || observation.WindowStartUtc.Offset != TimeSpan.Zero
             || observation.WindowEndUtc.Offset != TimeSpan.Zero
             || observation.WindowStartUtc != claim.QueryWindowStartUtc
@@ -95,6 +101,7 @@ public static class BrokerCommandReconciliationValidator
             || claim.StartedAtUtc > observation.WindowEndUtc
             || observation.WindowEndUtc > receivedAtUtc
             || receivedAtUtc < claim.StartedAtUtc
+            || receivedAtUtc < claim.AuthorityNowUtc
             || receivedAtUtc > claim.ClaimExpiresAtUtc
             || receivedAtUtc > claim.MustCompleteByUtc
             || claim.ClaimToken == Guid.Empty
@@ -297,73 +304,6 @@ public static class BrokerCommandReconciliationValidator
         }
 
         return BrokerReconciliationMatch.Inconclusive;
-    }
-
-    private static BrokerReconciliationMatch DeriveProtection(
-        NormalizedBrokerCommand command,
-        BrokerReconciliationSnapshot snapshot,
-        BrokerCommandReconciliation reported)
-    {
-        if (reported.OrderId is not null
-            || reported.DealId is not null
-            || command.TargetBrokerId is null
-            || command.ExpectedTargetVolume is null
-            || (command.StopLoss == command.ExpectedTargetStopLoss
-                && command.TakeProfit == command.ExpectedTargetTakeProfit))
-        {
-            return BrokerReconciliationMatch.Inconclusive;
-        }
-
-        bool proven = command.TargetKind switch
-        {
-            BrokerCommandTargetKind.Position => snapshot.Positions.Count(position =>
-                position.PositionId == command.TargetBrokerId
-                && position.Symbol == command.Symbol
-                && position.Side == command.Side
-                && position.OwnershipTag == command.OwnershipTag
-                && position.Volume == command.ExpectedTargetVolume
-                && position.StopLoss == command.StopLoss
-                && position.TakeProfit == command.TakeProfit) == 1,
-            BrokerCommandTargetKind.PendingOrder => snapshot.Orders.Count(order =>
-                order.OrderId == command.TargetBrokerId
-                && order.Symbol == command.Symbol
-                && order.Side == command.Side
-                && order.OrderType == command.OrderType
-                && order.OwnershipTag == command.OwnershipTag
-                && order.RemainingVolume == command.ExpectedTargetVolume
-                && order.StopLoss == command.StopLoss
-                && order.TakeProfit == command.TakeProfit
-                && IsStatus(order.Status, "pending", "placed", "partially_filled")) == 1,
-            _ => false
-        };
-        return proven
-            ? BrokerReconciliationMatch.Acknowledged
-            : BrokerReconciliationMatch.Inconclusive;
-    }
-
-    private static BrokerReconciliationMatch DeriveCancellation(
-        NormalizedBrokerCommand command,
-        BrokerReconciliationSnapshot snapshot,
-        BrokerCommandReconciliation reported)
-    {
-        if (command.TargetKind != BrokerCommandTargetKind.PendingOrder
-            || command.TargetBrokerId is null
-            || reported.OrderId != command.TargetBrokerId
-            || reported.DealId is not null)
-        {
-            return BrokerReconciliationMatch.Inconclusive;
-        }
-
-        bool proven = snapshot.Orders.Count(order =>
-            order.OrderId == command.TargetBrokerId
-            && order.Symbol == command.Symbol
-            && order.Side == command.Side
-            && order.OrderType == command.OrderType
-            && order.OwnershipTag == command.OwnershipTag
-            && IsStatus(order.Status, "cancelled")) == 1;
-        return proven
-            ? BrokerReconciliationMatch.Cancelled
-            : BrokerReconciliationMatch.Inconclusive;
     }
 
     private static bool MatchesPlacedOrder(

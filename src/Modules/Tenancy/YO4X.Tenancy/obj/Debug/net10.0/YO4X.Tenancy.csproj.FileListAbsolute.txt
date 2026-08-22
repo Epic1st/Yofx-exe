@@ -1,0 +1,15 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\bin\Debug\net10.0\YO4X.Tenancy.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\bin\Debug\net10.0\YO4X.Tenancy.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\bin\Debug\net10.0\YO4X.Tenancy.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\bin\Debug\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\bin\Debug\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\YO4X.Tenancy.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\YO4X.Tenancy.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\YO4X.Tenancy.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\YO4X.Tenancy.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\YO4X.Tenancy.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\YO4X.Ten.ED4CC30F.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\YO4X.Tenancy.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\refint\YO4X.Tenancy.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\YO4X.Tenancy.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Tenancy\YO4X.Tenancy\obj\Debug\net10.0\ref\YO4X.Tenancy.dll

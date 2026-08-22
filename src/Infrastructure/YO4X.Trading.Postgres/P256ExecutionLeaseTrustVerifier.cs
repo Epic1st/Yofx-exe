@@ -55,6 +55,13 @@ public sealed class P256ExecutionLeaseTrustVerifier : IExecutionLeaseTrustVerifi
                         Convert.ToHexString(SHA256.HashData(keyBytes)).ToLowerInvariant()));
                 keyBytes = [];
             }
+            catch (CryptographicException exception)
+            {
+                throw new ArgumentException(
+                    "Each execution-lease trust key must be an exact P-256 SPKI key.",
+                    nameof(trustedSubjectPublicKeys),
+                    exception);
+            }
             finally
             {
                 CryptographicOperations.ZeroMemory(keyBytes);

@@ -534,6 +534,28 @@ revoke all privileges on governance.strategy_version_source_bindings,
     audit.audit_events
     from yo4x_trade_authorizer, yo4x_gateway_runtime;
 
+-- Reapplication is subtractive as well as additive: stale grants from an
+-- earlier role layout must never collapse authorization and dispatch authority.
+revoke execute on function control.authorize_broker_command(
+    uuid, uuid, uuid, uuid, bigint, uuid, uuid, uuid, uuid,
+    text, text, text, text, text, text, text, text, text, bigint,
+    bytea, bytea, text, bigint, text,
+    timestamptz, timestamptz, timestamptz, timestamptz, timestamptz,
+    timestamptz, timestamptz, timestamptz, bytea, bytea, timestamptz,
+    bytea, text, timestamptz, timestamptz, bytea, uuid)
+    from yo4x_gateway_runtime;
+
+revoke execute on function control.claim_authorized_broker_command(
+    uuid, text, text, uuid, uuid),
+    control.record_broker_command_submission(
+        uuid, text, uuid, text, text, text, text, text, bytea, timestamptz, uuid),
+    control.recover_expired_broker_command_lifecycle(uuid, text, uuid),
+    control.begin_broker_command_reconciliation(uuid, text, uuid, uuid),
+    control.complete_broker_command_reconciliation(
+        uuid, text, uuid, uuid, text, text, text, bytea, text, text,
+        timestamptz, uuid)
+    from yo4x_trade_authorizer;
+
 grant execute on function control.authorize_broker_command(
     uuid, uuid, uuid, uuid, bigint, uuid, uuid, uuid, uuid,
     text, text, text, text, text, text, text, text, text, bigint,

@@ -946,6 +946,19 @@ language plpgsql
 set search_path = ''
 as $$
 begin
+    if tg_op = 'INSERT' then
+        if new.state in
+        (
+            'demo_approved', 'live_candidate', 'live_approved', 'published'
+        ) then
+            raise exception using
+                errcode = '42501',
+                message = 'Executable strategy versions must enter through the protected verification capability.';
+        end if;
+
+        return new;
+    end if;
+
     if new.state in ('demo_approved', 'live_candidate', 'live_approved', 'published')
         and old.state is distinct from new.state
         and
@@ -989,7 +1002,7 @@ end
 $$;
 
 create trigger strategy_versions_immutable_content
-before update on governance.strategy_versions
+before insert or update on governance.strategy_versions
 for each row execute function governance.reject_strategy_version_content_mutation();
 
 -- A strategy package is not executable merely because source bytes were
@@ -1816,6 +1829,8 @@ create table operations.broker_commands
         (length(btrim(execution_lease_signing_key_id)) between 1 and 500),
     execution_lease_trusted_verification_key_sha256 text not null check
         (execution_lease_trusted_verification_key_sha256 ~ '^[0-9a-f]{64}$'),
+    signed_execution_lease_content bytea not null check
+        (octet_length(signed_execution_lease_content) between 2 and 65536),
     contract_version integer not null check (contract_version > 0),
     idempotency_key text not null check (length(btrim(idempotency_key)) between 1 and 200),
     action_class text not null check
@@ -1936,6 +1951,11 @@ create table operations.broker_commands
     ),
     check (authorization_document = convert_from(authorization_content, 'UTF8')::jsonb),
     check (authorization_sha256 = encode(pg_catalog.sha256(authorization_content), 'hex')),
+    check
+    (
+        execution_lease_token_sha256 =
+            encode(pg_catalog.sha256(signed_execution_lease_content), 'hex')
+    ),
     check
     (
         reconciliation_document = convert_from(reconciliation_content, 'UTF8')::jsonb
@@ -3567,12 +3587,25 @@ create table readmodel.deployment_health
 -- serializing unrelated tenants. Every boundary acquires before row locks.
 create function control.acquire_u0_tenant_authority_lock(target_tenant_id uuid)
 returns void
-language sql
+language plpgsql
 volatile
 set search_path = ''
 as $$
-    select pg_catalog.pg_advisory_xact_lock(
-        pg_catalog.hashtextextended('yo4x:u0:tenant:' || target_tenant_id::text, 0))
+begin
+    if target_tenant_id is null then
+        raise exception using
+            errcode = '42501',
+            message = 'A tenant identifier is required for U0 authority locking.';
+    end if;
+
+    -- Every tenant authority writer/read-boundary first holds the shared global
+    -- compatibility lock. A later global write in the same transaction is
+    -- rejected by lock_u0_global_authority_mutation instead of attempting an
+    -- unsafe shared-to-exclusive upgrade.
+    perform pg_catalog.pg_advisory_xact_lock_shared(1498897460, 1);
+    perform pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended('yo4x:u0:tenant:' || target_tenant_id::text, 0));
+end
 $$;
 
 create function control.acquire_u0_authority_lock()
@@ -3590,10 +3623,7 @@ begin
             message = 'A tenant context is required for U0 authority locking.';
     end if;
 
-    -- Global compatibility evidence is always locked before tenant authority.
-    -- Global writers that later touch tenant state therefore use the same
-    -- global-to-tenant order and cannot invert this boundary's lock sequence.
-    perform pg_catalog.pg_advisory_xact_lock_shared(1498897460, 1);
+    -- The tenant helper owns the single global-to-tenant ordering rule.
     perform control.acquire_u0_tenant_authority_lock(target_tenant_id);
 end
 $$;
@@ -5420,6 +5450,7 @@ begin
         execution_lease_payload_sha256, execution_lease_signature_sha256,
         execution_lease_signature_algorithm, execution_lease_signing_key_id,
         execution_lease_trusted_verification_key_sha256,
+        signed_execution_lease_content,
         contract_version, idempotency_key, action_class,
         execution_safety_overlay_sha256,
         execution_safety_policy_version_watermark,
@@ -5441,6 +5472,7 @@ begin
         locked_lease.lease_payload_sha256, locked_lease.lease_signature_sha256,
         locked_lease.signature_algorithm, locked_lease.signing_key_id,
         target_execution_lease_trusted_verification_key_sha256,
+        locked_lease.signed_envelope_content,
         (normalized_command ->> 'contractVersion')::integer,
         target_idempotency_key, target_action_class,
         resolved_overlay.effective_overlay_sha256,
@@ -5522,6 +5554,7 @@ returns table
     exposure_valid_until timestamptz,
     risk_evaluated_at timestamptz,
     risk_authorization_expires_at timestamptz,
+    authority_now_at_claim timestamptz,
     claim_expires_at timestamptz,
     command_version bigint,
     replayed boolean
@@ -5795,7 +5828,7 @@ begin
         command_id := locked_command.id;
         normalized_command_content := locked_command.normalized_command_content;
         authorization_content := locked_command.authorization_content;
-        signed_execution_lease_content := locked_lease.signed_envelope_content;
+        signed_execution_lease_content := locked_command.signed_execution_lease_content;
         authorization_sha256 := locked_command.authorization_sha256;
         exposure_oldest_observed_at := least(
             locked_exposure.quote_as_of, locked_exposure.account_as_of,
@@ -5806,6 +5839,7 @@ begin
         exposure_valid_until := locked_exposure.valid_until;
         risk_evaluated_at := locked_risk.evaluated_at;
         risk_authorization_expires_at := locked_risk.authorization_expires_at;
+        authority_now_at_claim := authority_now;
         claim_expires_at := locked_command.dispatch_claim_expires_at;
         command_version := locked_command.row_version;
         replayed := true;
@@ -5871,7 +5905,7 @@ begin
     command_id := locked_command.id;
     normalized_command_content := locked_command.normalized_command_content;
     authorization_content := locked_command.authorization_content;
-    signed_execution_lease_content := locked_lease.signed_envelope_content;
+    signed_execution_lease_content := locked_command.signed_execution_lease_content;
     authorization_sha256 := locked_command.authorization_sha256;
     exposure_oldest_observed_at := least(
         locked_exposure.quote_as_of, locked_exposure.account_as_of,
@@ -5882,6 +5916,7 @@ begin
     exposure_valid_until := locked_exposure.valid_until;
     risk_evaluated_at := locked_risk.evaluated_at;
     risk_authorization_expires_at := locked_risk.authorization_expires_at;
+    authority_now_at_claim := authority_now;
     claim_expires_at := target_claim_expires_at;
     command_version := locked_command.row_version + 1;
     replayed := false;
@@ -5924,6 +5959,7 @@ declare
     locked_deployment operations.deployments%rowtype;
     locked_assignment operations.worker_assignments%rowtype;
     locked_lease operations.execution_leases%rowtype;
+    locked_gateway governance.gateway_artifacts%rowtype;
     locked_command operations.broker_commands%rowtype;
     result_document jsonb;
     calculated_result_sha256 text;
@@ -6025,11 +6061,24 @@ begin
       and broker_command.id = target_command_id
     for update;
 
+    if locked_command.id is not null
+        and locked_command.authorization_document ->> 'gatewayArtifactId' is not null
+        and locked_command.authorization_document ->> 'gatewayArtifactSha256' is not null then
+        select gateway.* into locked_gateway
+        from governance.gateway_artifacts as gateway
+        where gateway.id =
+                (locked_command.authorization_document ->> 'gatewayArtifactId')::uuid
+          and gateway.sha256 =
+                locked_command.authorization_document ->> 'gatewayArtifactSha256'
+        for share;
+    end if;
+
     if locked_command.id is null
         or locked_account.id is null
         or locked_deployment.id is null
         or locked_assignment.id is null
         or locked_lease.id is null
+        or locked_gateway.id is null
         or locked_command.authorization_sha256 <> target_authorization_sha256
         or locked_command.dispatch_claim_token is distinct from target_claim_token
         or locked_command.dispatch_claimed_by is distinct from control.current_actor_id()
@@ -6339,6 +6388,7 @@ returns table
     reconciliation_scope_sha256 text,
     must_begin_by timestamptz,
     must_complete_by timestamptz,
+    authority_now_at_claim timestamptz,
     claim_expires_at timestamptz,
     claim_attempt integer,
     send_disposition text,
@@ -6362,6 +6412,7 @@ declare
     locked_deployment operations.deployments%rowtype;
     locked_assignment operations.worker_assignments%rowtype;
     locked_lease operations.execution_leases%rowtype;
+    locked_gateway governance.gateway_artifacts%rowtype;
     locked_exposure operations.broker_exposure_snapshots%rowtype;
     locked_risk operations.broker_command_risk_decisions%rowtype;
     locked_command operations.broker_commands%rowtype;
@@ -6437,15 +6488,36 @@ begin
       and broker_command.id = target_command_id
     for update;
 
+    if locked_command.id is not null
+        and locked_command.authorization_document ->> 'gatewayArtifactId' is not null
+        and locked_command.authorization_document ->> 'gatewayArtifactSha256' is not null then
+        select gateway.* into locked_gateway
+        from governance.gateway_artifacts as gateway
+        where gateway.id =
+                (locked_command.authorization_document ->> 'gatewayArtifactId')::uuid
+          and gateway.sha256 =
+                locked_command.authorization_document ->> 'gatewayArtifactSha256'
+        for share;
+    end if;
+
     authority_now := clock_timestamp();
     if locked_command.id is null
         or locked_account.id is null
         or locked_deployment.id is null
         or locked_assignment.id is null
         or locked_lease.id is null
+        or locked_gateway.id is null
         or locked_exposure.id is null
         or locked_risk.id is null
-        or locked_lease.signed_envelope_content is null
+        or locked_command.signed_execution_lease_content is null
+        or encode(
+            pg_catalog.sha256(locked_command.signed_execution_lease_content), 'hex') <>
+            locked_command.execution_lease_token_sha256
+        or locked_gateway.signature_state <> 'valid'
+        or locked_gateway.state not in ('demo_canary', 'pilot', 'approved')
+        or locked_gateway.provenance = '{}'::jsonb
+        or locked_gateway.licence_evidence = '{}'::jsonb
+        or locked_gateway.network_evidence = '{}'::jsonb
         or locked_command.authorization_sha256 <> target_authorization_sha256
         or locked_command.send_started_at is null
         or control.current_actor_id() is distinct from locked_lease.gateway_host_workload_id
@@ -6464,7 +6536,7 @@ begin
         command_id := locked_command.id;
         normalized_command_content := locked_command.normalized_command_content;
         authorization_content := locked_command.authorization_content;
-        signed_execution_lease_content := locked_lease.signed_envelope_content;
+        signed_execution_lease_content := locked_command.signed_execution_lease_content;
         authorization_sha256 := locked_command.authorization_sha256;
         exposure_oldest_observed_at := least(
             locked_exposure.quote_as_of, locked_exposure.account_as_of,
@@ -6478,6 +6550,7 @@ begin
         reconciliation_scope_sha256 := locked_command.reconciliation_scope_sha256;
         must_begin_by := locked_command.reconciliation_must_begin_by;
         must_complete_by := locked_command.reconciliation_must_complete_by;
+        authority_now_at_claim := authority_now;
         claim_expires_at := locked_command.reconciliation_claim_expires_at;
         claim_attempt := locked_command.reconciliation_claim_attempt_count;
         send_disposition := locked_command.send_disposition;
@@ -6562,7 +6635,7 @@ begin
     command_id := locked_command.id;
     normalized_command_content := locked_command.normalized_command_content;
     authorization_content := locked_command.authorization_content;
-    signed_execution_lease_content := locked_lease.signed_envelope_content;
+    signed_execution_lease_content := locked_command.signed_execution_lease_content;
     authorization_sha256 := locked_command.authorization_sha256;
     exposure_oldest_observed_at := least(
         locked_exposure.quote_as_of, locked_exposure.account_as_of,
@@ -6576,6 +6649,7 @@ begin
     reconciliation_scope_sha256 := locked_command.reconciliation_scope_sha256;
     must_begin_by := locked_command.reconciliation_must_begin_by;
     must_complete_by := locked_command.reconciliation_must_complete_by;
+    authority_now_at_claim := authority_now;
     claim_expires_at := target_claim_expires_at;
     claim_attempt := locked_command.reconciliation_claim_attempt_count + 1;
     send_disposition := locked_command.send_disposition;
@@ -6628,6 +6702,7 @@ declare
     locked_assignment operations.worker_assignments%rowtype;
     locked_lease operations.execution_leases%rowtype;
     locked_exposure operations.broker_exposure_snapshots%rowtype;
+    locked_gateway governance.gateway_artifacts%rowtype;
     locked_command operations.broker_commands%rowtype;
     existing_reconciliation operations.broker_command_reconciliations%rowtype;
     result_document jsonb;
@@ -6743,12 +6818,30 @@ begin
       and broker_command.id = target_command_id
     for update;
 
+    if locked_command.id is not null
+        and locked_command.authorization_document ->> 'gatewayArtifactId' is not null
+        and locked_command.authorization_document ->> 'gatewayArtifactSha256' is not null then
+        select gateway.* into locked_gateway
+        from governance.gateway_artifacts as gateway
+        where gateway.id =
+                (locked_command.authorization_document ->> 'gatewayArtifactId')::uuid
+          and gateway.sha256 =
+                locked_command.authorization_document ->> 'gatewayArtifactSha256'
+        for share;
+    end if;
+
     if locked_command.id is null
         or locked_account.id is null
         or locked_deployment.id is null
         or locked_assignment.id is null
         or locked_lease.id is null
         or locked_exposure.id is null
+        or locked_gateway.id is null
+        or locked_gateway.signature_state <> 'valid'
+        or locked_gateway.state not in ('demo_canary', 'pilot', 'approved')
+        or locked_gateway.provenance = '{}'::jsonb
+        or locked_gateway.licence_evidence = '{}'::jsonb
+        or locked_gateway.network_evidence = '{}'::jsonb
         or locked_command.send_started_at is null
         or locked_command.authorization_sha256 <> target_authorization_sha256
         or locked_command.reconciliation_claim_token is distinct from
@@ -9082,12 +9175,34 @@ begin
         target_tenant_id := case when tg_op = 'DELETE' then old.tenant_id else new.tenant_id end;
     end if;
 
-    perform control.acquire_u0_tenant_authority_lock(target_tenant_id);
+    -- Row locks are already acquired before a BEFORE ROW trigger. The matching
+    -- BEFORE STATEMENT trigger therefore owns lock acquisition; this guard only
+    -- proves that RLS/current context kept the statement tenant-scoped.
+    if control.current_tenant_id() is null
+        or target_tenant_id is distinct from control.current_tenant_id() then
+        raise exception using
+            errcode = '42501',
+            message = 'Tenant authority mutation is outside the current tenant context.';
+    end if;
+
     if tg_op = 'DELETE' then
         return old;
     end if;
 
     return new;
+end
+$$;
+
+create function control.lock_u0_current_tenant_authority_statement()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+    -- BEFORE STATEMENT executes before PostgreSQL takes any target tuple lock,
+    -- preserving the single U0 -> row lock order used by authority functions.
+    perform control.acquire_u0_authority_lock();
+    return null;
 end
 $$;
 
@@ -9097,6 +9212,35 @@ language plpgsql
 set search_path = ''
 as $$
 begin
+    if exists
+    (
+        select 1
+        from pg_catalog.pg_locks as held_lock
+        where held_lock.locktype = 'advisory'
+          and held_lock.pid = pg_catalog.pg_backend_pid()
+          and held_lock.classid = 1498897460::oid
+          and held_lock.objid = 1::oid
+          and held_lock.objsubid = 2
+          and held_lock.mode = 'ShareLock'
+          and held_lock.granted
+    )
+    and not exists
+    (
+        select 1
+        from pg_catalog.pg_locks as held_lock
+        where held_lock.locktype = 'advisory'
+          and held_lock.pid = pg_catalog.pg_backend_pid()
+          and held_lock.classid = 1498897460::oid
+          and held_lock.objid = 1::oid
+          and held_lock.objsubid = 2
+          and held_lock.mode = 'ExclusiveLock'
+          and held_lock.granted
+    ) then
+        raise exception using
+            errcode = '25001',
+            message = 'Global authority mutations must precede tenant authority mutations in one transaction.';
+    end if;
+
     perform pg_catalog.pg_advisory_xact_lock(1498897460, 1);
     return null;
 end
@@ -9534,16 +9678,28 @@ begin
 end
 $$;
 
-create trigger tenants_u0_authority_lock
+create trigger tenants_a_u0_authority_statement_lock
+before insert or update or delete on identity.tenants
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger tenants_z_u0_authority_row_guard
 before insert or update or delete on identity.tenants
 for each row execute function control.lock_u0_tenant_authority_mutation();
-create trigger user_identities_u0_authority_lock
+create trigger user_identities_a_u0_authority_statement_lock
+before insert or update or delete on identity.user_identities
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger user_identities_z_u0_authority_row_guard
 before insert or update or delete on identity.user_identities
 for each row execute function control.lock_u0_tenant_authority_mutation();
-create trigger user_sessions_u0_authority_lock
+create trigger user_sessions_a_u0_authority_statement_lock
+before insert or update or delete on identity.user_session_families
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger user_sessions_z_u0_authority_row_guard
 before insert or update or delete on identity.user_session_families
 for each row execute function control.lock_u0_tenant_authority_mutation();
-create trigger broker_accounts_u0_authority_lock
+create trigger broker_accounts_a_u0_authority_statement_lock
+before insert or update or delete on operations.broker_accounts
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger broker_accounts_z_u0_authority_row_guard
 before insert or update or delete on operations.broker_accounts
 for each row execute function control.lock_u0_tenant_authority_mutation();
 -- PostgreSQL fires same-kind triggers by name; the z-prefix ensures U0 is
@@ -9551,13 +9707,22 @@ for each row execute function control.lock_u0_tenant_authority_mutation();
 create trigger broker_accounts_z_runtime_transition_guard
 before insert or update or delete on operations.broker_accounts
 for each row execute function operations.enforce_broker_account_runtime_transition();
-create trigger strategy_versions_u0_authority_lock
+create trigger strategy_versions_a_u0_authority_statement_lock
+before insert or update or delete on governance.strategy_versions
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger strategy_versions_z_u0_authority_row_guard
 before insert or update or delete on governance.strategy_versions
 for each row execute function control.lock_u0_tenant_authority_mutation();
-create trigger risk_policy_versions_u0_authority_lock
+create trigger risk_policy_versions_a_u0_authority_statement_lock
+before insert or update or delete on governance.risk_policy_versions
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger risk_policy_versions_z_u0_authority_row_guard
 before insert or update or delete on governance.risk_policy_versions
 for each row execute function control.lock_u0_tenant_authority_mutation();
-create trigger execution_policies_u0_authority_lock
+create trigger execution_policies_a_u0_authority_statement_lock
+before insert or update or delete on control.execution_safety_policies
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger execution_policies_z_u0_authority_row_guard
 before insert or update or delete on control.execution_safety_policies
 for each row execute function control.lock_u0_tenant_authority_mutation();
 create trigger broker_profiles_u0_authority_lock

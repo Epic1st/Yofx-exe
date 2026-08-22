@@ -45,6 +45,7 @@ public sealed class PostgresBrokerCommandLifecycleStore(
         return new ApplicationDispatchClaim(
             claim.Command,
             claim.ClaimToken,
+            claim.AuthorityNowUtc,
             claim.ClaimExpiresAtUtc,
             claim.CommandVersion,
             claim.Replayed);
@@ -63,6 +64,7 @@ public sealed class PostgresBrokerCommandLifecycleStore(
                 new DurableDispatchClaim(
                     claim.Command,
                     claim.ClaimToken,
+                    claim.AuthorityNowUtc,
                     claim.ClaimExpiresAtUtc,
                     claim.CommandVersion,
                     claim.Replayed),
@@ -113,6 +115,7 @@ public sealed class PostgresBrokerCommandLifecycleStore(
             claim.QueryWindowStartUtc,
             claim.MustBeginByUtc,
             claim.MustCompleteByUtc,
+            claim.AuthorityNowUtc,
             claim.ClaimExpiresAtUtc,
             claim.Attempt,
             claim.SendDisposition,

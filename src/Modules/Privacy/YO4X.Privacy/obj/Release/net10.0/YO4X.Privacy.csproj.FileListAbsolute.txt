@@ -1,0 +1,16 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\bin\Release\net10.0\YO4X.Privacy.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\bin\Release\net10.0\YO4X.Privacy.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\bin\Release\net10.0\YO4X.Privacy.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\bin\Release\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\bin\Release\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Privacy.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Privacy.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Privacy.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Privacy.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Privacy.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Pri.161E6213.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Privacy.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\refint\YO4X.Privacy.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Privacy.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\ref\YO4X.Privacy.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Privacy\YO4X.Privacy\obj\Release\net10.0\YO4X.Privacy.sourcelink.json

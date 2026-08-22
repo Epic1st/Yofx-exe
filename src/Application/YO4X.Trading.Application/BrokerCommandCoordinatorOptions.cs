@@ -8,7 +8,9 @@ public sealed record BrokerCommandCoordinatorOptions
 
     public TimeSpan DurableWriteTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
-    public TimeSpan MinimumAuthorityWindow { get; init; } = TimeSpan.FromMilliseconds(10);
+    public TimeSpan AuthoritySafetyMargin { get; init; } = TimeSpan.FromSeconds(1);
+
+    public TimeSpan MinimumAuthorityWindow { get; init; } = TimeSpan.FromSeconds(6);
 
     public void Validate()
     {
@@ -20,10 +22,22 @@ public sealed record BrokerCommandCoordinatorOptions
             TimeSpan.FromMinutes(2));
         RequireRange(DurableWriteTimeout, nameof(DurableWriteTimeout), TimeSpan.FromMilliseconds(10), TimeSpan.FromMinutes(1));
         RequireRange(
+            AuthoritySafetyMargin,
+            nameof(AuthoritySafetyMargin),
+            TimeSpan.FromMilliseconds(10),
+            TimeSpan.FromSeconds(30));
+        RequireRange(
             MinimumAuthorityWindow,
             nameof(MinimumAuthorityWindow),
-            TimeSpan.Zero,
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromMilliseconds(20),
+            TimeSpan.FromMinutes(2));
+        if (MinimumAuthorityWindow < GatewaySendTimeout + AuthoritySafetyMargin)
+        {
+            throw new ArgumentException(
+                "The minimum authority window must cover the full gateway send timeout "
+                + "and the explicit authority safety margin.",
+                nameof(MinimumAuthorityWindow));
+        }
     }
 
     private static void RequireRange(

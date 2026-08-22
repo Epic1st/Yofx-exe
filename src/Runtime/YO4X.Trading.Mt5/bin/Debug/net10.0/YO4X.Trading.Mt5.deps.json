@@ -1,0 +1,69 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "YO4X.Trading.Mt5/1.0.0": {
+        "dependencies": {
+          "YO4X.Trading.Abstractions": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.Trading.Mt5.dll": {}
+        }
+      },
+      "YO4X.BuildingBlocks/1.0.0": {
+        "runtime": {
+          "YO4X.BuildingBlocks.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.Runtime.Contracts/1.0.0": {
+        "runtime": {
+          "YO4X.Runtime.Contracts.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "YO4X.Trading.Abstractions/1.0.0": {
+        "dependencies": {
+          "YO4X.BuildingBlocks": "1.0.0",
+          "YO4X.Runtime.Contracts": "1.0.0"
+        },
+        "runtime": {
+          "YO4X.Trading.Abstractions.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "YO4X.Trading.Mt5/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.BuildingBlocks/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.Runtime.Contracts/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YO4X.Trading.Abstractions/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

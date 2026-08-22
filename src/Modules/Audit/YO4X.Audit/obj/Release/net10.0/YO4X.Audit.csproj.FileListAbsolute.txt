@@ -1,0 +1,16 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\bin\Release\net10.0\YO4X.Audit.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\bin\Release\net10.0\YO4X.Audit.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\bin\Release\net10.0\YO4X.Audit.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\bin\Release\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\bin\Release\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.csproj.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\refint\YO4X.Audit.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\ref\YO4X.Audit.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Audit\YO4X.Audit\obj\Release\net10.0\YO4X.Audit.sourcelink.json

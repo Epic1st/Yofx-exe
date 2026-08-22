@@ -366,7 +366,7 @@ public sealed class PostgresSourceContractTests
         string guard = RemoveWhitespaceAroundLineBreaks(Slice(
             migration,
             "create function operations.enforce_broker_account_runtime_transition",
-            "create trigger tenants_u0_authority_lock"));
+            "create trigger tenants_a_u0_authority_statement_lock"));
         string indexes = RemoveWhitespaceAroundLineBreaks(Slice(
             migration,
             "create index credential_ingestion_account_idx",

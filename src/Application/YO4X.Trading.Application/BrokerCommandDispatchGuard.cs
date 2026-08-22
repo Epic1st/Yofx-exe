@@ -31,6 +31,7 @@ internal static class BrokerCommandDispatchGuard
             capability.Reconciliation.MustBeginByUtc,
             capability.Reconciliation.MustCompleteByUtc);
         if (now.Offset != TimeSpan.Zero
+            || claim.AuthorityNowUtc.Offset != TimeSpan.Zero
             || claim.ClaimExpiresAtUtc.Offset != TimeSpan.Zero
             || capability.Exposure.ValidUntilUtc.Offset != TimeSpan.Zero
             || claims.NotBeforeUtc.Offset != TimeSpan.Zero
@@ -62,7 +63,9 @@ internal static class BrokerCommandDispatchGuard
             return "broker_command_dispatch_binding_invalid";
         }
 
-        if (now < claims.NotBeforeUtc
+        if (claim.AuthorityNowUtc > now
+            || claim.AuthorityNowUtc >= claim.ClaimExpiresAtUtc
+            || now < claims.NotBeforeUtc
             || command.CreatedAtUtc > now
             || deadline <= now
             || deadline - now < minimumAuthorityWindow)

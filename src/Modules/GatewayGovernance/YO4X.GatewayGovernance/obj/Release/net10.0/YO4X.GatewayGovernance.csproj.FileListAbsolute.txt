@@ -1,0 +1,16 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\bin\Release\net10.0\YO4X.GatewayGovernance.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\bin\Release\net10.0\YO4X.GatewayGovernance.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\bin\Release\net10.0\YO4X.GatewayGovernance.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\bin\Release\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\bin\Release\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.GatewayGovernance.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.GatewayGovernance.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.GatewayGovernance.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.GatewayGovernance.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.GatewayGovernance.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.Gat.92E7DFCB.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.GatewayGovernance.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\refint\YO4X.GatewayGovernance.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.GatewayGovernance.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\ref\YO4X.GatewayGovernance.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\GatewayGovernance\YO4X.GatewayGovernance\obj\Release\net10.0\YO4X.GatewayGovernance.sourcelink.json

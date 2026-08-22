@@ -1,0 +1,16 @@
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\bin\Release\net10.0\YO4X.Api.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\bin\Release\net10.0\YO4X.Api.dll
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\bin\Release\net10.0\YO4X.Api.pdb
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\bin\Release\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\bin\Release\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.csproj.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.dll
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\refint\YO4X.Api.dll
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.pdb
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\ref\YO4X.Api.dll
+C:\Users\Dev23\Desktop\yo4x\src\BuildingBlocks\YO4X.Api\obj\Release\net10.0\YO4X.Api.sourcelink.json

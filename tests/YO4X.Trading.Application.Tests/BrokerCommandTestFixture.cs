@@ -235,6 +235,7 @@ internal static class BrokerCommandTestFixture
         DateTimeOffset? expiresAt = null) => new(
             command,
             Guid.Parse("30000000-0000-0000-0000-000000000001"),
+            Now,
             expiresAt ?? Now.AddSeconds(30),
             2,
             replayed);
@@ -249,6 +250,7 @@ internal static class BrokerCommandTestFixture
             command.Command.CreatedAtUtc,
             command.Reconciliation.MustBeginByUtc,
             command.Reconciliation.MustCompleteByUtc,
+            Now,
             claimExpiresAt ?? Now.AddMinutes(2),
             1,
             "accepted",

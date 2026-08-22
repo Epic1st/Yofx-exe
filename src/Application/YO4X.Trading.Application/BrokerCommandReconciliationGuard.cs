@@ -30,11 +30,14 @@ internal static class BrokerCommandReconciliationGuard
             || claim.StartedAtUtc.Offset != TimeSpan.Zero
             || claim.MustBeginByUtc.Offset != TimeSpan.Zero
             || claim.MustCompleteByUtc.Offset != TimeSpan.Zero
+            || claim.AuthorityNowUtc.Offset != TimeSpan.Zero
             || claim.ClaimExpiresAtUtc.Offset != TimeSpan.Zero
             || claim.QueryWindowStartUtc < command.CreatedAtUtc
             || claim.QueryWindowStartUtc > claim.StartedAtUtc
             || claim.StartedAtUtc > now
             || claim.StartedAtUtc > claim.MustBeginByUtc
+            || claim.AuthorityNowUtc > now
+            || claim.AuthorityNowUtc >= claim.ClaimExpiresAtUtc
             || claim.ClaimExpiresAtUtc <= now
             || claim.ClaimExpiresAtUtc > claim.MustCompleteByUtc
             || claim.MustCompleteByUtc <= now)

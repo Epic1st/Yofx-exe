@@ -1,0 +1,15 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\bin\Debug\net10.0\YO4X.Commands.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\bin\Debug\net10.0\YO4X.Commands.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\bin\Debug\net10.0\YO4X.Commands.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\bin\Debug\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\bin\Debug\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\YO4X.Commands.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\YO4X.Commands.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\YO4X.Commands.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\YO4X.Commands.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\YO4X.Commands.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\YO4X.Com.E6B1E3CB.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\YO4X.Commands.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\refint\YO4X.Commands.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\YO4X.Commands.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\Commands\YO4X.Commands\obj\Debug\net10.0\ref\YO4X.Commands.dll

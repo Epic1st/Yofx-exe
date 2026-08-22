@@ -1,0 +1,16 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\bin\Release\net10.0\YO4X.StrategyGovernance.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\bin\Release\net10.0\YO4X.StrategyGovernance.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\bin\Release\net10.0\YO4X.StrategyGovernance.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\bin\Release\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\bin\Release\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.StrategyGovernance.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.StrategyGovernance.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.StrategyGovernance.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.StrategyGovernance.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.StrategyGovernance.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.Str.3F6537D3.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.StrategyGovernance.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\refint\YO4X.StrategyGovernance.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.StrategyGovernance.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\ref\YO4X.StrategyGovernance.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\StrategyGovernance\YO4X.StrategyGovernance\obj\Release\net10.0\YO4X.StrategyGovernance.sourcelink.json

@@ -1,0 +1,12 @@
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\bin\Release\net10.0\YO4X.Runtime.Contracts.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\bin\Release\net10.0\YO4X.Runtime.Contracts.dll
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\bin\Release\net10.0\YO4X.Runtime.Contracts.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\YO4X.Runtime.Contracts.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\YO4X.Runtime.Contracts.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\YO4X.Runtime.Contracts.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\YO4X.Runtime.Contracts.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\YO4X.Runtime.Contracts.dll
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\refint\YO4X.Runtime.Contracts.dll
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\YO4X.Runtime.Contracts.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\ref\YO4X.Runtime.Contracts.dll
+C:\Users\Dev23\Desktop\yo4x\src\Runtime\YO4X.Runtime.Contracts\obj\Release\net10.0\YO4X.Runtime.Contracts.sourcelink.json

@@ -100,12 +100,6 @@ public sealed class BrokerCommandAuthorizationPostgresTests(PostgresContainerFix
                 Guid.CreateVersion7());
         Assert.False(claim.Replayed);
 
-        BrokerCommandAuthorizationReceipt replay = await store.AuthorizeAsync(
-            authorizerContext,
-            request);
-        Assert.True(replay.Replayed);
-        Assert.Equal(authorization.AuthorizationSha256, replay.AuthorizationSha256);
-
         YO4X.Trading.Application.BrokerCommandDispatchClaim claimReplay =
             await lifecycle.ClaimForDispatchAsync(
                 gatewayContext,
@@ -129,6 +123,12 @@ public sealed class BrokerCommandAuthorizationPostgresTests(PostgresContainerFix
                 Guid.CreateVersion7());
         Assert.Equal("unknown", submission.State);
 
+        BrokerCommandAuthorizationReceipt replay = await store.AuthorizeAsync(
+            authorizerContext,
+            request);
+        Assert.True(replay.Replayed);
+        Assert.Equal(authorization.AuthorizationSha256, replay.AuthorizationSha256);
+
         Guid reconciliationClaim = Guid.CreateVersion7();
         YO4X.Trading.Application.BrokerCommandReconciliationClaim reconciliation =
             await lifecycle.BeginReconciliationAsync(
@@ -138,6 +138,43 @@ public sealed class BrokerCommandAuthorizationPostgresTests(PostgresContainerFix
                 reconciliationClaim,
                 Guid.CreateVersion7());
         Assert.True(reconciliation.ClaimExpiresAtUtc > reconciliation.StartedAtUtc);
+
+        DateTimeOffset unavailableAt = UtcNow();
+        var unavailableObservation =
+            new YO4X.Trading.Application.BrokerCommandReconciliationObservation(
+                null,
+                Digest("reconciliation-attempt-unavailable"),
+                reconciliation.QueryWindowStartUtc,
+                unavailableAt,
+                null);
+        YO4X.Trading.Application.ValidatedBrokerCommandReconciliation inconclusive =
+            YO4X.Trading.Application.BrokerCommandReconciliationValidator.Validate(
+                reconciliation,
+                unavailableObservation,
+                unavailableAt);
+        Assert.False(inconclusive.IsConclusive);
+        Assert.Null(inconclusive.SourceSequence);
+        Assert.Null(inconclusive.Snapshot);
+        YO4X.Trading.Application.BrokerCommandLifecycleReceipt inconclusiveReceipt =
+            await lifecycle.CompleteReconciliationAsync(
+                gatewayContext,
+                reconciliationClaim,
+                Guid.CreateVersion7(),
+                inconclusive,
+                Guid.CreateVersion7());
+        Assert.Equal("unknown", inconclusiveReceipt.State);
+
+        reconciliationClaim = Guid.CreateVersion7();
+        reconciliation = await lifecycle.BeginReconciliationAsync(
+            gatewayContext,
+            request.Command.CommandId,
+            authorization.AuthorizationSha256,
+            reconciliationClaim,
+            Guid.CreateVersion7());
+        Assert.Equal(2, reconciliation.Attempt);
+        Assert.Equal(
+            unavailableObservation.WindowStartUtc,
+            reconciliation.QueryWindowStartUtc);
 
         DateTimeOffset observedAt = UtcNow();
         var snapshot = new BrokerReconciliationSnapshot(
@@ -1061,8 +1098,8 @@ public sealed class BrokerCommandAuthorizationPostgresTests(PostgresContainerFix
         Assert.Equal("reconciled", reader.GetString(0));
         Assert.Equal(1L, reader.GetInt64(1));
         Assert.Equal(1L, reader.GetInt64(2));
-        Assert.Equal(1L, reader.GetInt64(3));
-        Assert.Equal(5L, reader.GetInt64(4));
+        Assert.Equal(2L, reader.GetInt64(3));
+        Assert.Equal(7L, reader.GetInt64(4));
     }
 
     private static async Task AssertRawAuthorizerTableReadRejectedAsync(

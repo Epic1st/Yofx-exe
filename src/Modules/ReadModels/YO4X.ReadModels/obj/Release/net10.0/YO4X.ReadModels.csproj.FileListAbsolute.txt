@@ -1,0 +1,16 @@
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\bin\Release\net10.0\YO4X.ReadModels.deps.json
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\bin\Release\net10.0\YO4X.ReadModels.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\bin\Release\net10.0\YO4X.ReadModels.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\bin\Release\net10.0\YO4X.BuildingBlocks.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\bin\Release\net10.0\YO4X.BuildingBlocks.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.ReadModels.csproj.AssemblyReference.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.ReadModels.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.ReadModels.AssemblyInfoInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.ReadModels.AssemblyInfo.cs
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.ReadModels.csproj.CoreCompileInputs.cache
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.Rea.C2D199D8.Up2Date
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.ReadModels.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\refint\YO4X.ReadModels.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.ReadModels.pdb
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\ref\YO4X.ReadModels.dll
+C:\Users\Dev23\Desktop\yo4x\src\Modules\ReadModels\YO4X.ReadModels\obj\Release\net10.0\YO4X.ReadModels.sourcelink.json
