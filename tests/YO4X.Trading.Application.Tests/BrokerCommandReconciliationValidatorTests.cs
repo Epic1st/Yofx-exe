@@ -1,3 +1,4 @@
+using System.Collections;
 using YO4X.BuildingBlocks;
 using YO4X.Trading.Abstractions;
 using YO4X.Trading.Application;
@@ -6,6 +7,192 @@ namespace YO4X.Trading.Application.Tests;
 
 public sealed class BrokerCommandReconciliationValidatorTests
 {
+    [Fact]
+    public void SnapshotNormalizationRejectsOversizedCustomListBeforeIndexOrEnumeration()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        BrokerReconciliationSnapshot baseline = PlaceAcknowledgedSnapshot(
+            command,
+            claim,
+            command.Exposure.SourceSequence + 1);
+        var positions = new HostileReadOnlyList<BrokerPositionSnapshot>(10_001, null, true);
+        BrokerReconciliationSnapshot snapshot = baseline with { Positions = positions };
+
+        Assert.Throws<ArgumentException>(() =>
+            BrokerCommandLifecycleEvidence.NormalizeSnapshot(snapshot));
+        Assert.Equal(0, positions.IndexerCalls);
+        Assert.Equal(0, positions.EnumeratorCalls);
+    }
+
+    [Fact]
+    public void SnapshotNormalizationCopiesByBoundedIndexWithoutUsingHostileEnumerator()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        BrokerReconciliationSnapshot baseline = PlaceAcknowledgedSnapshot(
+            command,
+            claim,
+            command.Exposure.SourceSequence + 1);
+        var orders = new HostileReadOnlyList<BrokerOrderSnapshot>(
+            1,
+            baseline.Orders[0],
+            throwOnIndex: false);
+        BrokerReconciliationSnapshot snapshot = baseline with { Orders = orders };
+
+        BrokerReconciliationSnapshot normalized =
+            BrokerCommandLifecycleEvidence.NormalizeSnapshot(snapshot);
+
+        Assert.Single(normalized.Orders);
+        Assert.True(orders.IndexerCalls >= 2);
+        Assert.Equal(0, orders.EnumeratorCalls);
+    }
+
+    [Fact]
+    public void ValidatorRejectsOversizedGatewayTextBeforeCanonicalHashing()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        BrokerReconciliationSnapshot baseline = PlaceAcknowledgedSnapshot(
+            command,
+            claim,
+            command.Exposure.SourceSequence + 1);
+        BrokerReconciliationSnapshot snapshot = baseline with
+        {
+            Account = baseline.Account with { BrokerCompany = new string('x', 201) }
+        };
+        var observation = new BrokerCommandReconciliationObservation(
+            snapshot.SourceSequence,
+            new string('a', 64),
+            snapshot.QueryWindowStartUtc,
+            snapshot.QueryWindowEndUtc,
+            snapshot);
+
+        ValidatedBrokerCommandReconciliation result =
+            BrokerCommandReconciliationValidator.Validate(
+                claim,
+                observation,
+                snapshot.CompletedAtUtc);
+
+        Assert.Equal("broker_reconciliation_snapshot_shape_invalid", result.ReasonCode);
+        Assert.Null(result.Snapshot);
+    }
+
+    [Theory]
+    [InlineData("not-a-digest")]
+    [InlineData("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")]
+    public void ValidatorReplacesUnvalidatedObservationDigestWithCanonicalFailureEvidence(
+        string unvalidatedDigest)
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        var observation = new BrokerCommandReconciliationObservation(
+            null,
+            unvalidatedDigest,
+            claim.QueryWindowStartUtc,
+            claim.StartedAtUtc,
+            null);
+
+        ValidatedBrokerCommandReconciliation result =
+            BrokerCommandReconciliationValidator.Validate(
+                claim,
+                observation,
+                claim.StartedAtUtc);
+        BrokerCommandCanonicalEvidence durable =
+            BrokerCommandLifecycleEvidence.Reconciliation(result);
+
+        Assert.Equal(BrokerReconciliationMatch.Inconclusive, result.Match);
+        Assert.Equal(
+            "broker_reconciliation_gateway_observation_unavailable",
+            result.ReasonCode);
+        Assert.Matches("^[0-9a-f]{64}$", result.SourceEvidenceSha256);
+        Assert.NotEqual(observation.SourceEvidenceSha256, result.SourceEvidenceSha256);
+        Assert.NotEmpty(durable.CanonicalJson);
+        Assert.Matches("^[0-9a-f]{64}$", durable.Sha256);
+    }
+
+    [Fact]
+    public void ValidatorReplacesExactButMismatchedSourceDigestWithFailureEvidence()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        BrokerReconciliationSnapshot snapshot = PlaceAcknowledgedSnapshot(
+            command,
+            claim,
+            command.Exposure.SourceSequence + 1);
+        string mismatchedDigest = new('b', 64);
+        var observation = new BrokerCommandReconciliationObservation(
+            snapshot.SourceSequence,
+            mismatchedDigest,
+            snapshot.QueryWindowStartUtc,
+            snapshot.QueryWindowEndUtc,
+            snapshot);
+
+        ValidatedBrokerCommandReconciliation result =
+            BrokerCommandReconciliationValidator.Validate(
+                claim,
+                observation,
+                snapshot.CompletedAtUtc);
+
+        Assert.Equal("broker_reconciliation_source_digest_invalid", result.ReasonCode);
+        Assert.Matches("^[0-9a-f]{64}$", result.SourceEvidenceSha256);
+        Assert.NotEqual(mismatchedDigest, result.SourceEvidenceSha256);
+        _ = BrokerCommandLifecycleEvidence.Reconciliation(result);
+    }
+
+    [Theory]
+    [InlineData("broker\0name")]
+    [InlineData("broker\u200Ename")]
+    public void SnapshotNormalizationRejectsNonPersistableGatewayText(string brokerCompany)
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        BrokerReconciliationSnapshot baseline = PlaceAcknowledgedSnapshot(
+            command,
+            claim,
+            command.Exposure.SourceSequence + 1);
+        BrokerReconciliationSnapshot snapshot = baseline with
+        {
+            Account = baseline.Account with { BrokerCompany = brokerCompany }
+        };
+
+        Assert.Throws<ArgumentException>(() =>
+            BrokerCommandLifecycleEvidence.NormalizeSnapshot(snapshot));
+    }
+
+    [Fact]
+    public void SnapshotTextBoundsCountUnicodeScalarsLikePostgres()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        BrokerReconciliationSnapshot baseline = PlaceAcknowledgedSnapshot(
+            command,
+            claim,
+            command.Exposure.SourceSequence + 1);
+        string twoHundredScalars = string.Concat(Enumerable.Repeat("😀", 200));
+        BrokerReconciliationSnapshot accepted = baseline with
+        {
+            Account = baseline.Account with { BrokerCompany = twoHundredScalars }
+        };
+        BrokerReconciliationSnapshot rejected = baseline with
+        {
+            Account = baseline.Account with { BrokerCompany = twoHundredScalars + "😀" }
+        };
+
+        Assert.Equal(
+            twoHundredScalars,
+            BrokerCommandLifecycleEvidence.NormalizeSnapshot(accepted).Account.BrokerCompany);
+        Assert.Throws<ArgumentException>(() =>
+            BrokerCommandLifecycleEvidence.NormalizeSnapshot(rejected));
+    }
+
     [Fact]
     public void StaleSourceSequenceCannotProduceTerminalEvidence()
     {
@@ -142,6 +329,38 @@ public sealed class BrokerCommandReconciliationValidatorTests
         Assert.Equal(command.Command.TargetBrokerId, result.TargetBrokerId);
     }
 
+    [Theory]
+    [InlineData("unknown", false)]
+    [InlineData("accepted", true)]
+    public void SameShapePlaceWithoutPersistedExactOrderIdRemainsInconclusive(
+        string sendDisposition,
+        bool hasRequestId)
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command) with
+            {
+                SendDisposition = sendDisposition,
+                BrokerRequestId = hasRequestId ? "request-1" : null,
+                BrokerOrderId = null,
+                BrokerDealId = null
+            };
+        BrokerReconciliationSnapshot snapshot = PlaceAcknowledgedSnapshot(
+            command,
+            claim,
+            command.Exposure.SourceSequence + 1);
+
+        ValidatedBrokerCommandReconciliation result = Validate(claim, snapshot);
+
+        Assert.False(result.IsConclusive);
+        Assert.Equal(
+            "broker_reconciliation_place_order_correlation_not_proven",
+            result.ReasonCode);
+        Assert.Null(result.SourceSequence);
+        Assert.Null(result.Snapshot);
+        Assert.Null(result.OrderId);
+    }
+
     [Fact]
     public void ExactCancellationPostStateRemainsInconclusiveWithoutRequestCorrelation()
     {
@@ -230,7 +449,7 @@ public sealed class BrokerCommandReconciliationValidatorTests
     }
 
     [Fact]
-    public void FilledPlaceRequiresExactOrderAndLinkedDealVolume()
+    public void ExactFilledPlaceRemainsInconclusiveWithoutAuthenticatedBrokerObservation()
     {
         AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
         BrokerCommandReconciliationClaim claim =
@@ -275,8 +494,15 @@ public sealed class BrokerCommandReconciliationValidatorTests
 
         ValidatedBrokerCommandReconciliation result = Validate(claim, snapshot);
 
-        Assert.True(result.IsConclusive);
-        Assert.Equal(BrokerReconciliationMatch.Filled, result.Match);
+        Assert.False(result.IsConclusive);
+        Assert.Equal(BrokerReconciliationMatch.Inconclusive, result.Match);
+        Assert.Equal(
+            "broker_reconciliation_terminal_authority_unavailable",
+            result.ReasonCode);
+        Assert.Null(result.SourceSequence);
+        Assert.Null(result.OrderId);
+        Assert.Null(result.DealId);
+        Assert.Null(result.Snapshot);
     }
 
     [Fact]
@@ -422,5 +648,40 @@ public sealed class BrokerCommandReconciliationValidatorTests
             deals,
             [reported],
             at);
+    }
+
+    private sealed class HostileReadOnlyList<T>(
+        int count,
+        T? item,
+        bool throwOnIndex) : IReadOnlyList<T>
+    {
+        public int Count => count;
+
+        public int IndexerCalls { get; private set; }
+
+        public int EnumeratorCalls { get; private set; }
+
+        public T this[int index]
+        {
+            get
+            {
+                IndexerCalls++;
+                if (throwOnIndex)
+                {
+                    throw new InvalidOperationException("The hostile indexer must not be called.");
+                }
+
+                Assert.InRange(index, 0, count - 1);
+                return item!;
+            }
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            EnumeratorCalls++;
+            throw new InvalidOperationException("The hostile enumerator must not be called.");
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }

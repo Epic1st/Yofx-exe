@@ -12,7 +12,7 @@ describe('DashboardPage', () => {
     render(<DashboardPage snapshot={snapshot} />);
 
     expect(screen.getByText('Deployment readiness')).toBeInTheDocument();
-    expect(screen.getByText('MT5 demo connected')).toBeInTheDocument();
+    expect(screen.getByText('Demo binding only')).toBeInTheDocument();
     expect(screen.getByText('Adaptive Strategy')).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search strategies' }), {
@@ -31,7 +31,7 @@ describe('DashboardPage', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: 'View evidence' })[0]!);
     let dialog = screen.getByRole('dialog', { name: 'Account binding' });
-    expect(within(dialog).getByText(/fingerprint, environment/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/broker login is not proven/i)).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Close dialog' })).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Account binding' })).not.toBeInTheDocument();
@@ -64,5 +64,12 @@ describe('DashboardPage', () => {
     fireEvent.click(closeButton);
     expect(navigation).not.toHaveClass('sidebar--open');
     expect(navigation).toHaveAttribute('inert');
+  });
+
+  it('renders an explicit blocked label for a live-account environment', async () => {
+    const snapshot = await fixtureSnapshot();
+    render(<DashboardPage snapshot={{ ...snapshot, environmentLabel: 'Live environment — blocked' }} />);
+
+    expect(screen.getByText('Live environment — blocked')).toBeInTheDocument();
   });
 });

@@ -16,12 +16,14 @@ internal static class PostgresWorkerRegistration
         ArgumentNullException.ThrowIfNull(configuration);
         if (!TryReadRuntimeConnectionString(
             configuration.GetConnectionString("Postgres"),
-            out string connectionString))
+            out string connectionString)
+            || !PostgresDatabaseEndpoint.TryParse(
+                connectionString,
+                out PostgresDatabaseEndpoint? runtimeEndpoint))
         {
             return services;
         }
 
-        PostgresDatabase? database = null;
         WorkerPolicySignatureTrustStore? policyTrustStore = null;
         Dictionary<string, byte[]>? policyPublicKeys = null;
         try
@@ -31,11 +33,20 @@ internal static class PostgresWorkerRegistration
                 return services;
             }
 
-            database = new PostgresDatabase(connectionString, PostgresDatabaseUsage.Runtime);
+            if (!TryAddTenantContextCapabilityProvider(
+                    services,
+                    configuration,
+                    runtimeEndpoint!))
+            {
+                return services;
+            }
+
             policyTrustStore = new WorkerPolicySignatureTrustStore(policyPublicKeys);
-            PostgresDatabase registeredDatabase = database;
             WorkerPolicySignatureTrustStore registeredPolicyTrustStore = policyTrustStore;
-            services.TryAddSingleton(_ => registeredDatabase);
+            services.TryAddSingleton(serviceProvider => new PostgresDatabase(
+                connectionString,
+                PostgresDatabaseUsage.Runtime,
+                serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>()));
             services.TryAddSingleton(_ => registeredPolicyTrustStore);
             services.TryAddSingleton<PostgresWorkerReadiness>();
             services.TryAddSingleton<PostgresWorkerTenantCatalog>();
@@ -43,7 +54,6 @@ internal static class PostgresWorkerRegistration
             services.TryAddSingleton<IUserOperationWorkStore, PostgresUserOperationWorkStore>();
             services.TryAddSingleton<ICredentialGrantExpiryStore, PostgresCredentialGrantExpiryStore>();
             services.TryAddSingleton<IDeploymentProjectionStore, PostgresDeploymentProjectionStore>();
-            database = null;
             policyTrustStore = null;
             return services;
         }
@@ -66,11 +76,45 @@ internal static class PostgresWorkerRegistration
             }
 
             policyTrustStore?.Dispose();
-            if (database is not null)
-            {
-                database.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            }
         }
+    }
+
+    private static bool TryAddTenantContextCapabilityProvider(
+        IServiceCollection services,
+        IConfiguration configuration,
+        PostgresDatabaseEndpoint requiredEndpoint)
+    {
+        ServiceDescriptor? existing = services.FirstOrDefault(static descriptor =>
+            descriptor.ServiceType == typeof(ITenantContextCapabilityProvider));
+        if (existing?.ImplementationInstance is ITenantContextCapabilityProvider provider)
+        {
+            return provider.Endpoint == requiredEndpoint;
+        }
+
+        if (existing is not null)
+        {
+            return true;
+        }
+
+        if (!PostgresTenantContextCapabilityProvider.TryNormalizeIssuerConnectionString(
+                configuration.GetConnectionString("ContextIssuer"),
+                requireTls: true,
+                out string issuerConnectionString))
+        {
+            return false;
+        }
+
+        if (!PostgresDatabaseEndpoint.TryParse(
+                issuerConnectionString,
+                out PostgresDatabaseEndpoint? issuerEndpoint)
+            || issuerEndpoint != requiredEndpoint)
+        {
+            return false;
+        }
+
+        services.TryAddSingleton<ITenantContextCapabilityProvider>(_ =>
+            new PostgresTenantContextCapabilityProvider(issuerConnectionString));
+        return true;
     }
 
     private static bool TryReadPolicyTrustKeys(
@@ -114,10 +158,10 @@ internal static class PostgresWorkerRegistration
             if (string.IsNullOrWhiteSpace(builder.Host)
                 || string.IsNullOrWhiteSpace(builder.Database)
                 || !string.Equals(builder.Username, WorkerDatabaseIdentity.RequiredRole, StringComparison.Ordinal)
-                || builder.SslMode != SslMode.VerifyFull
-                || builder.IncludeErrorDetail
-                || !string.IsNullOrWhiteSpace(builder.Options)
-                || !string.IsNullOrWhiteSpace(builder.SearchPath))
+                || !PostgresRuntimeConnectionPolicy.HasSafeSessionConfiguration(builder)
+                || !PostgresRuntimeConnectionPolicy.HasRequiredTransport(
+                    builder,
+                    allowInsecureLoopbackForDevelopment: false))
             {
                 return false;
             }

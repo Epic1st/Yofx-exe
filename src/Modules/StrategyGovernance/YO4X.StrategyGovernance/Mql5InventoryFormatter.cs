@@ -11,13 +11,13 @@ public static class Mql5InventoryFormatter
     public static string ToJson(Mql5CorpusManifest manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        return JsonSerializer.Serialize(manifest, ManifestJsonOptions) + "\n";
+        return NormalizeLineEndings(JsonSerializer.Serialize(manifest, ManifestJsonOptions)) + "\n";
     }
 
     public static string ToJsonFragment<T>(T value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return JsonSerializer.Serialize(value, ManifestJsonOptions);
+        return NormalizeLineEndings(JsonSerializer.Serialize(value, ManifestJsonOptions));
     }
 
     public static string ToMarkdown(Mql5CorpusManifest manifest)
@@ -61,7 +61,7 @@ public static class Mql5InventoryFormatter
                      .GroupBy(static feature => (feature.Code, feature.Support))
                      .OrderBy(static group => group.Key.Code, StringComparer.Ordinal))
         {
-            report.Append("| ").Append(Escape(group.Key.Code))
+            report.Append("| ").Append(Mql5MarkdownEscaper.EscapeTableCell(group.Key.Code))
                 .Append(" | ").Append(group.Key.Support)
                 .Append(" | ").Append(group.Count())
                 .Append(" | ").Append(group.Sum(static feature => feature.OccurrenceCount))
@@ -80,7 +80,7 @@ public static class Mql5InventoryFormatter
                      .OrderByDescending(static group => group.Key.Severity)
                      .ThenBy(static group => group.Key.Code, StringComparer.Ordinal))
         {
-            report.Append("| ").Append(Escape(group.Key.Code))
+            report.Append("| ").Append(Mql5MarkdownEscaper.EscapeTableCell(group.Key.Code))
                 .Append(" | ").Append(group.Key.Severity)
                 .Append(" | ").Append(group.Key.Support)
                 .Append(" | ").Append(group.Count())
@@ -108,14 +108,14 @@ public static class Mql5InventoryFormatter
                     .Distinct(StringComparer.Ordinal)
                     .Order(StringComparer.Ordinal));
 
-            report.Append("| ").Append(Escape(file.RelativePath))
+            report.Append("| ").Append(Mql5MarkdownEscaper.EscapeTableCell(file.RelativePath))
                 .Append(" | ").Append(file.Kind)
                 .Append(" | ").Append(file.ByteLength)
                 .Append(" | `").Append(file.Sha256).Append('`')
-                .Append(" | ").Append(Escape(entrypoints))
+                .Append(" | ").Append(Mql5MarkdownEscaper.EscapeTableCell(entrypoints))
                 .Append(" | ").Append(file.Includes.Count)
                 .Append(" | ").Append(file.Disposition)
-                .Append(" | ").Append(Escape(string.IsNullOrEmpty(findingCodes) ? "-" : findingCodes))
+                .Append(" | ").Append(Mql5MarkdownEscaper.EscapeTableCell(string.IsNullOrEmpty(findingCodes) ? "-" : findingCodes))
                 .AppendLine(" |");
         }
 
@@ -128,8 +128,12 @@ public static class Mql5InventoryFormatter
             .AppendLine("4. Compile the original source in an identified MetaEditor/MT5 build and retain diagnostics as separate evidence.")
             .AppendLine("5. Run deterministic simulation, reference trace comparison, manual review, and tightly gated demo validation before any deployable status.");
 
-        return report.ToString().Replace("\r\n", "\n", StringComparison.Ordinal);
+        return NormalizeLineEndings(report.ToString());
     }
+
+    private static string NormalizeLineEndings(string value) => value
+        .Replace("\r\n", "\n", StringComparison.Ordinal)
+        .Replace('\r', '\n');
 
     private static JsonSerializerOptions CreateJsonOptions()
     {
@@ -152,18 +156,10 @@ public static class Mql5InventoryFormatter
                      StringComparer.Ordinal))
         {
             report.Append("| ").Append(dimension)
-                .Append(" | ").Append(Escape(group.Key))
+                .Append(" | ").Append(Mql5MarkdownEscaper.EscapeTableCell(group.Key))
                 .Append(" | ").Append(group.Count())
                 .AppendLine(" |");
         }
     }
 
-    private static string Escape(string value)
-    {
-        return value
-            .Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("|", "\\|", StringComparison.Ordinal)
-            .Replace("\r", " ", StringComparison.Ordinal)
-            .Replace("\n", " ", StringComparison.Ordinal);
-    }
 }

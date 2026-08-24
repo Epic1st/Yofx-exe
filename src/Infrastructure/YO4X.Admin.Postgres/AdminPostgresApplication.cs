@@ -31,13 +31,8 @@ public sealed partial class AdminPostgresApplication : IAdminApplication, IAdmin
     {
         try
         {
-            await using NpgsqlConnection connection = await database.OpenConnectionAsync(cancellationToken)
+            return await AdminDatabaseReadiness.IsReadyAsync(database, cancellationToken)
                 .ConfigureAwait(false);
-            await using var command = new NpgsqlCommand(
-                "select control.assert_safe_runtime_role()",
-                connection);
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

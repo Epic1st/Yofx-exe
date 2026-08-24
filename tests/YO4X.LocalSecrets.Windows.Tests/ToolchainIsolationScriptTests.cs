@@ -17,7 +17,8 @@ public sealed class ToolchainIsolationScriptTests
         string markerPath = Path.Combine(scope.Root, "wsl-executed.marker");
         await File.WriteAllTextAsync(
             fakeWslPath,
-            "@echo off\r\ntype nul > \"%YO4X_WSL_MARKER%\"\r\nexit /b 91\r\n");
+            "@echo off\r\ntype nul > \"%YO4X_WSL_MARKER%\"\r\nexit /b 91\r\n",
+            TestContext.Current.CancellationToken);
 
         var startInfo = CreatePowerShellStartInfo(scriptPath);
         startInfo.Environment["PATH"] = scope.Root + Path.PathSeparator
@@ -32,7 +33,7 @@ public sealed class ToolchainIsolationScriptTests
         using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
         JsonElement root = document.RootElement;
         Assert.Equal(
-            "yo4x.mt5-toolchain-isolation-evidence.v3",
+            "yo4x.mt5-toolchain-isolation-evidence.v4",
             root.GetProperty("SchemaVersion").GetString());
         Assert.Equal(
             "read-only-host-query-no-vendor-code-execution",
@@ -43,7 +44,9 @@ public sealed class ToolchainIsolationScriptTests
         Assert.False(root.GetProperty("CryptographicallyAttested").GetBoolean());
         JsonElement probe = root.GetProperty("Probe");
         string expectedScriptSha256 = Convert.ToHexString(
-            SHA256.HashData(await File.ReadAllBytesAsync(scriptPath)))
+            SHA256.HashData(await File.ReadAllBytesAsync(
+                scriptPath,
+                TestContext.Current.CancellationToken)))
             .ToLowerInvariant();
         Assert.Equal(expectedScriptSha256, probe.GetProperty("ScriptSha256").GetString());
         Assert.True(probe.GetProperty("StableRead").GetBoolean());
@@ -54,6 +57,12 @@ public sealed class ToolchainIsolationScriptTests
         Assert.False(root.GetProperty("InstalledMetaTrader")
             .GetProperty("ExecutablesLaunchedByProbe")
             .GetBoolean());
+        JsonElement vendorBundle = root.GetProperty("VendorBundle");
+        Assert.False(vendorBundle.GetProperty("ExampleSourcePresent").GetBoolean());
+        Assert.Equal(0, vendorBundle.GetProperty("ExampleCredentialLikeLineCount").GetInt32());
+        Assert.Equal(0, vendorBundle.GetProperty("ExampleCredentialConstructorTupleCount").GetInt32());
+        Assert.Equal(0, vendorBundle.GetProperty("ExampleOrderSendReferenceCount").GetInt32());
+        Assert.False(vendorBundle.GetProperty("ExampleValuesRendered").GetBoolean());
         Assert.Equal(
             "registry-only-no-wsl-execution",
             root.GetProperty("Isolation")
@@ -130,7 +139,8 @@ public sealed class ToolchainIsolationScriptTests
                 throw 'Unqualified ConvertTo-Json was invoked.'
             }
             & $Probe -WorkspaceRoot $Workspace
-            """);
+            """,
+            TestContext.Current.CancellationToken);
 
         var startInfo = CreatePowerShellStartInfo(wrapperPath);
         startInfo.ArgumentList.Add(scriptPath);
@@ -144,7 +154,7 @@ public sealed class ToolchainIsolationScriptTests
         Assert.False(File.Exists(markerPath));
         using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
         Assert.Equal(
-            "yo4x.mt5-toolchain-isolation-evidence.v3",
+            "yo4x.mt5-toolchain-isolation-evidence.v4",
             document.RootElement.GetProperty("SchemaVersion").GetString());
     }
 
@@ -157,7 +167,9 @@ public sealed class ToolchainIsolationScriptTests
             "credentials",
             "local-demo-import.v1.json"));
         await using FileStream stream = File.OpenRead(artifactPath);
-        using JsonDocument document = await JsonDocument.ParseAsync(stream);
+        using JsonDocument document = await JsonDocument.ParseAsync(
+            stream,
+            cancellationToken: TestContext.Current.CancellationToken);
         JsonElement root = document.RootElement;
 
         Assert.Equal(

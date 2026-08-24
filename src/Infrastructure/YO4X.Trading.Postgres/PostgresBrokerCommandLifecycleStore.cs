@@ -1,5 +1,6 @@
 using YO4X.Tenancy;
 using YO4X.Trading.Abstractions;
+using YO4X.Trading.Application;
 using ApplicationDispatchClaim = YO4X.Trading.Application.BrokerCommandDispatchClaim;
 using ApplicationLifecycleReceipt = YO4X.Trading.Application.BrokerCommandLifecycleReceipt;
 using ApplicationReconciliationClaim = YO4X.Trading.Application.BrokerCommandReconciliationClaim;
@@ -137,6 +138,8 @@ public sealed class PostgresBrokerCommandLifecycleStore(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(evidence);
+        BrokerCommandCanonicalEvidence canonical =
+            BrokerCommandLifecycleEvidence.Reconciliation(evidence);
         var document = new BrokerCommandReconciliationEvidenceDocument(
             evidence.CommandId,
             evidence.AuthorizationSha256,
@@ -163,6 +166,7 @@ public sealed class PostgresBrokerCommandLifecycleStore(
                 reconciliationClaimToken,
                 reconciliationId,
                 document,
+                canonical.CanonicalJson,
                 auditEventId,
                 cancellationToken)
             .ConfigureAwait(false);

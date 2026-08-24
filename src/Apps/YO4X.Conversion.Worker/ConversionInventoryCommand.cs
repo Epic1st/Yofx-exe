@@ -32,38 +32,90 @@ public static class ConversionInventoryCommand
             string? conversionEvidenceReportOutput = GetOptionalOption(
                 arguments,
                 "--conversion-evidence-report-output");
+            string? compilePackagePlanOutput = GetOptionalOption(
+                arguments,
+                "--compile-package-plan-output");
             if ((conversionEvidenceOutput is null) != (conversionEvidenceReportOutput is null))
             {
                 throw new ArgumentException(
                     "Conversion evidence JSON and report outputs must be requested together.");
             }
 
-            EnsureDistinctOutputPaths(
-                manifestOutput,
-                reportOutput,
-                conversionEvidenceOutput,
-                conversionEvidenceReportOutput);
+            var requestedOutputs = new List<string> { manifestOutput, reportOutput };
+            if (conversionEvidenceOutput is not null)
+            {
+                requestedOutputs.Add(conversionEvidenceOutput);
+                requestedOutputs.Add(conversionEvidenceReportOutput!);
+            }
+
+            if (compilePackagePlanOutput is not null)
+            {
+                requestedOutputs.Add(compilePackagePlanOutput);
+            }
+
+            Mql5ArtifactPathSet paths = Mql5ArtifactOutputGuard.Resolve(
+                sourceRoot,
+                requestedOutputs.ToArray());
+            sourceRoot = paths.SourceRoot;
+            manifestOutput = paths.OutputPaths[0];
+            reportOutput = paths.OutputPaths[1];
+            if (conversionEvidenceOutput is not null)
+            {
+                conversionEvidenceOutput = paths.OutputPaths[2];
+                conversionEvidenceReportOutput = paths.OutputPaths[3];
+            }
+
+
+            if (compilePackagePlanOutput is not null)
+            {
+                compilePackagePlanOutput = paths.OutputPaths[^1];
+            }
+
             var job = new Mql5CorpusInventoryJob(new Mql5StaticInventoryAnalyzer());
             using Mql5AnalyzedCorpus corpus = await job
                 .AnalyzeDirectoryForPersistenceAsync(sourceRoot, cancellationToken)
                 .ConfigureAwait(false);
-            Mql5ConversionCorpusEvidence? conversionEvidence = conversionEvidenceOutput is null
+            bool requiresConversionEvidence = conversionEvidenceOutput is not null
+                || compilePackagePlanOutput is not null;
+            Mql5ConversionCorpusEvidence? conversionEvidence = !requiresConversionEvidence
                 ? null
                 : new Mql5ConversionEvidenceAnalyzer().Analyze(corpus.Documents);
-            await job.WriteArtifactsAsync(
+            Mql5CompilePackagePlan? compilePackagePlan = compilePackagePlanOutput is null
+                ? null
+                : Mql5CompilePackageDossierPlanner.Plan(
                     corpus.Manifest,
+                    conversionEvidence!,
+                    corpus.Documents,
+                    approvedPlatformLibrarySnapshot: null);
+            await Mql5CorpusInventoryJob.WriteArtifactsAsync(
+                    corpus.Manifest,
+                    sourceRoot,
                     manifestOutput,
                     reportOutput,
                     cancellationToken)
                 .ConfigureAwait(false);
             if (conversionEvidence is not null)
             {
-                await job.WriteConversionEvidenceArtifactsAsync(
-                        conversionEvidence,
-                        conversionEvidenceOutput!,
-                        conversionEvidenceReportOutput!,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                if (conversionEvidenceOutput is not null)
+                {
+                    await Mql5CorpusInventoryJob.WriteConversionEvidenceArtifactsAsync(
+                            conversionEvidence,
+                            sourceRoot,
+                            conversionEvidenceOutput,
+                            conversionEvidenceReportOutput!,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                if (compilePackagePlan is not null)
+                {
+                    await Mql5CorpusInventoryJob.WriteCompilePackagePlanArtifactAsync(
+                            compilePackagePlan,
+                            sourceRoot,
+                            compilePackagePlanOutput!,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
 
             if (HasSwitch(arguments, "--persist-postgres"))
@@ -77,6 +129,13 @@ public static class ConversionInventoryCommand
             {
                 Console.WriteLine(
                     $"Conversion evidence complete: {conversionEvidence.FileCount} files, evidence {conversionEvidence.EvidenceSha256}; no semantic conversion is claimed.");
+            }
+
+
+            if (compilePackagePlan is not null)
+            {
+                Console.WriteLine(
+                    $"Compile-package planning complete: {compilePackagePlan.Targets.Count} targets, plan {compilePackagePlan.PlanSha256}; no compile or runtime proof is claimed.");
             }
 
             return 0;
@@ -127,7 +186,8 @@ public static class ConversionInventoryCommand
         {
             await using var database = new PostgresDatabase(
                 connectionString,
-                PostgresDatabaseUsage.Runtime);
+                PostgresDatabaseUsage.Runtime,
+                allowInsecureLoopbackForDevelopment: allowInsecureDevelopment);
             var store = new PostgresMql5CorpusStore(database);
             Mql5CorpusPersistenceResult result = await store.PersistAsync(
                     request,
@@ -193,7 +253,7 @@ public static class ConversionInventoryCommand
         }
     }
 
-    private static string ValidateConnectionString(
+    internal static string ValidateConnectionString(
         string? value,
         bool allowInsecureDevelopment)
     {
@@ -204,16 +264,13 @@ public static class ConversionInventoryCommand
         }
 
         var builder = new NpgsqlConnectionStringBuilder(value);
-        bool loopbackHost = builder.Host is "localhost" or "127.0.0.1" or "::1";
         if (string.IsNullOrWhiteSpace(builder.Host)
             || string.IsNullOrWhiteSpace(builder.Database)
             || !string.Equals(builder.Username, "yo4x_conversion_worker", StringComparison.Ordinal)
-            || builder.IncludeErrorDetail
-            || builder.LogParameters
-            || !string.IsNullOrWhiteSpace(builder.Options)
-            || !string.IsNullOrWhiteSpace(builder.SearchPath)
-            || builder.SslMode != SslMode.VerifyFull
-                && !(allowInsecureDevelopment && loopbackHost))
+            || !PostgresRuntimeConnectionPolicy.HasSafeSessionConfiguration(builder)
+            || !PostgresRuntimeConnectionPolicy.HasRequiredTransport(
+                builder,
+                allowInsecureDevelopment))
         {
             throw new ArgumentException("The conversion PostgreSQL connection is not safely configured.");
         }
@@ -304,15 +361,4 @@ public static class ConversionInventoryCommand
         return arguments[index + 1];
     }
 
-    private static void EnsureDistinctOutputPaths(params string?[] outputPaths)
-    {
-        string[] normalized = outputPaths
-            .Where(static path => path is not null)
-            .Select(static path => Path.GetFullPath(path!))
-            .ToArray();
-        if (normalized.Distinct(StringComparer.OrdinalIgnoreCase).Count() != normalized.Length)
-        {
-            throw new ArgumentException("Every inventory and evidence output must use a different path.");
-        }
-    }
 }

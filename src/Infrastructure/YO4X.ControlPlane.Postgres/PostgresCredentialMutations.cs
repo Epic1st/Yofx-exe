@@ -63,21 +63,36 @@ public sealed partial class PostgresControlPlaneApplication
                 },
                 cancellationToken).ConfigureAwait(false);
 
+            if (mutation.Replay is not null)
+            {
+                IssuedCredentialIngestionProof replayProof = issuer.Issue(
+                    actor.TenantId,
+                    actor.UserId,
+                    request.BrokerAccountId,
+                    mutation.Replay.GrantId,
+                    request.Operation,
+                    allowedOrigin,
+                    metadata.IdempotencyKey,
+                    mutation.Replay.ProofKeyId);
+                CredentialIngestionSessionView replay = ToCredentialSession(
+                    ingestionOrigin,
+                    mutation.Replay,
+                    replayProof);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return replay;
+            }
+
+            Guid grantId = Guid.CreateVersion7();
+            string proofKeyId = issuer.CurrentKeyId;
             IssuedCredentialIngestionProof proof = issuer.Issue(
                 actor.TenantId,
                 actor.UserId,
                 request.BrokerAccountId,
+                grantId,
                 request.Operation,
-                metadata.IdempotencyKey);
-            if (mutation.Replay is not null)
-            {
-                CredentialIngestionSessionView replay = ToCredentialSession(
-                    ingestionOrigin,
-                    mutation.Replay,
-                    proof);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return replay;
-            }
+                allowedOrigin,
+                metadata.IdempotencyKey,
+                proofKeyId);
 
             string credentialState;
             bool hasReference;
@@ -229,7 +244,6 @@ public sealed partial class PostgresControlPlaneApplication
                     throw new ArgumentOutOfRangeException(nameof(request), request.Operation, "Unknown ingestion operation.");
             }
 
-            Guid grantId = Guid.CreateVersion7();
             DateTimeOffset expiresAt;
             DateTimeOffset now;
             await using NpgsqlCommand insert = transaction.CreateCommand(
@@ -237,12 +251,13 @@ public sealed partial class PostgresControlPlaneApplication
                 insert into control.credential_ingestion_grants
                 (
                     id, tenant_id, broker_account_id, operation, allowed_origin,
-                    bearer_hash, nonce_hash, expires_at
+                    bearer_hash, nonce_hash, proof_key_id, expires_at
                 )
                 values
                 (
                     @id, @tenant_id, @account_id, @operation, @allowed_origin,
-                    @bearer_hash, @nonce_hash, statement_timestamp() + @grant_lifetime
+                    @bearer_hash, @nonce_hash, @proof_key_id,
+                    statement_timestamp() + @grant_lifetime
                 )
                 returning expires_at, created_at
                 """);
@@ -256,6 +271,7 @@ public sealed partial class PostgresControlPlaneApplication
             insert.Parameters.AddWithValue("allowed_origin", NpgsqlDbType.Text, allowedOrigin);
             insert.Parameters.AddWithValue("bearer_hash", NpgsqlDbType.Text, CredentialIngestionProofIssuer.HashProof(proof.Bearer));
             insert.Parameters.AddWithValue("nonce_hash", NpgsqlDbType.Text, CredentialIngestionProofIssuer.HashProof(proof.Nonce));
+            insert.Parameters.AddWithValue("proof_key_id", NpgsqlDbType.Text, proofKeyId);
             insert.Parameters.AddWithValue("grant_lifetime", NpgsqlDbType.Interval, options.IngestionGrantLifetime);
             await using (NpgsqlDataReader grantReader = await insert.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false))
@@ -289,7 +305,11 @@ public sealed partial class PostgresControlPlaneApplication
                 updatedVersion,
                 System.Globalization.CultureInfo.InvariantCulture);
 
-            var stored = new StoredCredentialGrant(grantId, actor.TenantId, expiresAt);
+            var stored = new StoredCredentialGrant(
+                grantId,
+                actor.TenantId,
+                expiresAt,
+                proofKeyId);
             await AppendMutationEvidenceAsync(
                 transaction,
                 "broker_account.credential_ingestion_session_created",
@@ -313,8 +333,9 @@ public sealed partial class PostgresControlPlaneApplication
                     metadata.ExpectedVersion.Value,
                     finalAccountVersion),
                 cancellationToken).ConfigureAwait(false);
-            // Only the identifier and expiry are replayed. Bearer and nonce
-            // proofs are deterministically re-derived and never persisted.
+            // Only public authority metadata, including the non-secret key id,
+            // is replayed. Bearer and nonce proofs are deterministically
+            // re-derived and never persisted.
             await CompleteMutationAsync(transaction, mutation.Id, 201, stored, cancellationToken)
                 .ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -415,7 +436,11 @@ public sealed partial class PostgresControlPlaneApplication
         return origin.GetLeftPart(UriPartial.Authority);
     }
 
-    private sealed record StoredCredentialGrant(Guid GrantId, Guid TenantId, DateTimeOffset ExpiresAt);
+    private sealed record StoredCredentialGrant(
+        Guid GrantId,
+        Guid TenantId,
+        DateTimeOffset ExpiresAt,
+        string ProofKeyId);
 
     private sealed record StaleCredentialGrantStatus(
         bool OpenGrantExists,

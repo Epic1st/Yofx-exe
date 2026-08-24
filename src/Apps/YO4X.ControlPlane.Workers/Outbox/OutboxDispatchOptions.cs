@@ -14,6 +14,14 @@ public sealed class OutboxDispatchOptions
 
     public TimeSpan DeliveryTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
+    public TimeSpan CancellationConfirmationTimeout { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Maximum accepted age of a complete durable tenant scan. Size this SLA
+    /// for the provisioned tenant count and measured worst-case cycle time.
+    /// </summary>
+    public TimeSpan MaximumTenantScanRotationAge { get; init; } = TimeSpan.FromMinutes(15);
+
     public int MaximumAttempts { get; init; } = 8;
 
     public TimeSpan BaseRetryDelay { get; init; } = TimeSpan.FromSeconds(1);
@@ -35,6 +43,16 @@ public sealed class OutboxDispatchOptions
         RequireRange(ClaimLease, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(10), nameof(ClaimLease));
         RequireRange(DependencyTimeout, TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(30), nameof(DependencyTimeout));
         RequireRange(DeliveryTimeout, TimeSpan.FromMilliseconds(100), TimeSpan.FromMinutes(2), nameof(DeliveryTimeout));
+        RequireRange(
+            CancellationConfirmationTimeout,
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromSeconds(10),
+            nameof(CancellationConfirmationTimeout));
+        RequireRange(
+            MaximumTenantScanRotationAge,
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromHours(24),
+            nameof(MaximumTenantScanRotationAge));
 
         if (MaximumAttempts is < 1 or > 100)
         {

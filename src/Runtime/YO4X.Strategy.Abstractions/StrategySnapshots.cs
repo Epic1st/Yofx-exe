@@ -46,6 +46,10 @@ public sealed record StrategyPendingOrderSnapshot(
 
 public sealed class StrategySnapshot
 {
+    public const int MaximumQuoteCount = 10_000;
+    public const int MaximumPositionCount = 10_000;
+    public const int MaximumPendingOrderCount = 10_000;
+
     private StrategySnapshot(
         long sequence,
         DateTimeOffset asOfUtc,
@@ -93,14 +97,33 @@ public sealed class StrategySnapshot
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sequence);
         ArgumentNullException.ThrowIfNull(account);
 
-        StrategyQuoteSnapshot[] orderedQuotes = (quotes ?? [])
+        StrategyQuoteSnapshot[] quoteValues = SnapshotBounded(
+            quotes,
+            MaximumQuoteCount,
+            nameof(quotes));
+        StrategyPositionSnapshot[] positionValues = SnapshotBounded(
+            positions,
+            MaximumPositionCount,
+            nameof(positions));
+        StrategyPendingOrderSnapshot[] orderValues = SnapshotBounded(
+            pendingOrders,
+            MaximumPendingOrderCount,
+            nameof(pendingOrders));
+        if (quoteValues.Any(value => value is null)
+            || positionValues.Any(value => value is null)
+            || orderValues.Any(value => value is null))
+        {
+            throw new ArgumentException("Snapshot collections cannot contain null values.");
+        }
+
+        StrategyQuoteSnapshot[] orderedQuotes = quoteValues
             .OrderBy(value => value.Symbol, StringComparer.Ordinal)
             .ThenBy(value => value.Sequence)
             .ToArray();
-        StrategyPositionSnapshot[] orderedPositions = (positions ?? [])
+        StrategyPositionSnapshot[] orderedPositions = positionValues
             .OrderBy(value => value.PositionId, StringComparer.Ordinal)
             .ToArray();
-        StrategyPendingOrderSnapshot[] orderedOrders = (pendingOrders ?? [])
+        StrategyPendingOrderSnapshot[] orderedOrders = orderValues
             .OrderBy(value => value.OrderId, StringComparer.Ordinal)
             .ToArray();
 
@@ -112,6 +135,52 @@ public sealed class StrategySnapshot
             Array.AsReadOnly(orderedQuotes),
             Array.AsReadOnly(orderedPositions),
             Array.AsReadOnly(orderedOrders));
+    }
+
+    private static T[] SnapshotBounded<T>(
+        IEnumerable<T>? source,
+        int maximumCount,
+        string parameterName)
+    {
+        if (source is null)
+        {
+            return [];
+        }
+
+        if (source is IReadOnlyList<T> list)
+        {
+            int count = list.Count;
+            if (count is < 0 || count > maximumCount)
+            {
+                throw new ArgumentException(
+                    "A snapshot collection exceeds its supported element limit.",
+                    parameterName);
+            }
+
+            var result = new T[count];
+            for (int index = 0; index < count; index++)
+            {
+                result[index] = list[index];
+            }
+
+            return result;
+        }
+
+        var values = new List<T>(Math.Min(maximumCount, 256));
+        using IEnumerator<T> enumerator = source.GetEnumerator();
+        while (enumerator.MoveNext())
+        {
+            if (values.Count == maximumCount)
+            {
+                throw new ArgumentException(
+                    "A snapshot collection exceeds its supported element limit.",
+                    parameterName);
+            }
+
+            values.Add(enumerator.Current);
+        }
+
+        return values.ToArray();
     }
 }
 
@@ -143,7 +212,27 @@ public sealed record StrategyState
             throw new ArgumentException("Strategy state must be a JSON value.", nameof(json));
         }
 
+        if (ContainsNullCharacter(node))
+        {
+            throw new ArgumentException(
+                "Strategy state cannot contain the Unicode null character.",
+                nameof(json));
+        }
+
         string normalized = CanonicalJson.Serialize(node);
         return new StrategyState(version, normalized, CanonicalJson.Sha256(node));
     }
+
+    private static bool ContainsNullCharacter(JsonNode node) => node switch
+    {
+        JsonObject value => value.Any(property =>
+            property.Key.Contains('\0', StringComparison.Ordinal)
+            || property.Value is not null && ContainsNullCharacter(property.Value)),
+        JsonArray value => value.Any(item =>
+            item is not null && ContainsNullCharacter(item)),
+        JsonValue value => value.TryGetValue(out string? text)
+            && text is not null
+            && text.Contains('\0', StringComparison.Ordinal),
+        _ => false
+    };
 }

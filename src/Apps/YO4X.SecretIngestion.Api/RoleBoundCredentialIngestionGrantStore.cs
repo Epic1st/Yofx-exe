@@ -21,6 +21,17 @@ internal sealed class RoleBoundCredentialIngestionGrantStore(
     public async ValueTask<bool> IsReadyAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!database.HasTenantContextCapabilityProvider)
+        {
+            return false;
+        }
+
+        if (!await database.IsTenantContextCapabilityProviderReadyAsync(cancellationToken)
+                .ConfigureAwait(false))
+        {
+            return false;
+        }
+
         try
         {
             await using NpgsqlConnection connection = await database.OpenConnectionAsync(cancellationToken)

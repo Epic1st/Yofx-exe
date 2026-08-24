@@ -2,15 +2,22 @@ namespace YO4X.Trading.Application;
 
 public sealed record BrokerCommandCoordinatorOptions
 {
-    public TimeSpan GatewaySendTimeout { get; init; } = TimeSpan.FromSeconds(5);
+    /// <summary>
+    /// Explicit composition-root gate for entering a mutation-capable gateway.
+    /// It is intentionally false by default and is not exposed by GatewayHost
+    /// configuration while that host remains proof-only.
+    /// </summary>
+    public bool SubmissionEnabled { get; init; }
+
+    public TimeSpan GatewaySendTimeout { get; init; } = TimeSpan.FromMilliseconds(500);
 
     public TimeSpan GatewayReconciliationTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     public TimeSpan DurableWriteTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
-    public TimeSpan AuthoritySafetyMargin { get; init; } = TimeSpan.FromSeconds(1);
+    public TimeSpan AuthoritySafetyMargin { get; init; } = TimeSpan.FromMilliseconds(100);
 
-    public TimeSpan MinimumAuthorityWindow { get; init; } = TimeSpan.FromSeconds(6);
+    public TimeSpan MinimumAuthorityWindow { get; init; } = TimeSpan.FromMilliseconds(600);
 
     public void Validate()
     {

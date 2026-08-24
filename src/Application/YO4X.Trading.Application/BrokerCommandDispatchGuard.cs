@@ -11,8 +11,7 @@ internal static class BrokerCommandDispatchGuard
         BrokerCommandReference reference,
         BrokerCommandDispatchClaim claim,
         IExecutionLeaseTrustVerifier leaseTrustVerifier,
-        DateTimeOffset now,
-        TimeSpan minimumAuthorityWindow)
+        DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(reference);
@@ -67,8 +66,7 @@ internal static class BrokerCommandDispatchGuard
             || claim.AuthorityNowUtc >= claim.ClaimExpiresAtUtc
             || now < claims.NotBeforeUtc
             || command.CreatedAtUtc > now
-            || deadline <= now
-            || deadline - now < minimumAuthorityWindow)
+            || deadline <= now)
         {
             return "broker_command_dispatch_authority_expired";
         }
@@ -109,6 +107,30 @@ internal static class BrokerCommandDispatchGuard
         return null;
     }
 
+    public static string? AuthorityWindowRejectReason(
+        BrokerCommandDispatchClaim claim,
+        DateTimeOffset now,
+        TimeSpan minimumAuthorityWindow)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        ArgumentNullException.ThrowIfNull(claim.Command);
+        if (now.Offset != TimeSpan.Zero || minimumAuthorityWindow <= TimeSpan.Zero)
+        {
+            return "broker_command_dispatch_authority_timestamp_invalid";
+        }
+
+        AuthorizedBrokerCommand capability = claim.Command;
+        DateTimeOffset deadline = Earliest(
+            claim.ClaimExpiresAtUtc,
+            capability.Exposure.ValidUntilUtc,
+            capability.ExecutionLease.Lease.Claims.ExpiresAtUtc,
+            capability.Reconciliation.MustBeginByUtc,
+            capability.Reconciliation.MustCompleteByUtc);
+        return deadline <= now || deadline - now < minimumAuthorityWindow
+            ? "broker_command_dispatch_authority_expired"
+            : null;
+    }
+
     public static TimeSpan RemainingGatewayWindow(
         BrokerCommandDispatchClaim claim,
         DateTimeOffset now,
@@ -123,6 +145,22 @@ internal static class BrokerCommandDispatchGuard
             capability.Reconciliation.MustCompleteByUtc);
         TimeSpan remaining = deadline - now;
         return remaining < configuredTimeout ? remaining : configuredTimeout;
+    }
+
+    public static bool IsAuthorityExpired(
+        BrokerCommandDispatchClaim claim,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        ArgumentNullException.ThrowIfNull(claim.Command);
+        AuthorizedBrokerCommand capability = claim.Command;
+        DateTimeOffset deadline = Earliest(
+            claim.ClaimExpiresAtUtc,
+            capability.Exposure.ValidUntilUtc,
+            capability.ExecutionLease.Lease.Claims.ExpiresAtUtc,
+            capability.Reconciliation.MustBeginByUtc,
+            capability.Reconciliation.MustCompleteByUtc);
+        return now.Offset != TimeSpan.Zero || deadline <= now;
     }
 
     private static LeaseActionClass RequiredLeaseAction(AuthorizedBrokerCommand capability) =>

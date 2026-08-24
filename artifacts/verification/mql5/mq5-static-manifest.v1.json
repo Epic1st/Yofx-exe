@@ -1,9 +1,9 @@
 {
   "schemaVersion": "mql5-static-inventory.v1",
-  "analyzerVersion": "yo4x-mql5-static-analyzer.v2",
-  "corpusSha256": "8052d74d395516aef01f221bf1a663b775ed02ccccbfa0476704d52112ee43b6",
+  "analyzerVersion": "yo4x-mql5-static-analyzer.v3",
+  "corpusSha256": "9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47",
   "fileCount": 198,
-  "totalBytes": 13100995,
+  "totalBytes": 12979438,
   "files": [
     {
       "relativePath": "18-avg-ma.mq5",
@@ -128,8 +128,8 @@
     {
       "relativePath": "20_200_expert_v4a2_ants.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 51465,
-      "sha256": "523c180200bcc1724cacf6ce8334de817930756cb655008f165aec0fb7b1c3cf",
+      "byteLength": 50102,
+      "sha256": "935d21bcaeddef5e72b5a2761e11ca5a9a532765da1b79a4538b5bacd11c12b2",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -340,8 +340,8 @@
     {
       "relativePath": "4rexbot.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 44897,
-      "sha256": "9346d5327ef4ef486ec7025435b3de7b5389fae4753657b5bd3cb140b0783a8f",
+      "byteLength": 43717,
+      "sha256": "a48e57a9d6b35a284d1f7a98a91569e01ac1243999404519454f7e662bc851ff",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -1282,8 +1282,8 @@
     {
       "relativePath": "9od10leporadi.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 6278,
-      "sha256": "6315c717e37e8c0c000852b23c6c98c6773925ad6199f1163cb5dc830fa94bdd",
+      "byteLength": 6114,
+      "sha256": "97e63db9a472d58df64d5200e5c039efbcb93697f2b1e3d0fa867afea0185896",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnTick"
@@ -1787,8 +1787,8 @@
     {
       "relativePath": "adx cross alerts.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 4989,
-      "sha256": "6c0485605d4a9e3b1762248eab50b9abf3c3f0d67aa0c5a090bb3eca31dd68dd",
+      "byteLength": 4853,
+      "sha256": "1899b22e56d7258dd7d9588e6d0e33a5e2a673ad0edf2e403586caefd6c8c7a6",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -2755,8 +2755,8 @@
     {
       "relativePath": "Ashu_Gold_EA_FINAL_V3.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 14027,
-      "sha256": "c826e067fec75c97300534095241b0837e58b195c3232fa33bc7147c5fbd14f5",
+      "byteLength": 13631,
+      "sha256": "b2986b724aba36d2edf8aef707334a8a38ab8ea44f0d7489fb55443adde5435a",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -2993,8 +2993,8 @@
     {
       "relativePath": "ATR.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 3880,
-      "sha256": "eb17ac80ffe0271451a4b2b47ce10bb628a42449cc7d24117e921b23bb3a33c3",
+      "byteLength": 3783,
+      "sha256": "cef04c9abbc85bdb299875abd1b8977bcc662a9eb2915486662628571729fc30",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -3511,8 +3511,8 @@
     {
       "relativePath": "Bambibabo.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 37248,
-      "sha256": "3e2f3d062165522bbde52753d6ec9c0b5a5fd7a2f2d5a77fa7e27a97e9be20e0",
+      "byteLength": 35991,
+      "sha256": "32a6b208aa35f7b6ad5d528619d5fcf959009fcd28ace24951b72ae16feb49c7",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -4234,8 +4234,8 @@
     {
       "relativePath": "Binary new v1.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 25644,
-      "sha256": "5f883ed71330d935a80c4440a0c012929de5307fc34213c7332d2d39a2313b8a",
+      "byteLength": 24999,
+      "sha256": "043d5fdc3e79fc06fd3c42a3db9962d051c114881f6fee93274c80b71d07a053",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -4918,8 +4918,8 @@
     {
       "relativePath": "BOT TP AND SL (2).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 6336,
-      "sha256": "3ef77a2ea6af45dd52599ff198530ec4bc98f01cff138f4cdaaa7f51996ce047",
+      "byteLength": 6131,
+      "sha256": "543ad5f72f79ccc811d1e253488baf4dcc5b1aa9e15367da14eb219ce89dd511",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnChartEvent",
@@ -5134,8 +5134,8 @@
     {
       "relativePath": "BOT TP AND SL.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 6336,
-      "sha256": "3ef77a2ea6af45dd52599ff198530ec4bc98f01cff138f4cdaaa7f51996ce047",
+      "byteLength": 6131,
+      "sha256": "543ad5f72f79ccc811d1e253488baf4dcc5b1aa9e15367da14eb219ce89dd511",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnChartEvent",
@@ -5350,8 +5350,8 @@
     {
       "relativePath": "Breakout Retest Pro EA Source Code.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 40900,
-      "sha256": "7434dc131b3b38f7405f19d20083c73d6ae9edd30d3104a177da77f47a87a69a",
+      "byteLength": 39901,
+      "sha256": "5a547c02dfc79f90e0294f370a6650c116953d2471c104b20e53f251dcac4d19",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -5703,8 +5703,8 @@
     {
       "relativePath": "Breakout Retest Pro EA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 42286,
-      "sha256": "29913a16b22f410fc498cb9d561a4f43e43bb2ff28ba8412a781b2f9029025d8",
+      "byteLength": 41378,
+      "sha256": "a3f82913be53a33f338d26de8bf298bf9ae9c10d48b2a127c884a5d20ec67648",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -6459,8 +6459,8 @@
     {
       "relativePath": "BRT_Pro_v2.1_Fixed-1.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 42746,
-      "sha256": "4ed672bb71bc4cb30745e44fcc222cb4d118cf7e5854d111c2349449851cd877",
+      "byteLength": 41710,
+      "sha256": "9feb74889b1bbc263d68315e6279e784ddb97f06c934468fdd0720a521d8ffb5",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -6812,8 +6812,8 @@
     {
       "relativePath": "BRT_Pro_v2.1_Fixed.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 42746,
-      "sha256": "4ed672bb71bc4cb30745e44fcc222cb4d118cf7e5854d111c2349449851cd877",
+      "byteLength": 41710,
+      "sha256": "9feb74889b1bbc263d68315e6279e784ddb97f06c934468fdd0720a521d8ffb5",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -7165,8 +7165,8 @@
     {
       "relativePath": "BRT_Pro_v2_Visual2026.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 40900,
-      "sha256": "7434dc131b3b38f7405f19d20083c73d6ae9edd30d3104a177da77f47a87a69a",
+      "byteLength": 39901,
+      "sha256": "5a547c02dfc79f90e0294f370a6650c116953d2471c104b20e53f251dcac4d19",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -7863,8 +7863,8 @@
     {
       "relativePath": "CMaan Hedging EA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 19945,
-      "sha256": "9676857f33d2a95a65720c60fc319a0a6d1cc02617b19919e731df93906252b1",
+      "byteLength": 19326,
+      "sha256": "22434af85cd22cff758ff867ec93ad951cce0ed9d7290e06e14683019a955d1b",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnInit",
@@ -8249,8 +8249,8 @@
     {
       "relativePath": "CRT_EA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 26841,
-      "sha256": "64f01f17e9570afbdb2134f4e2ceae8cce6119c1ede1d203f56c466dc28d892c",
+      "byteLength": 26099,
+      "sha256": "c504d65752b160ba94223c3568a60ffcc41b61990564821282f9e93903a668a7",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnChartEvent",
@@ -8515,8 +8515,8 @@
     {
       "relativePath": "CrudeOilScalpEA (2).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 29125,
-      "sha256": "6a203fb379e241a0bb52e848b6a4ee2d192c257512ea5614e9d52349c5e44c43",
+      "byteLength": 28383,
+      "sha256": "7a7b31027f4ee7ff38b6b2c7ed39b33794182b3206781a5e19e8c09869dd8fc7",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -8875,8 +8875,8 @@
     {
       "relativePath": "CrudeOilScalpEA (3).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 29125,
-      "sha256": "6a203fb379e241a0bb52e848b6a4ee2d192c257512ea5614e9d52349c5e44c43",
+      "byteLength": 28383,
+      "sha256": "7a7b31027f4ee7ff38b6b2c7ed39b33794182b3206781a5e19e8c09869dd8fc7",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -9235,8 +9235,8 @@
     {
       "relativePath": "CrudeOilScalpEA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 29125,
-      "sha256": "6a203fb379e241a0bb52e848b6a4ee2d192c257512ea5614e9d52349c5e44c43",
+      "byteLength": 28383,
+      "sha256": "7a7b31027f4ee7ff38b6b2c7ed39b33794182b3206781a5e19e8c09869dd8fc7",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -9595,8 +9595,8 @@
     {
       "relativePath": "CrudeOilScalpEA_Inverted.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 29782,
-      "sha256": "27497899c0ac6827c33205c3dbe05d7fa27366eecf49f4da5f236cb0ea022b1d",
+      "byteLength": 29035,
+      "sha256": "7efd7eaa8018a1f18a8a4e62be6bfe8d4f346880eee9304410e722fe6e8f44dd",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -9955,8 +9955,8 @@
     {
       "relativePath": "CrudeOilScalpEA_MT5.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 35333,
-      "sha256": "1fb20f458acf9acabbe04fb90e5a9aa7d17b1721a5180a22648d380b939d4307",
+      "byteLength": 34437,
+      "sha256": "3d66829e9a356dc74fc7c5834a7002e626389e4f68709c68f51ce6967c0618ae",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -11715,8 +11715,8 @@
     {
       "relativePath": "EA-MT5-OPENAI (2).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 109633,
-      "sha256": "f5cc68cdc6fcca7ebfd48210e2018fca8cfcd21b232fb29a3e0864787646a629",
+      "byteLength": 107164,
+      "sha256": "93f1c3294a0c507445780ef5af7dca554edfda36cd17f592f5cb29774a360825",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -12852,8 +12852,8 @@
     {
       "relativePath": "EATelemetry (2).mqh",
       "kind": "header",
-      "byteLength": 8108,
-      "sha256": "1ad785fea7a640fe2340d0661d3e6ba2bc8b069086ddf931cd9d7b5a9510d40c",
+      "byteLength": 7880,
+      "sha256": "6d5d7b56964c22960bec2b932b929a43c564f798ef445927fe5f90b721df89fc",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [],
@@ -13418,8 +13418,8 @@
     {
       "relativePath": "EA_ULTRA_AGGRESSIVE (2).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 17919,
-      "sha256": "6e14f0d17c3b2f61379bab3e7b14b68290f271c2592b0cce657afa836b006f98",
+      "byteLength": 17360,
+      "sha256": "029f5b1d60fad474c9f2f71dcfb78caa61d5115288bd79c7bf147881bce3266a",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -15202,8 +15202,8 @@
     {
       "relativePath": "Engine.mqh",
       "kind": "header",
-      "byteLength": 35165,
-      "sha256": "dd34e346014c9d639da545a70dfc210866fb74ff1929114df64a13d19db7527d",
+      "byteLength": 33955,
+      "sha256": "87df7191017fad2666d1565e37d24cb95470eddc5cb017c4634883b4124faced",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [
@@ -15300,8 +15300,8 @@
     {
       "relativePath": "ExpertMAPSARSizeOptimized.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 6710,
-      "sha256": "0446a615081a09302e1bb0d8fa091cf3cdd38b7d19e60b6fdc4dc3a4069763ab",
+      "byteLength": 6534,
+      "sha256": "f8e915e2e449edeae9e8314d93a1430bf1499f5283e9e6642c55b6c0e20b19bb",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -15481,8 +15481,8 @@
     {
       "relativePath": "fib.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 26838,
-      "sha256": "cb1ec3078de296d3eaef2b3c7d87abaa61fbaff8f7cdedf02eafdc50de3d115f",
+      "byteLength": 26142,
+      "sha256": "4d65679f3d35f90f060a8c538b8c6de6a3dba570860642b2cb4f08d437317177",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -15890,8 +15890,8 @@
     {
       "relativePath": "free_money_expert_robot_bot_hide_sl_and_tp_fixed_live_and_demo.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 4881,
-      "sha256": "9b24f753c9991bbe88bba51fdcb2133245700571f9a551f17872354bae8c0745",
+      "byteLength": 4736,
+      "sha256": "d92b035c34aba7d99451fb82bce4d56851ffabbe2fe0c0b6916d3cb513fb7145",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnTick"
@@ -16175,8 +16175,8 @@
     {
       "relativePath": "gold 1m scalper.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 19254,
-      "sha256": "12063c3ac2c94a0a3a6fc900f7b7656aa791e8aebb9688a56991cac1dd9e163f",
+      "byteLength": 18704,
+      "sha256": "fd5fe04414d8020d30464efcaa7358590c85e380fe979a575705e3a52e03ae8c",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -19088,8 +19088,8 @@
     {
       "relativePath": "GridTrendPro.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 14688,
-      "sha256": "d4ccdd9cb215f5e2cf141c4dc6904c18ef8245cb31d2faf3c72f984147a5994f",
+      "byteLength": 14297,
+      "sha256": "35991c3c581832335fd7a13e221ec0e4405f0993aec002b3549a6042d4282bad",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -19343,8 +19343,8 @@
     {
       "relativePath": "half-trend-buy-sell-indicator.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 11190,
-      "sha256": "8233532e63e9792dcd0d891d9af4b3bd0d32abc27fe8b2532fadd7a62bc2f902",
+      "byteLength": 10889,
+      "sha256": "2df36f1fc750ac365346ee9e92eaa0fd7ea863a92f5bfa83cf288b4ca8000103",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -19886,8 +19886,8 @@
     {
       "relativePath": "Hedge combo.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 33668,
-      "sha256": "483b2cac29a74330c2d12d4283d58c11b839418880aedf9d9c415c381c5c4263",
+      "byteLength": 32687,
+      "sha256": "564ec76c01517f51dd52ab90afde937eb6019ff5b2b94559f7160710cf31a902",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -20862,8 +20862,8 @@
     {
       "relativePath": "Hedgetest.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 18519,
-      "sha256": "812e0be1b8331a14e4e4be65476547537313c58db2bc474bef65c21d9dbb1d03",
+      "byteLength": 17917,
+      "sha256": "9f171bf61f70c5f53ab855d72358357bc4db7d863f93cfcdac0e8717593850c8",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnInit",
@@ -21079,8 +21079,8 @@
     {
       "relativePath": "HiddenTrail_MT4.mqh",
       "kind": "header",
-      "byteLength": 12577,
-      "sha256": "c24a994540198b1d46cf30e159694c4201cd213e0915875202a3d622beec120a",
+      "byteLength": 12260,
+      "sha256": "0aadd0873ab278a94c861f5fae4a35f63c82023962171b3dd8ca146de2fa78cf",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [],
@@ -23565,8 +23565,8 @@
     {
       "relativePath": "lwHiddenSmashDayContextExpert.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 24444,
-      "sha256": "7b8d0cea6cd08c6b068819b47bb4f39cb31e9e2b4ec690d4fed7750b22ef4a69",
+      "byteLength": 23744,
+      "sha256": "7a818c05ca3745b502f6568e34593ed0ed79ed877d291144deb976da7c9726c4",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -24022,8 +24022,8 @@
     {
       "relativePath": "MB_Sniper EA v1.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 36162,
-      "sha256": "3040a0ff562bf3ee2ac1e17957eaa84e1b9174a5a617faf89c07fdccbaf66e8e",
+      "byteLength": 35324,
+      "sha256": "c3f6a1d845435bfb899b4191da4de3b4ada146005706b10a8a6eafb5da89ad2d",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -24355,8 +24355,8 @@
     {
       "relativePath": "MB_Sniper_Indicator.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 16560,
-      "sha256": "511d251224ac82020a047fc9c77441416ae2126ef659b6e2e102461f7b6d27e3",
+      "byteLength": 16201,
+      "sha256": "0ae25a8d5acbb3cc42a96c3e9238a058290554d8f68db3ec2d141d7e2acc0581",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -24905,8 +24905,8 @@
     {
       "relativePath": "MForex 1.02 (converted by @ivanchodev27).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 22927,
-      "sha256": "cfeb4d8631519796ddde9daea62555b722b513aa5fe593b54ad9cdf19d5ed716",
+      "byteLength": 22324,
+      "sha256": "1d3ee3d30aee476b58b66033e44f8c841dabbf016b960bb4d7053e7abfe0faef",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -25271,8 +25271,8 @@
     {
       "relativePath": "MFT TRADING ROBOT.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 9817,
-      "sha256": "3a82cc931d336bb00c256d46a29737f61130cf36c6a27702dcf539d5717c3d2b",
+      "byteLength": 9600,
+      "sha256": "7151eaa5b4a6d5b0720b03cbc951b15fb1ff7a1c22bacb8c7b183ae034df4c63",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -27292,8 +27292,8 @@
     {
       "relativePath": "Monster Arrows MT5 SOURCE CODE @FundedMillionAiress.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 39119,
-      "sha256": "69123fe244e81029124127be0c248bb0123791b8184e63ba75d4b123831dcc5d",
+      "byteLength": 38238,
+      "sha256": "d06d2a5242424e30ad595552eaa4e6fd598317e2203bfa175faf5ce669a39468",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -27563,8 +27563,8 @@
     {
       "relativePath": "mt DanielScalper.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 7130,
-      "sha256": "182e7f0b504f7776924bf28bddfe4f709805202ebe044f384353a70a3d4fd9fb",
+      "byteLength": 6932,
+      "sha256": "12c5826e949742380d942827fb9765422d04492c5cdd449ef14207eaca72a152",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnInit",
@@ -27715,8 +27715,8 @@
     {
       "relativePath": "Nasdaq Fundamental EA V2 with Tp SL.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 6021,
-      "sha256": "75c67aac7ab43dfae0d168c48bb73b92a0256729a6656f6a7f28a804a8294d5d",
+      "byteLength": 5870,
+      "sha256": "d60e8d77f344c7d7d3be89920d66676534e5ecd0532f31666fb1407e364de3ad",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -27826,8 +27826,8 @@
     {
       "relativePath": "News Stopper MT5.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 21245,
-      "sha256": "bce0834521613d650c78ca6f8edb25a56781932c223a181aba1150c773259908",
+      "byteLength": 20663,
+      "sha256": "25318ad8d2194f29976638fe5caf7f8d14bb5add499d7d5bd1a22966a6a1b31e",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -28582,8 +28582,8 @@
     {
       "relativePath": "OlliverKillEA (2).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 11957,
-      "sha256": "06d780f2b4171f10017f4f5f1fd7bf9e4a2cb9052a2f0d77f3edde52f6f8ddb7",
+      "byteLength": 11652,
+      "sha256": "81d23bbc2ccca54f4d5ea03d6e7b1c95ae8ed6689e277b3e18a556b2218acd45",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -29057,8 +29057,8 @@
     {
       "relativePath": "ORBEA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 16654,
-      "sha256": "e1451f4ad747945941541ca3301196819f31b2242240fe787403960e34b293a0",
+      "byteLength": 16187,
+      "sha256": "6d25a328d15760621b3406f56c7732c1f65b531e3cf685a7bab674169f9eb689",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -29293,8 +29293,8 @@
     {
       "relativePath": "OrderCache.mqh",
       "kind": "header",
-      "byteLength": 4440,
-      "sha256": "2a338cd7bfb8100d917f36c50258df175c085e48b402860753d160eae8e2a6d9",
+      "byteLength": 4315,
+      "sha256": "359fabc39b8b0177cd342721f2171217bd105f18c89b821cdba822e4542c2a6f",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [],
@@ -29371,8 +29371,8 @@
     {
       "relativePath": "OrderExecution.mqh",
       "kind": "header",
-      "byteLength": 3541,
-      "sha256": "beeb7a811e141876747edfe60d38ab8564b0973fab14e0500197d1c8348b1174",
+      "byteLength": 3402,
+      "sha256": "97398d72357a95505816ab6c783802c97e63e772f26744917244eb7ec6177c5a",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [],
@@ -29444,8 +29444,8 @@
     {
       "relativePath": "ORION EA BY @Subzero_911.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 49839,
-      "sha256": "4fde04b6d951a808bb070a04bcd20e5343db0973edfe4c9c834fc90a291755b0",
+      "byteLength": 48563,
+      "sha256": "64defec4c1aee37957835a49e5734557c36be8612de34fe0b38104a607ec51f7",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnChartEvent",
@@ -29835,8 +29835,8 @@
     {
       "relativePath": "Pattern Recognnition By @FundedMillionAiress.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 29680,
-      "sha256": "0b314cc28c5447a169ac11d10b2fcec4cd2bfabb56252ec1dec00ef2e083eccf",
+      "byteLength": 28839,
+      "sha256": "181b62e966797e27edbdfd6bb6d28bcf2a6c1c1be30bf765a81663dd7570e9a0",
       "textEncoding": "windows-1252",
       "entrypoints": [
         "OnCalculate",
@@ -30067,8 +30067,8 @@
     {
       "relativePath": "PatternTypes.mqh",
       "kind": "header",
-      "byteLength": 1415,
-      "sha256": "421dcda916ef3a0c744887ada35b980d924559084d558dc2c5c6bf515134ef08",
+      "byteLength": 1370,
+      "sha256": "2b7a2407e65c083540ce327006bb68f52d1a2d458ceb97c9cc3a6cf3b8da41c2",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [],
@@ -30095,8 +30095,8 @@
     {
       "relativePath": "PM_Scalper Pro v2.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 43933,
-      "sha256": "d570ccd91ed1324486cc816da879b93e1a28e0f6af26a545db0705a241474dc2",
+      "byteLength": 42639,
+      "sha256": "d34690c929cfa75bd0041e6e47c8fc7eeda8b6bbdfce6f1fe194988bb5a09aba",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -30466,8 +30466,8 @@
     {
       "relativePath": "PM_Scalper.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 30111,
-      "sha256": "e490611da6ad97034413b4761c5520f0b683c2b400bc02811ba179b9bd48ac67",
+      "byteLength": 29328,
+      "sha256": "d18075ef53051c2fba250744a61e93363c717b689ce92ed9bce00a57a9b01f8f",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -30801,8 +30801,8 @@
     {
       "relativePath": "PrecisionFlowEA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 12597,
-      "sha256": "2609b5109d7962be51f4c2fca95089e4265874a508dc4c531a9bc4a58467f094",
+      "byteLength": 12258,
+      "sha256": "85329022356d16fcd43e7cf33281b7d48227cd20d62923cb58de88c96bd38a15",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -31709,8 +31709,8 @@
     {
       "relativePath": "Quantum Queen X 4.3.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 50235,
-      "sha256": "4bb73e99d0ff1ff15fa2a5aa5f800989c829b8fa49fdea05afa904069b7c1c90",
+      "byteLength": 48857,
+      "sha256": "fb1e16c61b3d215614486e4af909547e35b63e135e20ef5220c38cba71b15182",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnChartEvent",
@@ -32206,8 +32206,8 @@
     {
       "relativePath": "Range BreakOut MT5 EA  @FundedMillionAiress.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 14676,
-      "sha256": "29e9f4b8e6c130454e8edcc86b75d2f81ffb217ac4d33cd2cb0914a2dcde948b",
+      "byteLength": 14402,
+      "sha256": "05429de752b8837f60b1eb6d816f788bc81e274934523c83f2e4146958193b29",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -32637,8 +32637,8 @@
     {
       "relativePath": "ReverseTrailing.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 10966,
-      "sha256": "0b00cafc5d8749e2626d21381ace4bf147f9dd8a0b97338174ba3e5ecbb18068",
+      "byteLength": 10720,
+      "sha256": "9e417f536822321a6f041124cb047095ba6797a5736e812d74639f403d6954be",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -33005,8 +33005,8 @@
     {
       "relativePath": "RSI RECOVERY SOURCE CODE By @FundedMillionAiress.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 6207,
-      "sha256": "4067fe54162cb83d70b7a0d399e873c837f98e2ead563f965acc74ffc01f6615",
+      "byteLength": 6031,
+      "sha256": "1fa7f9c7e5f12c1a7dfb227e2bc7ac4a720ad4024e4cf54e4dd2f18418878c77",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnInit",
@@ -33237,8 +33237,8 @@
     {
       "relativePath": "RSIOMA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 13316,
-      "sha256": "a6c1d3b0cdb914e4c5d3ffdd1a3f258c6e98df51cb961ed2645f95f65d475607",
+      "byteLength": 12961,
+      "sha256": "548a480e6da005aaad7958ac436014aec1deb435485dbe805ee6469f309852f0",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -33402,8 +33402,8 @@
     {
       "relativePath": "RUDY EA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 28253,
-      "sha256": "06623ec7c94fb3dc52009afe10867cbdcc59e9a856013e596c48dce94b64bc37",
+      "byteLength": 27513,
+      "sha256": "fccea86d6a4d47854c10da0453554b8cb22554338114a2386a7f3c21847060f9",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -34455,8 +34455,8 @@
     {
       "relativePath": "Scalper cash maker.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 28995,
-      "sha256": "2f04ea6523fd65d1f1dfa09ec374e1e6c7ab27ddec514ec4f6ecc222acfb36ce",
+      "byteLength": 28334,
+      "sha256": "0a5c84ca31f4fe216d898e6b762700651fded0085bc1056ff0c8b11a4f6f3e78",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnChartEvent",
@@ -35243,8 +35243,8 @@
     {
       "relativePath": "SetFixedSLandTP.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 19599,
-      "sha256": "b8f26c6d919295fa867994b980457e699555b71e65af5b63bfd83b61b2ac6426",
+      "byteLength": 19174,
+      "sha256": "f7bbb3fad15bd18c00ce1f9110e2e6365dcebacd5307db2a63b5d5b2d5bccb1c",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnStart"
@@ -36166,8 +36166,8 @@
     {
       "relativePath": "SHK_Professional_Heikin_Ashi_Signals.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 27144,
-      "sha256": "ebe18ea094b5737e1813b09dcda15490b2eff13b0dd2a06564f38fc5aeceb964",
+      "byteLength": 26304,
+      "sha256": "2e75382f597dd60bad15aad5c087798caedd41ceb2dd1a93bf4b616ff6bf562d",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -36393,8 +36393,8 @@
     {
       "relativePath": "Smart Money Concepts V5 MT4 @FundedMillionAiress.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 55715,
-      "sha256": "d56acd7101bab06d3f347b1d92f4c84335be709b28838c6d3cdffa89435fb1b4",
+      "byteLength": 54423,
+      "sha256": "cc58ef9938d2a49456a2c8a7460193d24c5951774a999122e22fa66b40c6d302",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -36672,8 +36672,8 @@
     {
       "relativePath": "SMART MONEY ZONE V1.01.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 35050,
-      "sha256": "6c06c101ab3ea29ed672702c3b7da2c6ab37a346247c2c98ecb50fb9ee0d2cb4",
+      "byteLength": 34162,
+      "sha256": "924da3a7052e14005a375d27f7afaf68294e1174fc8523e75db3021107dde87d",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -37201,8 +37201,8 @@
     {
       "relativePath": "Smart_Grid_v6_Scalper.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 49286,
-      "sha256": "5ecd4312fe82a211234e82d16e668b4736dca2e10838ad0172c7ca3a94a57734",
+      "byteLength": 48105,
+      "sha256": "cc6ee40e206b7de602c88f62c7a3dd8660974b2e03dd34348af79eb1c74ce8e5",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -38502,8 +38502,8 @@
     {
       "relativePath": "smc2.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 12143,
-      "sha256": "e788e283caf5f213c36dbf323045cc574a48e724cb1630a9550d55adae1a02da",
+      "byteLength": 11882,
+      "sha256": "0a44f782803e306ba8426bf22ba6493b4521c878e83802da71db785475d63fff",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnInit",
@@ -39582,8 +39582,8 @@
     {
       "relativePath": "SMITE_EA_v5.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 26935,
-      "sha256": "df4bb0bcfe64a2b3985ba857702e2712e67f9a04258bfd4d6852301eb5ac54ce",
+      "byteLength": 26279,
+      "sha256": "14dc28835e0d49bfcaa5dd5227d3b93df19e6ddb94e443500909c2f862169919",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -39838,8 +39838,8 @@
     {
       "relativePath": "Source Code By @FundedMillionAiress (2).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 32201,
-      "sha256": "795699e38369a6f33d27c42ff585e23585ecc248d69da26642fa05fa97700ee4",
+      "byteLength": 31336,
+      "sha256": "c1a4039ed9de000bc1d467d96fa251015075ed4c15c17679e609611b88e8e8dd",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -40051,8 +40051,8 @@
     {
       "relativePath": "Source Code By @FundedMillionAiress (3).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 32162,
-      "sha256": "3ebde6bbf8c798f4cebe65c276a3d75507a0f27ebb95b31b46f29d044b917470",
+      "byteLength": 31297,
+      "sha256": "5c3522c9b706a4522bfe064cd191ddcd0cad4d133d92420822f16be68167feec",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -40264,8 +40264,8 @@
     {
       "relativePath": "Source Code By @FundedMillionAiress.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 32162,
-      "sha256": "3ebde6bbf8c798f4cebe65c276a3d75507a0f27ebb95b31b46f29d044b917470",
+      "byteLength": 31297,
+      "sha256": "5c3522c9b706a4522bfe064cd191ddcd0cad4d133d92420822f16be68167feec",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -40477,8 +40477,8 @@
     {
       "relativePath": "STAR_v11.20.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 2657669,
-      "sha256": "c5d7144b57d730318a1435f23fe9b4b9f597699a970210c140a30585af5b5233",
+      "byteLength": 2606273,
+      "sha256": "c986467ff28e981028d9ebbbce885a957f8ce3487db91bca29a2e42e65250f72",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -42680,8 +42680,8 @@
     {
       "relativePath": "SuperTrend_Quant_Pro_Elite.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 19061,
-      "sha256": "158625eb95d17e90a2292b1ee38fb1d83864ff22f7fe6da1f7289c8ed4f13847",
+      "byteLength": 18648,
+      "sha256": "847fe2e10bbea54da66ee3253ca61098252db0db9aff090e337229ebbe523a3d",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -42956,8 +42956,8 @@
     {
       "relativePath": "SureForexHedging 1.09 a.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 13474,
-      "sha256": "f4574c9a6bf70dec8564c9d4f6c5192b1581b52ead84765e10251185b3b93dbc",
+      "byteLength": 13174,
+      "sha256": "138564fc33cc8107c1ba420b2ba7267aff96f1714a202f9b5621c35a5c7e2287",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -43249,8 +43249,8 @@
     {
       "relativePath": "Swit_X_Scalper.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 18977,
-      "sha256": "1145a67e624d346744cf7e4ab5b9c98e201703d9ea1b08160e4eb4251fb7a24f",
+      "byteLength": 18475,
+      "sha256": "b044aee2bbe8b61d3492e0594616c3a220243b77664aa2eaadfd1abfc49126ba",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -43519,8 +43519,8 @@
     {
       "relativePath": "Thanos EA Source Code.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 52610,
-      "sha256": "d4d3c1ec9fd17ac30ba4cf71046ba3e726704419a69aebbf5ecbe2d503f80a60",
+      "byteLength": 51367,
+      "sha256": "b4ce633e31d0af0b6b263323036d1550e5cfebbe536997a15aff338d1f1c6c87",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -43934,8 +43934,8 @@
     {
       "relativePath": "Thanos V1.0 (2).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 52736,
-      "sha256": "03d2da506a971d16eeaafc0e38d4d79afede90043cdb755fc3695018e237cc9b",
+      "byteLength": 51490,
+      "sha256": "4fead165bd5fdfacdc440ac7a3c879633807cf58bbb8b01e1f0e0ef1b7537a87",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -44349,8 +44349,8 @@
     {
       "relativePath": "Thanos V1.0 (3).mq5",
       "kind": "expertOrProgram",
-      "byteLength": 52736,
-      "sha256": "03d2da506a971d16eeaafc0e38d4d79afede90043cdb755fc3695018e237cc9b",
+      "byteLength": 51490,
+      "sha256": "4fead165bd5fdfacdc440ac7a3c879633807cf58bbb8b01e1f0e0ef1b7537a87",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -44764,8 +44764,8 @@
     {
       "relativePath": "Thanos V1.0.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 52736,
-      "sha256": "03d2da506a971d16eeaafc0e38d4d79afede90043cdb755fc3695018e237cc9b",
+      "byteLength": 51490,
+      "sha256": "4fead165bd5fdfacdc440ac7a3c879633807cf58bbb8b01e1f0e0ef1b7537a87",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -45179,8 +45179,8 @@
     {
       "relativePath": "The Gold Reaper v4.1 MT5.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 373828,
-      "sha256": "33dfdb6a77dfbe6aae3877d51803d7c116705b18c7e9bc90bceae4ca8dfd687e",
+      "byteLength": 363247,
+      "sha256": "352f675d30f9a4dd175127b5830386d0741e88a815af8644d3edc9513bf87640",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -45790,8 +45790,8 @@
     {
       "relativePath": "The REAL-GAINS Algo MT5 M1 EA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 17340,
-      "sha256": "af0fbe07d92b0fb03096cc403838e0b717625f94a8a13dff3dba79a1284cf038",
+      "byteLength": 16872,
+      "sha256": "5770ab0ffd0f5b2efb458658d4edbf00f8928557eb7677de1c77dbd4339d8edf",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -46068,8 +46068,8 @@
     {
       "relativePath": "THEHFT.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 21077,
-      "sha256": "1b509f8038ce3109da421e1e4906d81479a1255c3986188e09291677e86be127",
+      "byteLength": 20526,
+      "sha256": "996fc0cc754244bf0c9eca8949306e9feca6b25b220b16d1b9c934634566bf6f",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnDeinit",
@@ -47168,8 +47168,8 @@
     {
       "relativePath": "Trade_Assistant.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 10929,
-      "sha256": "90fb4f4161cc7329551e7c5958cca3ead6f40d8ed386e2baba2a0cdefbfd6bd6",
+      "byteLength": 10657,
+      "sha256": "f646f2758368f6a1f6a31a27e60527b563448552f23e4e1ec11c97adf0c6f111",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -47389,8 +47389,8 @@
     {
       "relativePath": "trade_history_v3.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 7387,
-      "sha256": "60374aaa5f32da8e29aaa31457dfda595732f9c5851cb54b0b0462b938ff29f1",
+      "byteLength": 7176,
+      "sha256": "3c566d7097ae725685fa4a573e6267fb3ec6eada035699cac879a57b4a224e19",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnStart"
@@ -47744,8 +47744,8 @@
     {
       "relativePath": "Trailing Stop on Profit.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 12338,
-      "sha256": "75f9e7ce80ec0c48bb14750704d192d031cfdfe57ac7f9c9b15b088d7525d8b5",
+      "byteLength": 12031,
+      "sha256": "937414a5f6226903f9a2454dc52d55220dbc3779efea9beb05faf426e4249b88",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnChartEvent",
@@ -48071,8 +48071,8 @@
     {
       "relativePath": "Trinity Sniper zone EA.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 27681,
-      "sha256": "386b0b883a4d02c27db8d72cfde1b82d278a603eac8c5160a59481382ded6cd7",
+      "byteLength": 26965,
+      "sha256": "d20ce50f251bb87fb8d058275dfa5aabfe76b97dcd473d6415655e3782b6ec1d",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -49372,8 +49372,8 @@
     {
       "relativePath": "VolatilityFlip.mqh",
       "kind": "header",
-      "byteLength": 4832,
-      "sha256": "1ac148b7a4c9186d3813c3b2ab762d4addf81001ad5238c3904cfea7a6909ade",
+      "byteLength": 4692,
+      "sha256": "6108249295274c4c00f5284dc550b1a8f3400f59c9431f46fc42b1c9b473f4ae",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [],
@@ -49421,8 +49421,8 @@
     {
       "relativePath": "Volume Profile Source Code.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 60128,
-      "sha256": "5fe54b6a85a1ef211572c74738ea8b37d639d9c9d11b85f161f54da2900a0186",
+      "byteLength": 58724,
+      "sha256": "68a10bf8b9aebbdd56f8368ea07e342b5a6b018cc76c31514f265b1dd6cc8d0c",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -49707,8 +49707,8 @@
     {
       "relativePath": "Volume Up Down MT5.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 3627,
-      "sha256": "d9a0c8b1de6db2236743b9a6850093178543a2675d89a02edaa65959ce150061",
+      "byteLength": 3521,
+      "sha256": "3e1f5f9342674b516c8f1d53f9d257080185cb2c05e70e145969c2cf270e82d4",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -49796,8 +49796,8 @@
     {
       "relativePath": "VP Range V6 Source Code.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 62747,
-      "sha256": "e138eada2a11988a554040f57fc584059edb8eaca4ec0b49a8dca96abb272e58",
+      "byteLength": 61277,
+      "sha256": "a1f8b820d17e8ea305fc609381ac0c7a4c8860ffec96e50a51c1e7fdfaab45f7",
       "textEncoding": "utf-8-bom",
       "entrypoints": [
         "OnCalculate",
@@ -50080,8 +50080,8 @@
     {
       "relativePath": "VSA Indicator\u00B4s Simple Weis Wave .mq5",
       "kind": "expertOrProgram",
-      "byteLength": 5038,
-      "sha256": "8a15f04641ee305c05e3f66a27ee25bf3140e788978b866252bdee2a1701536f",
+      "byteLength": 4820,
+      "sha256": "6c85f5da1bc72bb52152495f25ce1bc3fba99b4aec0955ce5e44a70444c1bcf5",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnCalculate",
@@ -50382,8 +50382,8 @@
     {
       "relativePath": "WyckoffSpringEA1.mq5",
       "kind": "expertOrProgram",
-      "byteLength": 7074,
-      "sha256": "97625b44084d8afdca24f548001c83dc0ff8530cd23e7fd2958f96b61c116892",
+      "byteLength": 6881,
+      "sha256": "b7ee7c29fe1d959df7fd84c1a3e2addf0cd79ee1311b9e7f3d1de6f66ba0797c",
       "textEncoding": "utf-8",
       "entrypoints": [
         "OnDeinit",
@@ -51783,8 +51783,8 @@
     {
       "relativePath": "XMCBasketManager.mqh",
       "kind": "header",
-      "byteLength": 9396,
-      "sha256": "c9521b71c861f26e00ad3ada2e2adc00344d7e851fc4482b186dd801c850db13",
+      "byteLength": 9045,
+      "sha256": "1f0a17f22b4980545eb4067fb95146e01d1cf869d02bced1093db21f4101cbf9",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [
@@ -51869,8 +51869,8 @@
     {
       "relativePath": "XMCEntryEngine.mqh",
       "kind": "header",
-      "byteLength": 3039,
-      "sha256": "6c2514a43b2496a13bef0e563bf6d2bcc601fb8698c78f7acd708772f71fb444",
+      "byteLength": 2921,
+      "sha256": "19c5ba94f8f5793c10b427526916d999d8f348f32ae234a1bec120c1a870f2e5",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [
@@ -51940,8 +51940,8 @@
     {
       "relativePath": "XMCStrengthEngine.mqh",
       "kind": "header",
-      "byteLength": 4471,
-      "sha256": "6d34de23ca9a606536577fd49906440a126589ca92ab618608cd9edb52ea4106",
+      "byteLength": 4300,
+      "sha256": "010e1e713532ad41e4a9cef33d797dedf02745698d1c38926e29e254fe523b79",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [],
@@ -51980,8 +51980,8 @@
     {
       "relativePath": "XMCTradeUtils.mqh",
       "kind": "header",
-      "byteLength": 2921,
-      "sha256": "eee813c8dc212efd02bfe9946e682ea04c8c802c4820dc4e7ea0745df4b0b962",
+      "byteLength": 2825,
+      "sha256": "063798e3463a28725b49f76296888183d6272a30e78f3145df7ee7b5bed853d8",
       "textEncoding": "utf-8",
       "entrypoints": [],
       "includes": [],

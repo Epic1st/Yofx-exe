@@ -66,7 +66,7 @@ public sealed class CredentialCapabilitySourceContractTests
     {
         string roles = Read("src", "BuildingBlocks", "YO4X.Persistence.Postgres",
             "Security", "least_privilege_roles.sql");
-        string secret = Slice(roles, "-- Secret ingestion:", "-- Authenticated broker-result ingress");
+        string secret = Slice(roles, "-- Secret ingestion:", "-- Authenticated user-operation-result ingress");
         string capabilityReadiness = Read("src", "BuildingBlocks", "YO4X.Persistence.Postgres",
             "PostgresCredentialIngestionGrantStore.cs");
         string boundaryReadiness = Read("src", "Apps", "YO4X.SecretIngestion.Api",
@@ -77,7 +77,14 @@ public sealed class CredentialCapabilitySourceContractTests
         Assert.Contains("control.release_credential_ingestion_grant", secret, StringComparison.Ordinal);
         Assert.Contains("control.complete_credential_ingestion_grant", secret, StringComparison.Ordinal);
         Assert.DoesNotContain("expire_secret_credential_ingestion_grant", secret, StringComparison.Ordinal);
-        Assert.DoesNotContain("grant select", secret, StringComparison.OrdinalIgnoreCase);
+        const string migrationRead =
+            "grant select (migration_id, sha256) on control.schema_migrations to yo4x_secret_ingestion;";
+        string normalizedSecret = Normalize(secret);
+        Assert.Contains(migrationRead, normalizedSecret, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "grant select",
+            normalizedSecret.Replace(migrationRead, string.Empty, StringComparison.Ordinal),
+            StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("grant update", secret, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("grant insert", secret, StringComparison.OrdinalIgnoreCase);
 

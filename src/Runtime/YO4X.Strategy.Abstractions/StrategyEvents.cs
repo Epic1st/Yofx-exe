@@ -196,6 +196,11 @@ public sealed record ExecutionEvent : StrategyEvent
 
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerEventId);
         ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
+        if (!Enum.IsDefined(executionKind))
+        {
+            throw new ArgumentOutOfRangeException(nameof(executionKind));
+        }
+
         ArgumentOutOfRangeException.ThrowIfNegative(filledVolume);
         if (fillPrice is { } normalizedFillPrice)
         {
@@ -264,6 +269,11 @@ public sealed record StopEvent : StrategyEvent
     public StopEvent(DateTimeOffset occurredAtUtc, StrategyStopReason reason)
         : base(occurredAtUtc)
     {
+        if (!Enum.IsDefined(reason))
+        {
+            throw new ArgumentOutOfRangeException(nameof(reason));
+        }
+
         Reason = reason;
     }
 

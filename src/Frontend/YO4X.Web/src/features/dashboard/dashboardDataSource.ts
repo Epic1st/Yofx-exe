@@ -60,8 +60,8 @@ export function createDashboardDataSource(
       const activityPromise = config.deploymentId
         ? client.getDeploymentActivity(config.deploymentId, 5, signal)
         : Promise.resolve([]);
-      const compatibilityPromise = config.strategyCompatibilityPath
-        ? client.getStrategyCompatibility(config.strategyCompatibilityPath, signal)
+      const compatibilityPromise = config.strategyCorpusId
+        ? client.getStrategyCompatibility(config.strategyCorpusId, signal)
         : Promise.resolve(null);
       const runtimePromise = config.runtimeReadinessPath
         ? client.getRuntimeReadiness(config.runtimeReadinessPath, signal)

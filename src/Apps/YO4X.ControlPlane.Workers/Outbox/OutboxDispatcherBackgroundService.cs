@@ -44,6 +44,12 @@ public sealed partial class OutboxDispatcherBackgroundService : BackgroundServic
                 {
                     break;
                 }
+                catch (WorkerOperationTerminationUnconfirmedException)
+                {
+                    _readiness.MarkStopped();
+                    LogCycleFailure(_logger, "TerminationUnconfirmed");
+                    throw;
+                }
                 catch (Exception exception)
                 {
                     _readiness.MarkNotReady(OutboxReadinessCondition.StoreOperationFailed);

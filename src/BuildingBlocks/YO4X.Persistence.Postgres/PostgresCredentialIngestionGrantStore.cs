@@ -150,6 +150,16 @@ public sealed class PostgresCredentialIngestionGrantStore : ICredentialIngestion
         {
             await using NpgsqlConnection connection = await _database.OpenConnectionAsync(cancellationToken)
                 .ConfigureAwait(false);
+            if (!await PostgresRoleCapabilityFingerprint.IsSatisfiedAsync(
+                    connection,
+                    transaction: null,
+                    Yo4xPostgresRoleContracts.SecretIngestion,
+                    cancellationToken)
+                .ConfigureAwait(false))
+            {
+                return false;
+            }
+
             await using NpgsqlCommand command = new(ReadinessSql, connection);
             return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
         }

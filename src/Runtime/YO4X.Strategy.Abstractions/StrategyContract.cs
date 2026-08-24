@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using YO4X.BuildingBlocks;
 using YO4X.Runtime.Contracts;
 
@@ -14,12 +15,14 @@ public interface IYo4xStrategy
 
 public sealed class StrategyResult
 {
+    public const int MaximumRequestedActionCount = 256;
+
     public StrategyResult(StrategyState nextState, IEnumerable<RequestedAction>? requestedActions = null)
     {
         ArgumentNullException.ThrowIfNull(nextState);
         ContractVersion = RuntimeContractVersions.StrategyResultV1;
         NextState = nextState;
-        RequestedActions = Array.AsReadOnly((requestedActions ?? []).ToArray());
+        RequestedActions = Array.AsReadOnly(SnapshotActions(requestedActions));
     }
 
     public int ContractVersion { get; }
@@ -27,6 +30,49 @@ public sealed class StrategyResult
     public StrategyState NextState { get; }
 
     public IReadOnlyList<RequestedAction> RequestedActions { get; }
+
+    private static RequestedAction[] SnapshotActions(IEnumerable<RequestedAction>? source)
+    {
+        if (source is null)
+        {
+            return [];
+        }
+
+        if (source is IReadOnlyList<RequestedAction> list)
+        {
+            int count = list.Count;
+            if (count is < 0 || count > MaximumRequestedActionCount)
+            {
+                throw new ArgumentException(
+                    "The requested-action collection exceeds the durable action limit.",
+                    nameof(source));
+            }
+
+            var result = new RequestedAction[count];
+            for (int index = 0; index < count; index++)
+            {
+                result[index] = list[index];
+            }
+
+            return result;
+        }
+
+        var values = new List<RequestedAction>(MaximumRequestedActionCount);
+        using IEnumerator<RequestedAction> enumerator = source.GetEnumerator();
+        while (enumerator.MoveNext())
+        {
+            if (values.Count == MaximumRequestedActionCount)
+            {
+                throw new ArgumentException(
+                    "The requested-action collection exceeds the durable action limit.",
+                    nameof(source));
+            }
+
+            values.Add(enumerator.Current);
+        }
+
+        return values.ToArray();
+    }
 }
 
 public sealed record StrategyResultBounds(
@@ -118,6 +164,20 @@ public static class StrategyResultValidator
         var idempotencyKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (RequestedAction action in result.RequestedActions)
         {
+            if (action is null)
+            {
+                return Failure(
+                    StrategyResultValidationCode.StrategyFaulted,
+                    "strategy_action_missing");
+            }
+
+            if (!HasCanonicalActionText(action))
+            {
+                return Failure(
+                    StrategyResultValidationCode.StrategyFaulted,
+                    "strategy_action_text_invalid");
+            }
+
             if (!actionIds.Add(action.ActionId))
             {
                 return Failure(StrategyResultValidationCode.DuplicateActionId, "strategy_action_id_duplicate");
@@ -131,7 +191,18 @@ public static class StrategyResultValidator
             }
         }
 
-        string actionsJson = CanonicalJson.Serialize(result.RequestedActions);
+        string actionsJson;
+        try
+        {
+            actionsJson = CanonicalJson.Serialize(result.RequestedActions);
+        }
+        catch (Exception exception) when (exception is NotSupportedException or JsonException)
+        {
+            return Failure(
+                StrategyResultValidationCode.StrategyFaulted,
+                "strategy_result_serialization_invalid");
+        }
+
         int actionBytes = Encoding.UTF8.GetByteCount(actionsJson);
         if (actionBytes > bounds.MaximumCombinedActionBytes)
         {
@@ -143,12 +214,22 @@ public static class StrategyResultValidator
             return Failure(StrategyResultValidationCode.WallTimeExceeded, "strategy_wall_time_exceeded");
         }
 
-        string resultHash = CanonicalJson.Sha256(new
+        string resultHash;
+        try
         {
-            ContractVersion = RuntimeContractVersions.StrategyResultV1,
-            State = result.NextState,
-            Actions = result.RequestedActions
-        });
+            resultHash = CanonicalJson.Sha256(new
+            {
+                ContractVersion = RuntimeContractVersions.StrategyResultV1,
+                State = result.NextState,
+                Actions = result.RequestedActions
+            });
+        }
+        catch (Exception exception) when (exception is NotSupportedException or JsonException)
+        {
+            return Failure(
+                StrategyResultValidationCode.StrategyFaulted,
+                "strategy_result_serialization_invalid");
+        }
 
         return new StrategyResultValidation(
             StrategyResultValidationCode.Valid,
@@ -158,4 +239,19 @@ public static class StrategyResultValidator
 
     private static StrategyResultValidation Failure(StrategyResultValidationCode code, string reasonCode) =>
         new(code, reasonCode, null);
+
+    private static bool HasCanonicalActionText(RequestedAction action) =>
+        StrategyCanonicalText.IsCanonical(action.IdempotencyKey)
+        && StrategyCanonicalText.IsCanonical(action.Symbol)
+        && StrategyCanonicalText.IsCanonical(action.ReasonCode)
+        && (action switch
+        {
+            UpdateProtectionAction update =>
+                StrategyCanonicalText.IsCanonical(update.PositionId),
+            CancelPendingOrderAction cancel =>
+                StrategyCanonicalText.IsCanonical(cancel.OrderId),
+            ClosePositionAction close =>
+                StrategyCanonicalText.IsCanonical(close.PositionId),
+            _ => true
+        });
 }

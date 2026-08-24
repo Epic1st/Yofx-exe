@@ -115,8 +115,12 @@ public sealed class ControlWorkContractTests
             Digest,
             Digest,
             Digest,
+            ResultCapability(),
             now.AddSeconds(-1),
-            now);
+            now,
+            now.AddHours(24),
+            now.AddMinutes(10),
+            now.AddMinutes(2));
 
         Assert.Equal(8, envelope.SubmittedResourceVersion);
         Assert.Equal("running", envelope.RequestedTargetState);
@@ -125,6 +129,12 @@ public sealed class ControlWorkContractTests
         Assert.Equal(AssignmentId, envelope.TargetBinding.WorkerAssignmentId);
         Assert.Equal(WorkerId, envelope.TargetBinding.WorkerInstanceId);
         Assert.Equal(Digest, envelope.DispatchPolicySnapshotSha256);
+        Assert.Equal(3, envelope.SchemaVersion);
+        Assert.Equal("yo4x.deployment.start.requested.v3", envelope.MessageType);
+        Assert.Equal(ResultCapability(), envelope.ResultCapability);
+        Assert.Equal(now.AddHours(24), envelope.ResultCapabilityExpiresAt);
+        Assert.Equal(now.AddMinutes(10), envelope.AssignmentLeaseExpiresAt);
+        Assert.Equal(now.AddMinutes(2), envelope.ExecutionDeadline);
         Assert.NotNull(envelope.PolicyEvidence);
     }
 
@@ -155,15 +165,76 @@ public sealed class ControlWorkContractTests
             Digest,
             Digest,
             Digest,
+            ResultCapability(),
             now.AddSeconds(-1),
-            now));
+            now,
+            now.AddHours(24),
+            now.AddMinutes(10),
+            now.AddMinutes(2)));
 
         Assert.False(UserOperationDispatchGuard.HasCompleteRoute(
             null, 2, null, null));
-        Assert.False(UserOperationDispatchGuard.RouteWaitExpired(
-            now.AddMinutes(-1), now, TimeSpan.FromMinutes(10)));
-        Assert.True(UserOperationDispatchGuard.RouteWaitExpired(
-            now.AddMinutes(-10), now, TimeSpan.FromMinutes(10)));
+        Assert.False(UserOperationDispatchGuard.ShouldExpireBeforeDispatch(
+            "deployment.start", now.AddMinutes(-1), now, TimeSpan.FromMinutes(10)));
+        Assert.True(UserOperationDispatchGuard.ShouldExpireBeforeDispatch(
+            "deployment.start", now.AddMinutes(-10), now, TimeSpan.FromMinutes(10)));
+        Assert.False(UserOperationDispatchGuard.ShouldExpireBeforeDispatch(
+            "deployment.stop_after_flat", now.AddDays(-1), now, TimeSpan.FromMinutes(10)));
+        Assert.False(UserOperationDispatchGuard.ShouldExpireBeforeDispatch(
+            "broker_account.delete", now.AddDays(-1), now, TimeSpan.FromMinutes(10)));
+    }
+
+    [Fact]
+    public void TypedEnvelopeRejectsExecutionPastTheFrozenAssignmentLease()
+    {
+        DateTimeOffset now = DateTimeOffset.Parse(
+            "2026-08-22T12:00:00Z",
+            CultureInfo.InvariantCulture);
+
+        Assert.Throws<ArgumentException>(() => UserOperationDispatchEnvelope.Create(
+            Guid.Parse("50000000-0000-0000-0000-000000000003"),
+            TenantId,
+            "deployment.start",
+            "deployment",
+            DeploymentId,
+            7,
+            8,
+            "running",
+            Guid.Parse("60000000-0000-0000-0000-000000000003"),
+            Guid.Parse("70000000-0000-0000-0000-000000000003"),
+            8,
+            "starting:unknown",
+            DeploymentId,
+            2,
+            AssignmentId,
+            WorkerId,
+            new { DeploymentId, Generation = 2 },
+            Digest,
+            Digest,
+            Digest,
+            Digest,
+            Digest,
+            ResultCapability(),
+            now.AddSeconds(-1),
+            now,
+            now.AddHours(24),
+            now.AddMinutes(1),
+            now.AddMinutes(1).AddTicks(1)));
+    }
+
+    [Fact]
+    public void DurableHandoffNeverBecomesTerminalMerelyBecauseProofIsLate()
+    {
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-22T12:00:00Z", CultureInfo.InvariantCulture);
+
+        Assert.Equal("propagating", UserOperationDispatchGuard.AwaitingProofState(
+            "propagating", now.AddMinutes(-1), now, TimeSpan.FromMinutes(2), published: false));
+        Assert.Equal("reconciling", UserOperationDispatchGuard.AwaitingProofState(
+            "propagating", now.AddMinutes(-1), now, TimeSpan.FromMinutes(2), published: true));
+        Assert.Equal("unknown", UserOperationDispatchGuard.AwaitingProofState(
+            "propagating", now.AddDays(-1), now, TimeSpan.FromMinutes(2), published: false));
+        Assert.Equal("unknown", UserOperationDispatchGuard.AwaitingProofState(
+            "reconciling", now.AddDays(-1), now, TimeSpan.FromMinutes(2), published: true));
     }
 
     [Fact]
@@ -205,6 +276,49 @@ public sealed class ControlWorkContractTests
 
         Assert.Equal("close_only", decision?.ObservedState);
         Assert.Equal("broker_confirmed_restrictive_reconciliation", decision?.EvidenceCode);
+    }
+
+    [Fact]
+    public void ProvenNotSentOperationFailureDoesNotProjectDeploymentFaultOrReconciliationTime()
+    {
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-22T12:00:00Z", CultureInfo.InvariantCulture);
+        var notSent = Reconciliation(
+            now,
+            "running",
+            brokerConfirmed: false,
+            positionState: "open") with
+        {
+            State = "failed",
+            ObservedDigest = null,
+            BrokerDigest = null,
+            ObservedState = null,
+            RuntimeEvidenceSha256 = Digest,
+            BrokerExecutionState = null,
+            BrokerPositionState = null,
+            PreInvocationNotSentProven = true
+        };
+        var fresh = new PostgresDeploymentProjectionStore.ComponentEvidence(
+            3,
+            3,
+            3,
+            0,
+            true,
+            now);
+
+        Assert.Null(PostgresDeploymentProjectionStore.ProjectableReconciliation(notSent));
+        PostgresDeploymentProjectionStore.ProjectionDecision? decision =
+            PostgresDeploymentProjectionStore.Decide(
+                Deployment("running", "running"),
+                Assignment(now, "active"),
+                Lease(now, "active"),
+                notSent,
+                fresh,
+                now);
+
+        Assert.Equal("running", decision?.ObservedState);
+        Assert.Equal(
+            "persisted_fresh_runtime_without_reconciliation",
+            decision?.EvidenceCode);
     }
 
     [Fact]
@@ -267,6 +381,166 @@ public sealed class ControlWorkContractTests
     }
 
     [Fact]
+    public void OptionsRejectBacklogSlaShorterThanOperationExpiry()
+    {
+        var options = new ControlWorkOptions
+        {
+            OperationExpiresAfter = TimeSpan.FromMinutes(15),
+            MaximumOperationBacklogAge = TimeSpan.FromMinutes(14)
+        };
+
+        Assert.Throws<InvalidOperationException>(options.Validate);
+    }
+
+    [Fact]
+    public void OptionsRejectObservationWindowLongerThanBacklogSla()
+    {
+        var options = new ControlWorkOptions
+        {
+            MaximumTenantScanRotationAge = TimeSpan.FromMinutes(16),
+            MaximumOperationBacklogAge = TimeSpan.FromMinutes(15)
+        };
+
+        Assert.Throws<InvalidOperationException>(options.Validate);
+    }
+
+    [Fact]
+    public void ResultCapabilityLifetimeMatchesTheDatabaseHardLimit()
+    {
+        new ControlWorkOptions
+        {
+            ResultCapabilityLifetime = TimeSpan.FromHours(24)
+        }.Validate();
+
+        var beyondDatabaseLimit = new ControlWorkOptions
+        {
+            ResultCapabilityLifetime = TimeSpan.FromHours(24) + TimeSpan.FromTicks(1)
+        };
+        Assert.Throws<InvalidOperationException>(beyondDatabaseLimit.Validate);
+    }
+
+    [Theory]
+    [InlineData(14_999)]
+    [InlineData(300_001)]
+    public void DispatchExecutionWindowIsStrictlyBounded(int milliseconds)
+    {
+        var options = new ControlWorkOptions
+        {
+            DispatchExecutionWindow = TimeSpan.FromMilliseconds(milliseconds)
+        };
+
+        Assert.Throws<InvalidOperationException>(options.Validate);
+    }
+
+    [Theory]
+    [InlineData(15_000)]
+    [InlineData(300_000)]
+    public void DispatchExecutionWindowAcceptsExactSafetyBoundaries(int milliseconds)
+    {
+        new ControlWorkOptions
+        {
+            DispatchExecutionWindow = TimeSpan.FromMilliseconds(milliseconds)
+        }.Validate();
+    }
+
+    [Theory]
+    [InlineData(999)]
+    [InlineData(60_001)]
+    public void AssignmentProofMarginIsStrictlyBounded(int milliseconds)
+    {
+        var options = new ControlWorkOptions
+        {
+            AssignmentProofMargin = TimeSpan.FromMilliseconds(milliseconds)
+        };
+
+        Assert.Throws<InvalidOperationException>(options.Validate);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(512)]
+    public void InvocationTimeoutBatchAcceptsBoundedValues(int batchSize)
+    {
+        new ControlWorkOptions
+        {
+            InvocationTimeoutBatchSizePerTenant = batchSize
+        }.Validate();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(513)]
+    [InlineData(1_000)]
+    public void InvocationTimeoutBatchRejectsUnboundedValues(int batchSize)
+    {
+        var options = new ControlWorkOptions
+        {
+            InvocationTimeoutBatchSizePerTenant = batchSize
+        };
+
+        Assert.Throws<InvalidOperationException>(options.Validate);
+    }
+
+    [Fact]
+    public void ActiveWorkerUsesInvocationV4AndKeepsLegacyDispatchDormant()
+    {
+        string source = File.ReadAllText(FindRepositoryFile(
+            "src", "Apps", "YO4X.ControlPlane.Workers", "Operations",
+            "PostgresUserOperationWorkStore.cs"));
+        int activeDispatch = source.IndexOf(
+            "private async Task<bool> DispatchAsync(",
+            StringComparison.Ordinal);
+        int legacyDispatch = source.IndexOf(
+            "private async Task<bool> DispatchLegacyV3Async(",
+            StringComparison.Ordinal);
+
+        Assert.True(activeDispatch >= 0);
+        Assert.True(legacyDispatch > activeDispatch);
+        Assert.Contains(
+            "control.create_user_operation_invocation_attempt(",
+            source[activeDispatch..legacyDispatch],
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "control.advance_user_operation_invocation_timeouts(@max_rows)",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "control.reconcile_user_operation_invocation_attempt(",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "control.issue_user_operation_invocation_reconciliation_challenge_v3(",
+            source,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            1,
+            source.Split(
+                "DispatchLegacyV3Async(",
+                StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void ProjectionFiltersDispatchNonObservationsBeforeLatestRowSelection()
+    {
+        string source = File.ReadAllText(FindRepositoryFile(
+            "src", "Apps", "YO4X.ControlPlane.Workers", "Operations",
+            "PostgresDeploymentProjectionStore.cs"));
+        int filter = source.IndexOf(
+            "reconciliation.pre_invocation_not_sent_proven = false",
+            StringComparison.Ordinal);
+        int ordering = source.IndexOf(
+            "order by reconciliation.completed_at desc",
+            StringComparison.Ordinal);
+
+        Assert.True(filter >= 0);
+        Assert.True(ordering > filter);
+        Assert.Contains(
+            "consumption.challenge_id = reconciliation.reconciliation_challenge_id",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MigrationGuardsTerminalAndDispatchBindings()
     {
         string migration = File.ReadAllText(FindRepositoryFile(
@@ -276,6 +550,21 @@ public sealed class ControlWorkContractTests
         Assert.Contains("A terminal user operation is immutable.", migration, StringComparison.Ordinal);
         Assert.Contains("The user operation state transition is not allowed.", migration, StringComparison.Ordinal);
         Assert.Contains("The user operation dispatch binding is write-once.", migration, StringComparison.Ordinal);
+        Assert.Contains("dispatch_execution_deadline <= dispatch_assignment_lease_expires_at", migration, StringComparison.Ordinal);
+        Assert.Contains("dispatch_execution_deadline <= result_capability_expires_at", migration, StringComparison.Ordinal);
+        Assert.Contains(".requested.v3", migration, StringComparison.Ordinal);
+        Assert.Contains(
+            "authority_now >= bound_operation.result_capability_expires_at",
+            migration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "p_observed_at >= bound_operation.dispatch_execution_deadline",
+            migration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "p_observed_at >= matched_challenge.expires_at",
+            migration,
+            StringComparison.Ordinal);
         Assert.Contains("The user operation reconciliation binding is write-once.", migration, StringComparison.Ordinal);
         Assert.Contains("old.state = 'accepted' and new.state = 'dispatching'", migration, StringComparison.Ordinal);
         Assert.DoesNotContain("old.state = 'accepted' and new.state = 'succeeded'", migration, StringComparison.Ordinal);
@@ -327,7 +616,10 @@ public sealed class ControlWorkContractTests
             brokerConfirmed,
             state,
             positionState,
-            now);
+            now,
+            false);
+
+    private static string ResultCapability() => $"{new string('R', 42)}A";
 
     private static string FindRepositoryFile(params string[] segments)
     {

@@ -81,7 +81,8 @@ public sealed class Mt5ProofOnlyGateway : IMt5Gateway
                 null,
                 null,
                 null,
-                command.Command.CreatedAtUtc.ToUniversalTime()));
+                command.Command.CreatedAtUtc.ToUniversalTime(),
+                false));
     }
 
     public Task<GatewayOperationResult<BrokerReconciliationSnapshot>> ReconcileAsync(

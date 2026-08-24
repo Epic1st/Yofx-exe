@@ -1,0 +1,111 @@
+{
+  "schema": "yo4x.completion-blocker-ledger.v1",
+  "generatedAtUtc": "2026-08-23T18:20:00.000Z",
+  "scope": "Full-tree security-hardening verification pass continuing the 2026-08-23 plan: fail-closed host composition, evidence reconciliation, full sequential verification, MQL artifact reconciliation, MT5 gate evaluation.",
+  "verificationRuns": [
+    {
+      "name": "Release solution build",
+      "command": "dotnet build YO4X.sln -c Release",
+      "result": "0 warnings, 0 errors"
+    },
+    {
+      "name": "Unit suites (13 projects)",
+      "result": "1,101 passed / 0 failed",
+      "suites": {
+        "YO4X.Admin.Postgres.Tests": 35,
+        "YO4X.Api.Tests": 124,
+        "YO4X.Architecture.Tests": 17,
+        "YO4X.ControlPlane.Postgres.Tests": 145,
+        "YO4X.Domain.Tests": 159,
+        "YO4X.GatewayHost.Tests": 38,
+        "YO4X.LocalSecrets.Windows.Tests": 62,
+        "YO4X.Runtime.Application.Tests": 95,
+        "YO4X.Runtime.Tests": 63,
+        "YO4X.RuntimeControl.Postgres.Tests": 78,
+        "YO4X.Trading.Application.Tests": 89,
+        "YO4X.Trading.Postgres.Tests": 17,
+        "YO4X.Worker.Tests": 179
+      }
+    },
+    {
+      "name": "Fresh-cluster PostgreSQL integration (scripts/Test-PostgresIntegration.ps1)",
+      "result": "100 passed / 0 failed (ephemeral PG 18.6 loopback cluster, scram-sha-256, hardened pg_hba)"
+    },
+    {
+      "name": "Frontend",
+      "result": "tsc typecheck clean; vitest 55/55 across 5 files; production vite build succeeded"
+    },
+    {
+      "name": "Dependency audit",
+      "result": "dotnet list package --vulnerable --include-transitive: no vulnerable packages in any project"
+    }
+  ],
+  "completedItems": [
+    {
+      "item": "Complete fail-closed host composition",
+      "evidence": [
+        "src/BuildingBlocks/YO4X.Persistence.Postgres/PostgresDatabase.cs enforces safe session configuration AND required transport at the single chokepoint for Runtime and Migrator usage (allowInsecureLoopbackForDevelopment defaults fail-closed).",
+        "src/BuildingBlocks/YO4X.Persistence.Postgres/PostgresRuntimeConnectionPolicy.cs is the single policy; GatewayHost inline checks and tenant-context issuer normalization now route through it.",
+        "tests/YO4X.ControlPlane.Postgres.Tests/PostgresRuntimeConnectionPolicyTests.cs adds direct fail-closed coverage incl. TrustServerCertificate, multiplexing, no-reset-on-close, Options/SearchPath injection, and loopback parsing edge cases ([::1], decimal hosts, suffix spoofing).",
+        "Integration fixture administrator paths no longer enable IncludeErrorDetail; all 10 src connection sites audited: every site routes through the central policy."
+      ]
+    },
+    {
+      "item": "Freeze migration/role hashes; reconcile docs",
+      "evidence": [
+        "001_foundation.sql / 002_user_operation_invocation_protocol.sql / Security/least_privilege_roles.sql byte-match the SHA-256 pins in docs/backend/POSTGRESQL_BASELINE_POLICY.md; triangle enforced by PostgresBaselinePolicyTests.",
+        "docs/backend/IMPLEMENTATION_STATUS.md stale-count caveat replaced with this pass's verified totals.",
+        "docs/backend/POSTGRES_TENANT_CONTEXT_CAPABILITY.md gains status date and centralized connection-security section."
+      ]
+    },
+    {
+      "item": "Sequential full-solution, PostgreSQL, frontend, security, dependency verification",
+      "evidence": ["See verificationRuns above; all green on 2026-08-23."]
+    },
+    {
+      "item": "MQL deterministic outputs indexed",
+      "evidence": [
+        "artifacts/verification/mql5/mq5-deterministic-outputs-index.v1.json pins SHA-256 + byte length of all five deterministic outputs.",
+        "Corpus arithmetic reconciles: 199 disk .mq5/.mqh = 198 manifest rows + 1 quarantined SourceLikeTextCandidate ('brains.mq5 kgaugelo'); quarantine v2 categories sum to 15; compile plan covers exactly the 166 canonical .mq5 targets."
+      ]
+    }
+  ],
+  "openBlockers": [
+    {
+      "id": "MT5-ISOLATION",
+      "severity": "hard",
+      "detail": "artifacts/verification/toolchain/mt5-toolchain-isolation.v4.json verdict is isolated_runner_not_configured: IsolatedRunnerConfigured=False, SafeToCompileUntrustedMqlOnHost=False, SafeToExecuteSuppliedMqlOnHost=False. Per plan rule, MT5 compile/execution stays blocked."
+    },
+    {
+      "id": "GIT-HISTORY-CREDENTIALS",
+      "severity": "hard",
+      "detail": "Remote git history retains pre-redaction vendor Examples.cs credential tuples and a Telegram bot token; coordinated revoke/rotate/history-scrub still outstanding."
+    },
+    {
+      "id": "PLATFORM-SNAPSHOT",
+      "severity": "hard",
+      "detail": "0/166 MQL files compile-ready: every target gated on an approved platform-library snapshot (approvalId/snapshotSha null); 108 classified unsupportedSemantics; 13 intrinsically ready await the snapshot only."
+    },
+    {
+      "id": "MQL-TAXONOMY-CROSSWALK",
+      "severity": "medium",
+      "detail": "conversion-evidence classes (awaitingIsolatedTypeCheck=30, blockedExternalDependencySnapshot=37) lack a documented crosswalk to compile-plan dispositions; 32 .mqh includes have no per-file classification row."
+    },
+    {
+      "id": "OUTBOX-TRANSPORT",
+      "severity": "hard",
+      "detail": "No authenticated Supervisor/Gateway/credential-boundary transport for requested-v4 dispatch; outbox destination, ingress/handoff channels, isolated child, production secret provider, invoker, restart coordinator absent. Protocol remains disabled by design."
+    },
+    {
+      "id": "RECONCILIATION-CHALLENGE-WORKFLOW",
+      "severity": "high",
+      "detail": "Post-expiry first-proof reconciliation-challenge workflow (24h result-capability expiry) not yet implemented; ambiguous operations can remain unknown and readiness unhealthy by design."
+    },
+    {
+      "id": "V2-ENVELOPE-DEADLINES",
+      "severity": "high",
+      "detail": "Legacy v2 mutation envelope lacks fence/deadline fields; execute-only successor contract required before any execution-enabled receiver may consume it."
+    }
+  ],
+  "verdict": "Code-level hardening and verification objectives for this pass are MET and evidenced. Goal closure remains blocked only by the external/environmental blockers listed above, none of which code changes alone can satisfy."
+}

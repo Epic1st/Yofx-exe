@@ -1,104 +1,149 @@
 # MQL5 isolated compile orchestration
 
-Status date: 2026-08-22 UTC
+Status date: 2026-08-23 UTC
 
-## Current truthful state
+## Result
 
-The compile orchestration boundary is implemented and tested, but no supplied MQL5 source was compiled or executed. No MetaTrader terminal was launched, no account login was attempted, and no trade was submitted by this work.
+The backend now has a deterministic, fail-closed compile-package planner and a signed isolated-runner orchestration boundary. This work read source bytes only through non-executing static analyzers; it did not load them into MetaEditor, MetaTrader, or another strategy runtime, and did not compile or execute them. It did not log in to an account or place, modify, or close a trade.
 
-The checked-in static inventory and deterministic conversion-evidence graph are the current corpus-wide evidence. Both are non-executing analyses:
+The real local authority state is intentionally represented as unavailable:
 
-- 198 source files: 166 `.mq5` and 32 `.mqh`
-- 13,100,995 source bytes
-- corpus SHA-256 `8052d74d395516aef01f221bf1a663b775ed02ccccbfa0476704d52112ee43b6`
-- static analyzer `yo4x-mql5-static-analyzer.v2`; schema remains `mq5-static-manifest.v1`
-- static-manifest artifact SHA-256 `8b04c8a3d8bc823cf1721e493d53f1b9c81b74ae7805fe42c7aae2f621e6ea44`
-- compatibility-report artifact SHA-256 `9e4025a5561cc810682d9dbfc1e56e0d5d7ddf36d527cb92ea9ad2889b75465b`
-- static dispositions: 68 need semantic validation, 3 need source, 127 unsupported, 0 rejected
-- conversion-evidence analyzer `yo4x-mql5-conversion-evidence.v1`; dependency-graph SHA-256 `c463d3a6de0eaef29b912cfb9af5bd949c0591b26896d866acb2c088943ba10a`
-- embedded conversion-evidence SHA-256 `6d4a18038f8b10ee8e4c68de55e96966d60293aa4d5186723e1363fae07537b1`
-- conversion-evidence JSON artifact SHA-256 `2c1d766a730da057e2ba70f193cbba04c1199354ce47f04131537620c8ab94f4`
-- conversion-evidence report artifact SHA-256 `2dda496841ad1d1ae2584745e2b177cc13dede7d43066aa899beea9a8aee2a53`
-- conversion dispositions: 30 awaiting isolated type-check, 37 blocked on platform-library snapshots, 121 blocked on unsupported semantics, 6 blocked on missing dependencies, 2 blocked on invalid text controls, 1 blocked as all-NUL, and 1 blocked as binary/non-text
-- strict encoding census: 109 UTF-8, 35 UTF-8 with BOM, 44 UTF-16LE with BOM, 5 BOM-less UTF-16LE, 3 Windows-1252, 1 all-NUL, and 1 binary/non-text
-- lexical and delimiter/preprocessor structural analysis passed for 194 files; full grammar parse, type-check, restricted-IR lowering, compile, semantic parity, and runtime proof counts remain zero
-- compile, reference-parity, and demo-runtime verification claims remain false
+- no backend-approved platform-library snapshot;
+- no backend-approved production compile profile;
+- no production isolated compile runner;
+- no production runner signing key or attestation.
 
-Static inventory and conversion evidence are not compile proof. An installed compiler is not compile proof. Only a fresh, trusted isolated-runner attestation bound to the exact job, source corpus, dependency graph, toolchain, isolation policy, normalized output, and repeat artifact hashes can transition a compile attempt to `Proven`.
+Consequently, zero supplied targets are dispatch-ready locally. A syntactically valid SHA-256 string is not platform-snapshot approval and cannot make a package runnable.
 
-## Host evidence and blocker
+## Exact no-execution corpus result
 
-Read-only inspection found these signed local artifacts:
+The planner rebuilt and exact-bound the supplied source snapshots, static manifest, and conversion evidence before constructing one dossier per `.mq5` target.
 
-| Artifact | Bytes | SHA-256 | Authenticode |
-|---|---:|---|---|
-| `C:\Program Files\MetaTrader 5\MetaEditor64.exe` | 116,791,384 | `05718f3fa55f3f59fd2f024d8c433b457fbd58fcf39e947a16ccdad00a614ec7` | Valid, MetaQuotes Ltd. |
-| `C:\Program Files\MetaTrader 5\terminal64.exe` | 121,845,920 | `7b3aaedfd3a3998f2138d399f601f46ed49ddbc9762697ce1170f8b325055b05` | Valid, MetaQuotes Ltd. |
+| Measurement | Exact result |
+|---|---:|
+| Source files | 198 |
+| `.mq5` targets | 166 |
+| `.mqh` dependencies | 32 |
+| Source bytes | 12,979,438 |
+| Corpus SHA-256 | `9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47` |
+| Compile-package schema | `yo4x.mql5-compile-package.v2` |
+| Planner | `yo4x-mql5-compile-package-planner.v2` |
+| Snapshot-unavailable plan SHA-256 | `30ceaabef530b6e43522608658db718d466ba52cc5851ff6430f30d21116c80e` |
+| Metadata-only formatted JSON SHA-256 | `51e88beddabc6e2d11f00a6b8a2671a27642f58f2d302453f16199da368569e7` |
+| Metadata-only formatted JSON bytes | 455,612 |
+| Locally dispatch-ready targets | 0 |
 
-That evidence identifies host binaries; it does not authorize running untrusted strategies on the host. There is no configured approved isolation provider, no pinned runner image digest, no pinned platform-library snapshot digest, and no isolated-runner attestation trust key. Docker, VirtualBox, and VMware runner commands were not present. The available `wsl.exe` exposes installation/help behavior rather than an installed distribution. The safe provider therefore reports `ISOLATED_RUNNER_NOT_CONFIGURED` and does not launch a process.
+Target-level intrinsic classifications are:
 
-## Implemented boundary
+| Intrinsic disposition | Targets |
+|---|---:|
+| Candidate for a later isolated type-check | 12 |
+| Blocked on unresolved platform-library include snapshot | 36 |
+| Blocked on unsupported semantics | 108 |
+| Blocked on missing local dependency | 5 |
+| Blocked on invalid syntax/text controls | 3 |
+| Blocked as binary/non-text | 1 |
+| Blocked as all-NUL | 1 |
 
-The strategy-governance module now contains:
+Because approved snapshot authority is absent, each of the 166 dossiers also carries `ApprovedPlatformSnapshotUnavailable`. The 12 intrinsic candidates have effective disposition `BlockedApprovedPlatformSnapshotUnavailable`; the other 154 preserve their stronger intrinsic blocker. Platform-library include targets remain `BlockedPlatformSnapshot` even when planning is handed an otherwise well-formed snapshot digest.
 
-- typed compile jobs, isolated-runner requests, resource policy, toolchain pins, signed attestations, per-file evidence, and proof states;
-- an `IMql5IsolatedCompileRunner` provider boundary and an intentionally unavailable default provider;
-- P-256 ECDSA/SHA-256 DER attestation verification against an explicit public-key trust store;
-- a fresh random challenge digest per attempt, preventing replay of a previously valid attestation;
-- exact binding to job ID, corpus SHA-256, runner image digest, MetaEditor SHA-256/version, platform-library snapshot SHA-256, isolation controls, output SHA-256, and timestamps;
-- mandatory network denial, read-only root filesystem, ephemeral workspace, disabled host mounts, no-new-privileges, and bounded memory, CPU, wall-clock, process, temporary-storage, and output limits;
-- source re-analysis before dispatch, exact canonical static-manifest comparison, and rejection of hash drift, missing/ambiguous/invalid includes, rooted/traversing paths, and shell metacharacters;
-- a bounded strict UTF-8 JSON-lines result protocol. Unknown fields, malformed values, duplicate paths, extra targets, source-hash mismatches, oversized output, and raw command-like extensions fail closed;
-- diagnostic message hashing so compiler excerpts do not become durable source disclosure in evidence;
-- two clean compile artifact hashes per `.mq5` target. `Proven` requires both hashes to match, every target to succeed with exit code zero, and a valid attestation;
-- source copies handed to a provider are zeroed when the provider returns or fails.
+The 12 intrinsic candidates, which are not compile proofs or runnable strategies, are:
 
-No API accepts a shell command or free-form compiler arguments. A future provider must invoke its compiler with a fixed executable and argument vector inside the isolated runner; it must never concatenate source paths into a shell command.
+- `9od10leporadi.mq5`
+- `Breakout_EA (1) (2).mq5`
+- `Breakout_EA (1).mq5`
+- `BTC_EMA_Crossover_TSL_EA_Hedging.mq5`
+- `cm_SL-NL-TP.mq5`
+- `CRUDE_OIL_EMA_Crossover_TSL_EA.mq5`
+- `EMA_Crossover_TSL_EA.mq5`
+- `GOLD_EMA_Crossover_TSL_EA.mq5`
+- `mt DanielScalper.mq5`
+- `Nasdaq Fundamental EA V2 with Tp SL.mq5`
+- `Universal_EMA_Crossover_TSL_EA.mq5`
+- `WINDOWS_V2.mq5`
 
-## Proof outcomes
+## Compile-package dossier
 
-| State | Meaning |
-|---|---|
-| `StaticOnly` | Lexical/static inventory exists; no compiler claim exists. |
-| `Blocked` | Compilation did not produce trusted runner evidence, including unavailable runner, unsafe inputs, host-side timeout, stale/forged attestation, or binding drift. |
-| `Unsupported` | An attested runner or preflight reported the requested compile shape unsupported. This is not proof of successful compilation. |
-| `Failed` | Trusted evidence reports compile failure, isolated timeout, invalid normalized output, incomplete results, or nondeterministic artifact hashes. |
-| `Proven` | A trusted fresh attestation and exact per-target results prove successful deterministic compilation for the pinned inputs and toolchain only. |
+Each dossier contains metadata only, never source bodies. Its canonical package digest binds:
 
-An existing `Proven` evidence record is immutable and cannot be downgraded in place. A later attempt creates new evidence rather than rewriting historical truth. `Proven` does not imply semantic conversion parity or safe demo runtime behavior; those remain separate gates.
+- the full source-corpus digest, canonical static-manifest digest, conversion-evidence digest and canonical content digest, and dependency-graph digest;
+- the target path and source digest, conversion-file evidence digest, and conversion dependency-closure digest;
+- only that target's transitive local source closure, in proven dependency-first order, with every source length and SHA-256;
+- ordered include edges and explicit missing, ambiguous, invalid, cycle, unsupported, binary, all-NUL, platform, and authority-unavailable blockers;
+- intrinsic and effective dispositions;
+- the approved platform snapshot's approval ID, exact snapshot SHA-256, provenance-evidence SHA-256-derived approval digest, or explicit null fields when approval is unavailable.
 
-## Verification performed
+Unrelated corpus files are excluded from the target closure. Changing source order, paths, bytes, manifest content, conversion evidence, include resolution, closure order, blocker data, or snapshot approval changes the canonical package digest or fails planning.
 
-Focused tests cover unsafe command/path input, traversal, source hash drift, static-manifest tampering, missing includes, forged signatures, stale attestations, attested toolchain drift, host response timeout, signed isolated timeout, strict output parsing, repeat artifact drift, successful proof requirements, and proof-state transitions.
+`Mql5CompilePackagePlanFormatter` emits deterministic, indented, enum-safe metadata JSON with a terminal newline. The `--compile-package-plan-output` worker option reproducibly generates this metadata-only plan from the same bounded corpus command. The exact-corpus test fixes both the canonical plan digest and formatted artifact digest, verifies the checked-in [metadata-only plan](../../artifacts/verification/mql5/mq5-compile-package-plan.v2.json) byte for byte, and proves source-body text is absent.
 
-A fresh non-executing inventory and conversion-evidence run over the source directory found exactly 198 unique allowed-extension paths. The corpus-wide invariant test binds the exact raw corpus, per-file hashes, dependency graph, encoding census, dispositions, stage outcomes, and aggregate NUL/control findings. The generated static manifest/report in both `artifacts/verification/mql5` and `docs/backend` are byte-identical; their hashes and the conversion artifact hashes match the values above.
+## Dispatch and proof boundary
+
+Planning with no approved snapshot is allowed only to report intrinsic closure status. Dispatch validation requires an exact `Mql5ApprovedPlatformLibrarySnapshot`; null fails with `APPROVED_PLATFORM_SNAPSHOT_NOT_CONFIGURED`.
+
+The orchestrator additionally requires an independently configured, backend-owned `Mql5ApprovedCompileProfile`. The profile binds:
+
+- exact runner image digest;
+- exact MetaEditor binary SHA-256 and version;
+- exact approved platform snapshot and its provenance-bound approval digest;
+- maximum isolation resources and mandatory network/host-mount/privilege controls;
+- the allowed runner signing-key IDs.
+
+An unconfigured profile blocks before the runner. A caller-selected toolchain, platform digest, isolation policy, or signing key cannot substitute for backend approval.
+
+A bounded scalar and backend-approval preflight runs before capacity acquisition or any source/metadata copy, so an invalid job, toolchain, isolation policy, or unapproved profile cannot force a deep snapshot. After that gate, the orchestrator takes internally owned deep snapshots of source bytes, the complete static-manifest graph, conversion-evidence graph, compile dossier, toolchain, and isolation policy. Concurrent caller mutation, including mutate-and-restore races while the runner is blocked, cannot alter the dispatched request or later evidence. The request receives another independently owned copy of only the exact target closure and a deep dossier copy. Returned request bytes and dossier content are rechecked against the trusted package before an attestation can be accepted.
+
+The signed attestation schema is `yo4x.mql5-runner-attestation.v3`. It binds the fresh challenge, job, backend profile, full evidence digests, exact package and closure, target, runner identity/session, toolchain, isolation policy, times, normalized output digest, and record count. A version-two descriptor or signature cannot be reinterpreted as version three.
+
+`Proven` requires all of the following:
+
+1. an approved profile and exact ready dossier;
+2. a fresh, trusted, in-scope v3 signature;
+3. exact request, package, toolchain, isolation, time, and output bindings;
+4. one successful result for the selected target with exit code zero;
+5. matching clean-workspace artifact and repeat-artifact SHA-256 values.
+
+Compile proof does not imply semantic equivalence, strategy safety, reference parity, demo-runtime success, or authorization to trade. Those remain separate gates.
+
+## Resource and ownership controls
+
+- source corpus: at most 10,000 files, 4 MiB per file, and 256 MiB total, checked before cloning;
+- compile metadata: at most 100,000 aggregate items and 8 MiB of UTF-8 text across the internally owned snapshot, checked before canonical serialization;
+- compiler output policy: at most 16 MiB globally and no more than the approved job policy, checked before a second copy or parse;
+- runner attestation signature: at most 256 bytes before cloning, with accepted ECDSA encoding validated again;
+- result protocol: bounded strict UTF-8 JSON, one target record, no unknown fields, and diagnostic-message digests rather than durable excerpts;
+- ordinary synchronous or asynchronous provider faults are normalized to `ISOLATED_RUNNER_FAILED`; attestation-verifier faults are normalized to untrusted evidence, without exception/source leakage;
+- caller cancellation: propagated; host timeout without an attestation remains blocked;
+- source buffers: zeroed after use. If a provider ignores cancellation, request buffers stay owned by that in-flight task and are zeroed only after it actually completes, preventing zero-while-read races.
+
+An in-process provider cannot safely terminate a hostile compiler process. A production implementation must use an externally supervised, disposable, network-denied Windows-compatible runner with fixed executable and argument vectors. The unavailable default provider executes nothing.
+
+## Verification
+
+Release verification on 2026-08-23:
 
 ```text
-dotnet test tests/YO4X.Domain.Tests/YO4X.Domain.Tests.csproj --no-restore \
-  --filter FullyQualifiedName~Mql5IsolatedCompileOrchestratorTests
+dotnet build tests/YO4X.Domain.Tests/YO4X.Domain.Tests.csproj -c Release --no-restore
+Build succeeded. 0 warnings, 0 errors.
 
-Passed: 15, Failed: 0, Skipped: 0
+dotnet test tests/YO4X.Domain.Tests/YO4X.Domain.Tests.csproj -c Release --no-build \
+  --filter "FullyQualifiedName~Mql5CompilePackageDossierPlannerTests|FullyQualifiedName~Mql5IsolatedCompileOrchestratorTests"
+Passed: 55, Failed: 0, Skipped: 0.
+
+dotnet test tests/YO4X.Domain.Tests/YO4X.Domain.Tests.csproj -c Release --no-build
+Passed: 158, Failed: 0, Skipped: 0.
 ```
 
-The complete domain test project, including the signed semantic-equivalence evidence verifier, also passed:
+Adversarial coverage includes source/static/conversion/dossier drift, exact closure order, unrelated-source exclusion, absent snapshot authority, arbitrary digest non-approval, path safety, per-file and aggregate size limits, hostile collection enumeration, concurrent caller mutation and restoration, runner request mutation, synchronous/asynchronous runner faults, output/signature pre-clone caps, timeouts and late completion, v2/v3 schema separation, signer scope, toolchain/profile mismatch, forged/stale attestations, strict output parsing, and nondeterministic artifacts.
 
-```text
-Passed: 113, Failed: 0, Skipped: 0
-```
+## Remaining objective blockers
 
-The conversion/static inventory Worker tests, including malformed UTF-16, BOM-less UTF-16, Windows-1252, all-NUL/binary separation, graph ordering/cycles/path safety, deterministic serialization, and exact-corpus invariants, passed:
+1. Produce and independently approve an immutable, provenance-documented platform-library snapshot. A hash alone is insufficient.
+2. Provision an externally supervised Windows-compatible isolated runner with an immutable approved image and reviewed MetaEditor provenance/licensing.
+3. Configure enforceable network denial, no host mounts, read-only base, ephemeral workspace, no-new-privileges, and bounded resources.
+4. Provision a runner-only signing key and configure only its public key and key ID in the backend profile.
+5. Implement the fixed-argument provider transport, two clean-workspace compilations per target, bounded normalized output, and v3 signing.
+6. Re-plan with the approved snapshot and compile only exact dossiers that remain ready; retain every failure and unsupported result honestly.
+7. Complete separate semantic-equivalence, reference-parity, review, and demo-runtime gates before any strategy can be considered for deployment or trading.
 
-```text
-Passed: 60, Failed: 0, Skipped: 0
-```
-
-## Required work before any compile can run
-
-1. Provision an isolated Windows-compatible runner outside the application host, with an approved immutable image and a reviewed MetaEditor licensing/provenance record.
-2. Publish and pin the runner image digest and exact platform-library snapshot digest.
-3. Configure enforcement evidence for no network, no host mounts, read-only base filesystem, ephemeral workspace, no privilege escalation, and the bounded resource policy.
-4. Provision a runner-only P-256 signing key and configure only its public key in the backend trust store.
-5. Implement the provider using fixed process APIs inside that runner, perform two clean-workspace compilations per target, normalize bounded results, and sign the exact attestation descriptor.
-6. Run a representative reviewed source bundle first. Retain failed and unsupported evidence honestly; do not promote static-only or compile-only results to semantic or runtime verification.
-
-Until all six items exist and the backend receives valid evidence, the correct operational result is blocked. The local MetaEditor and terminal must remain unlaunched for the supplied corpus.
+Until these blockers are resolved, zero supplied targets may be dispatched and the correct backend outcome remains blocked.

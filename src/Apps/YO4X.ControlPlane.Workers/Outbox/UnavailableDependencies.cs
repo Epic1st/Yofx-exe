@@ -5,6 +5,11 @@ public sealed class UnavailablePostgresOutboxStore : IPostgresOutboxStore
     public ValueTask<bool> IsAvailableAsync(CancellationToken cancellationToken) =>
         ValueTask.FromResult(false);
 
+    public ValueTask<bool> IsScanProgressHealthyAsync(
+        TimeSpan maximumRotationAge,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(false);
+
     public ValueTask<IReadOnlyList<ClaimedOutboxItem>> ClaimAsync(
         OutboxClaimRequest request,
         CancellationToken cancellationToken) =>

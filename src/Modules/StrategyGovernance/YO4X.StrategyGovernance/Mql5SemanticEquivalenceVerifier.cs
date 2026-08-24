@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using YO4X.BuildingBlocks;
 
 namespace YO4X.StrategyGovernance;
@@ -7,20 +8,26 @@ public sealed class Mql5SemanticEquivalenceVerifier
 {
     public const string AttestationSchemaVersion = "yo4x.mql5-semantic-parity-attestation.v1";
     public const string TolerancePolicySchemaVersion = "yo4x.mql5-trace-tolerance-policy.v1";
+    public const int MaximumSupportedEventCount = 100_000;
 
     private static readonly TimeSpan MaximumRequestAge = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan MaximumFutureSkew = TimeSpan.FromSeconds(30);
+    private const long MaximumAttestationAggregateUtf8Bytes = 32L * 1024 * 1024;
 
     private readonly IMql5RunnerAttestationVerifier attestationVerifier;
+    private readonly Mql5ApprovedSemanticProfile approvedProfile;
     private readonly TimeProvider timeProvider;
 
     public Mql5SemanticEquivalenceVerifier(
         IMql5RunnerAttestationVerifier attestationVerifier,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        Mql5ApprovedSemanticProfile approvedProfile)
     {
         this.attestationVerifier = attestationVerifier
             ?? throw new ArgumentNullException(nameof(attestationVerifier));
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+        this.approvedProfile = approvedProfile
+            ?? throw new ArgumentNullException(nameof(approvedProfile));
     }
 
     public Mql5SemanticParityEvidence Verify(
@@ -38,7 +45,7 @@ public sealed class Mql5SemanticEquivalenceVerifier
             return CreateLocalEvidence(request, validation.ReasonCode);
         }
 
-        Mql5SemanticRunnerAttestationDescriptor descriptor = attestation!.Descriptor!;
+        Mql5SemanticRunnerAttestationDescriptor descriptor = validation.Descriptor!;
         if (descriptor.RunStatus != Mql5IsolatedRunStatus.Completed)
         {
             return CreateAttestedEvidence(
@@ -82,7 +89,7 @@ public sealed class Mql5SemanticEquivalenceVerifier
         return CanonicalJson.Sha256(request);
     }
 
-    public static string ComputeInputEventIndexSha256(
+    internal static string ComputeInputEventIndexSha256(
         IReadOnlyList<Mql5SemanticTraceEventEvidence> events)
     {
         ArgumentNullException.ThrowIfNull(events);
@@ -94,7 +101,7 @@ public sealed class Mql5SemanticEquivalenceVerifier
         return CanonicalJson.Sha256(index);
     }
 
-    public static string ComputeReferenceOutputEventIndexSha256(
+    internal static string ComputeReferenceOutputEventIndexSha256(
         IReadOnlyList<Mql5SemanticTraceEventEvidence> events)
     {
         ArgumentNullException.ThrowIfNull(events);
@@ -106,7 +113,7 @@ public sealed class Mql5SemanticEquivalenceVerifier
         return CanonicalJson.Sha256(index);
     }
 
-    public static string ComputeLoweredOutputEventIndexSha256(
+    internal static string ComputeLoweredOutputEventIndexSha256(
         IReadOnlyList<Mql5SemanticTraceEventEvidence> events)
     {
         ArgumentNullException.ThrowIfNull(events);
@@ -122,15 +129,16 @@ public sealed class Mql5SemanticEquivalenceVerifier
         Mql5SemanticEquivalenceRequest request,
         Mql5SemanticRunnerAttestation? attestation)
     {
-        Mql5SemanticRunnerAttestationDescriptor? descriptor = attestation?.Descriptor;
-        if (descriptor is null
-            || descriptor.Events is null
-            || descriptor.Events.Count > request.TolerancePolicy.MaximumEventCount
+        Mql5SemanticRunnerAttestationDescriptor? untrustedDescriptor = attestation?.Descriptor;
+        if (untrustedDescriptor is null
+            || !TrySnapshotDescriptor(
+                untrustedDescriptor,
+                request.TolerancePolicy.MaximumEventCount,
+                out Mql5SemanticRunnerAttestationDescriptor descriptor)
             || descriptor.ReferenceOutputEventCount is < 0
                 || descriptor.ReferenceOutputEventCount > request.TolerancePolicy.MaximumEventCount
             || descriptor.LoweredOutputEventCount is < 0
                 || descriptor.LoweredOutputEventCount > request.TolerancePolicy.MaximumEventCount
-            || descriptor.Events.Any(static item => !HasSafeEventEnvelope(item))
             || !string.Equals(
                 descriptor.SchemaVersion,
                 AttestationSchemaVersion,
@@ -153,6 +161,11 @@ public sealed class Mql5SemanticEquivalenceVerifier
             || !Mql5CompileValidation.IsExactSha256(attestation.SignedPayloadSha256))
         {
             return AttestationValidation.Invalid("SEMANTIC_RUNNER_ATTESTATION_INVALID");
+        }
+
+        if (!approvedProfile.ApprovesSigningKey(attestation.SigningKeyId!))
+        {
+            return AttestationValidation.Invalid("SEMANTIC_RUNNER_SIGNING_KEY_NOT_APPROVED");
         }
 
         string requestSha256 = ComputeRequestSha256(request);
@@ -227,7 +240,8 @@ public sealed class Mql5SemanticEquivalenceVerifier
                 signatureSha256));
             return AttestationValidation.Success(
                 attestationSha256,
-                attestation.SigningKeyId!);
+                attestation.SigningKeyId!,
+                descriptor);
         }
         catch (Exception exception) when (exception is CryptographicException
             or ArgumentException
@@ -367,11 +381,18 @@ public sealed class Mql5SemanticEquivalenceVerifier
             || request.Toolchain is null
             || request.TolerancePolicy is null
             || request.IsolationPolicy is null
-            || request.InputEventCount is < 1 or > 1_000_000
+            || request.InputEventCount is < 1 or > MaximumSupportedEventCount
             || !ValidateToolchain(request.Toolchain)
             || !ValidateTolerancePolicy(request.TolerancePolicy)
             || request.InputEventCount > request.TolerancePolicy.MaximumEventCount
             || !ValidateIsolationPolicy(request.IsolationPolicy)
+            || !approvedProfile.Approves(
+                request.Toolchain,
+                request.TolerancePolicy,
+                request.IsolationPolicy)
+            || !BoundSha256(
+                request.TolerancePolicyApprovalSha256,
+                approvedProfile.ApprovalSha256)
             || !BoundSha256(
                 request.ToolchainBindingSha256,
                 ComputeToolchainBindingSha256(request.Toolchain))
@@ -412,6 +433,110 @@ public sealed class Mql5SemanticEquivalenceVerifier
         && item.MaximumAbsoluteError >= 0
         && item.MaximumRelativeError >= 0;
 
+    private static bool TrySnapshotDescriptor(
+        Mql5SemanticRunnerAttestationDescriptor source,
+        int policyMaximumEventCount,
+        out Mql5SemanticRunnerAttestationDescriptor snapshot)
+    {
+        snapshot = null!;
+        if (source.Events is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            long aggregateBytes = 0;
+            if (!AddBoundedUtf8(ref aggregateBytes, source.SchemaVersion, 100)
+                || !AddBoundedUtf8(ref aggregateBytes, source.RequestSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.RelativePath, 4_096)
+                || !AddBoundedUtf8(ref aggregateBytes, source.SourceSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.DependencyClosureSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.DependencyGraphSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.CorpusSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.ConversionEvidenceSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.CompilerArtifactSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.RestrictedIrSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.ToolchainBindingSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.ReferenceInputTraceSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.ReferenceInputEventIndexSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.TolerancePolicySha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.TolerancePolicyApprovalSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.RunnerId, 200)
+                || !AddBoundedUtf8(ref aggregateBytes, source.RunnerSessionId, 200)
+                || !AddBoundedUtf8(ref aggregateBytes, source.RunnerImageDigest, 71)
+                || !AddBoundedUtf8(ref aggregateBytes, source.ReferenceOutputTraceSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.ReferenceOutputEventIndexSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.LoweredOutputTraceSha256, 64)
+                || !AddBoundedUtf8(ref aggregateBytes, source.LoweredOutputEventIndexSha256, 64))
+            {
+                return false;
+            }
+
+            int maximumEvents = Math.Min(policyMaximumEventCount, MaximumSupportedEventCount);
+            int eventCount = source.Events.Count;
+            if (eventCount < 0 || eventCount > maximumEvents)
+            {
+                return false;
+            }
+
+            var events = new Mql5SemanticTraceEventEvidence[eventCount];
+            for (int index = 0; index < eventCount; index++)
+            {
+                Mql5SemanticTraceEventEvidence? item = source.Events[index];
+                if (!HasSafeEventEnvelope(item)
+                    || !AddBoundedUtf8(ref aggregateBytes, item.EventKind, 100)
+                    || !AddBoundedUtf8(ref aggregateBytes, item.InputEventSha256, 64)
+                    || !AddBoundedUtf8(ref aggregateBytes, item.ReferenceOutputEventSha256, 64)
+                    || !AddBoundedUtf8(ref aggregateBytes, item.LoweredOutputEventSha256, 64)
+                    || !AddAggregateBytes(ref aggregateBytes, 96))
+                {
+                    return false;
+                }
+
+                events[index] = item;
+            }
+
+            snapshot = source with { Events = Array.AsReadOnly(events) };
+            return true;
+        }
+        catch (Exception exception) when (IsNonCatastrophic(exception))
+        {
+            snapshot = null!;
+            return false;
+        }
+    }
+
+    private static bool AddBoundedUtf8(
+        ref long aggregateBytes,
+        string? value,
+        int maximumCharacters)
+    {
+        if (value is null || value.Length > maximumCharacters)
+        {
+            return false;
+        }
+
+        return AddAggregateBytes(ref aggregateBytes, Encoding.UTF8.GetByteCount(value));
+    }
+
+    private static bool AddAggregateBytes(ref long aggregateBytes, int additionalBytes)
+    {
+        if (additionalBytes < 0
+            || aggregateBytes > MaximumAttestationAggregateUtf8Bytes - additionalBytes)
+        {
+            return false;
+        }
+
+        aggregateBytes += additionalBytes;
+        return true;
+    }
+
+    private static bool IsNonCatastrophic(Exception exception) => exception is not (
+        OutOfMemoryException
+        or StackOverflowException
+        or AccessViolationException);
+
     private static bool ValidateTolerancePolicy(Mql5SemanticTolerancePolicy policy) =>
         string.Equals(
             policy.SchemaVersion,
@@ -425,7 +550,7 @@ public sealed class Mql5SemanticEquivalenceVerifier
         && policy.RequireBothNumericLimits
         && policy.MaximumAbsoluteError >= 0
         && policy.MaximumRelativeError >= 0
-        && policy.MaximumEventCount is >= 1 and <= 1_000_000;
+        && policy.MaximumEventCount is >= 1 and <= MaximumSupportedEventCount;
 
     private static bool ValidateIsolationPolicy(Mql5IsolationPolicy policy) =>
         policy.NetworkAccessDisabled
@@ -446,20 +571,22 @@ public sealed class Mql5SemanticEquivalenceVerifier
     private static bool BoundSha256(string left, string right) =>
         Mql5CompileValidation.FixedTimeHexEquals(left, right);
 
-    private static Mql5SemanticParityEvidence CreateLocalEvidence(
+    private Mql5SemanticParityEvidence CreateLocalEvidence(
         Mql5SemanticEquivalenceRequest? request,
         string reasonCode) => new(
             request?.JobId ?? Guid.Empty,
-            request?.RelativePath ?? string.Empty,
-            request?.SourceSha256 ?? string.Empty,
-            request?.DependencyClosureSha256 ?? string.Empty,
-            request?.CorpusSha256 ?? string.Empty,
-            request?.CompilerArtifactSha256 ?? string.Empty,
-            request?.ToolchainBindingSha256 ?? string.Empty,
-            request?.ReferenceInputTraceSha256 ?? string.Empty,
+            SafeSourcePathOrEmpty(request?.RelativePath),
+            SafeSha256OrEmpty(request?.SourceSha256),
+            SafeSha256OrEmpty(request?.DependencyClosureSha256),
+            SafeSha256OrEmpty(request?.CorpusSha256),
+            SafeSha256OrEmpty(request?.CompilerArtifactSha256),
+            SafeSha256OrEmpty(request?.ToolchainBindingSha256),
+            SafeSha256OrEmpty(request?.ReferenceInputTraceSha256),
             null,
             null,
-            request?.TolerancePolicySha256 ?? string.Empty,
+            SafeSha256OrEmpty(request?.TolerancePolicySha256),
+            approvedProfile.ProfileId,
+            approvedProfile.ApprovalSha256,
             Mql5SemanticParityState.Blocked,
             reasonCode,
             null,
@@ -470,7 +597,7 @@ public sealed class Mql5SemanticEquivalenceVerifier
             null,
             0);
 
-    private static Mql5SemanticParityEvidence CreateAttestedEvidence(
+    private Mql5SemanticParityEvidence CreateAttestedEvidence(
         Mql5SemanticEquivalenceRequest request,
         Mql5SemanticRunnerAttestationDescriptor descriptor,
         AttestationValidation validation,
@@ -487,6 +614,8 @@ public sealed class Mql5SemanticEquivalenceVerifier
             descriptor.ReferenceOutputTraceSha256,
             descriptor.LoweredOutputTraceSha256,
             request.TolerancePolicySha256,
+            approvedProfile.ProfileId,
+            approvedProfile.ApprovalSha256,
             state,
             reasonCode,
             descriptor.RunnerId,
@@ -496,6 +625,12 @@ public sealed class Mql5SemanticEquivalenceVerifier
             descriptor.StartedAtUtc,
             descriptor.CompletedAtUtc,
             descriptor.Events.Count);
+
+    private static string SafeSha256OrEmpty(string? value) =>
+        Mql5CompileValidation.IsExactSha256(value) ? value! : string.Empty;
+
+    private static string SafeSourcePathOrEmpty(string? value) =>
+        Mql5CompileValidation.IsSafeRelativeSourcePath(value) ? value! : string.Empty;
 
     private sealed record InputEventIndexEntry(
         int EventIndex,
@@ -517,14 +652,16 @@ public sealed class Mql5SemanticEquivalenceVerifier
         bool Valid,
         string ReasonCode,
         string AttestationSha256,
-        string SigningKeyId)
+        string SigningKeyId,
+        Mql5SemanticRunnerAttestationDescriptor? Descriptor)
     {
         public static AttestationValidation Invalid(string reasonCode) =>
-            new(false, reasonCode, string.Empty, string.Empty);
+            new(false, reasonCode, string.Empty, string.Empty, null);
 
         public static AttestationValidation Success(
             string attestationSha256,
-            string signingKeyId) =>
-            new(true, string.Empty, attestationSha256, signingKeyId);
+            string signingKeyId,
+            Mql5SemanticRunnerAttestationDescriptor descriptor) =>
+            new(true, string.Empty, attestationSha256, signingKeyId, descriptor);
     }
 }

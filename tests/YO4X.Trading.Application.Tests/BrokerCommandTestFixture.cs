@@ -276,6 +276,24 @@ internal sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     public override DateTimeOffset GetUtcNow() => now;
 }
 
+internal sealed class ControllableTimeProvider(DateTimeOffset now) : TimeProvider
+{
+    private long timestamp;
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override DateTimeOffset GetUtcNow() => now.AddTicks(timestamp);
+
+    public override long GetTimestamp() => Volatile.Read(ref timestamp);
+
+    public void Advance(TimeSpan elapsed)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(elapsed, TimeSpan.Zero);
+
+        Interlocked.Add(ref timestamp, elapsed.Ticks);
+    }
+}
+
 internal sealed class FixedLeaseTrustVerifier(bool trusted = true) : IExecutionLeaseTrustVerifier
 {
     public ExecutionLeaseTrustVerification Verify(SignedExecutionLease lease) => trusted

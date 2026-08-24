@@ -20,7 +20,8 @@ public sealed class BrokerCommandLifecycleTests
                 null,
                 null,
                 null,
-                Now.AddSeconds(2)));
+                Now.AddSeconds(2),
+                false));
 
         Assert.Equal(BrokerCommandState.Unknown, command.State);
         Assert.False(command.CanDispatch);
@@ -90,7 +91,8 @@ public sealed class BrokerCommandLifecycleTests
                 null,
                 null,
                 null,
-                Now.AddSeconds(2)));
+                Now.AddSeconds(2),
+                false));
 
         Assert.Equal(BrokerCommandState.Rejected, command.State);
         Assert.True(command.IsTerminal);
@@ -109,7 +111,8 @@ public sealed class BrokerCommandLifecycleTests
                 "request-1",
                 "order-1",
                 null,
-                Now.AddSeconds(2)));
+                Now.AddSeconds(2),
+                false));
 
         command.RecordPartialFill(Now.AddSeconds(3));
         command.RecordFilled(Now.AddSeconds(4));

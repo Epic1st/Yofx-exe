@@ -8,7 +8,8 @@ public enum OutboxDispatchCycleOutcome
     PostgresUnavailable,
     DestinationUnavailable,
     StoreOperationFailed,
-    StoreContractViolation
+    StoreContractViolation,
+    ScanProgressLagging
 }
 
 public sealed record OutboxDispatchCycleResult(
@@ -57,6 +58,11 @@ public sealed class OutboxDispatchCoordinator
 
     public async Task<OutboxDispatchCycleResult> RunCycleAsync(CancellationToken cancellationToken)
     {
+        if (_readiness.Condition == OutboxReadinessCondition.Stopped)
+        {
+            throw new WorkerWorkstreamStoppedException();
+        }
+
         if (!await ProbeStoreAsync(cancellationToken).ConfigureAwait(false))
         {
             _readiness.MarkNotReady(OutboxReadinessCondition.PostgresUnavailable);
@@ -77,10 +83,18 @@ public sealed class OutboxDispatchCoordinator
                 _options.BatchSize,
                 _timeProvider.GetUtcNow(),
                 _options.ClaimLease).Validate();
-            claimed = await _store.ClaimAsync(request, cancellationToken)
-                .AsTask()
-                .WaitAsync(_options.DependencyTimeout, cancellationToken)
+            claimed = await WorkerOperationBoundary.ExecuteAsync(
+                    token => _store.ClaimAsync(request, token),
+                    _options.DependencyTimeout,
+                    _options.CancellationConfirmationTimeout,
+                    _timeProvider,
+                    cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (WorkerOperationTerminationUnconfirmedException)
+        {
+            _readiness.MarkStopped();
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -131,14 +145,22 @@ public sealed class OutboxDispatchCoordinator
             try
             {
                 OutboxDeliveryEnvelope envelope = OutboxDeliveryEnvelope.Create(item);
-                delivery = await _destination.DeliverAsync(envelope, cancellationToken)
-                    .AsTask()
-                    .WaitAsync(_options.DeliveryTimeout, cancellationToken)
+                delivery = await WorkerOperationBoundary.ExecuteAsync(
+                        token => _destination.DeliverAsync(envelope, token),
+                        _options.DeliveryTimeout,
+                        _options.CancellationConfirmationTimeout,
+                        _timeProvider,
+                        cancellationToken)
                     .ConfigureAwait(false);
                 if (delivery is null)
                 {
                     throw new InvalidOperationException("The destination returned no delivery outcome.");
                 }
+            }
+            catch (WorkerOperationTerminationUnconfirmedException)
+            {
+                _readiness.MarkStopped();
+                throw;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -217,6 +239,50 @@ public sealed class OutboxDispatchCoordinator
             }
         }
 
+        bool scanProgressHealthy;
+        try
+        {
+            scanProgressHealthy = await WorkerOperationBoundary.ExecuteAsync(
+                    token => _store.IsScanProgressHealthyAsync(
+                        _options.MaximumTenantScanRotationAge,
+                        token),
+                    _options.DependencyTimeout,
+                    _options.CancellationConfirmationTimeout,
+                    _timeProvider,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkerOperationTerminationUnconfirmedException)
+        {
+            _readiness.MarkStopped();
+            throw;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            _readiness.MarkNotReady(OutboxReadinessCondition.StoreOperationFailed);
+            return new OutboxDispatchCycleResult(
+                OutboxDispatchCycleOutcome.StoreOperationFailed,
+                claimed.Count,
+                published,
+                scheduledForRetry,
+                deadLettered);
+        }
+
+        if (!scanProgressHealthy)
+        {
+            _readiness.MarkNotReady(OutboxReadinessCondition.ScanProgressLagging);
+            return new OutboxDispatchCycleResult(
+                OutboxDispatchCycleOutcome.ScanProgressLagging,
+                claimed.Count,
+                published,
+                scheduledForRetry,
+                deadLettered);
+        }
+
         _readiness.MarkReady();
         return new OutboxDispatchCycleResult(
             OutboxDispatchCycleOutcome.Completed,
@@ -230,10 +296,18 @@ public sealed class OutboxDispatchCoordinator
     {
         try
         {
-            return await _store.IsAvailableAsync(cancellationToken)
-                .AsTask()
-                .WaitAsync(_options.DependencyTimeout, cancellationToken)
+            return await WorkerOperationBoundary.ExecuteAsync(
+                    _store.IsAvailableAsync,
+                    _options.DependencyTimeout,
+                    _options.CancellationConfirmationTimeout,
+                    _timeProvider,
+                    cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (WorkerOperationTerminationUnconfirmedException)
+        {
+            _readiness.MarkStopped();
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -249,10 +323,18 @@ public sealed class OutboxDispatchCoordinator
     {
         try
         {
-            return await _destination.IsAvailableAsync(cancellationToken)
-                .AsTask()
-                .WaitAsync(_options.DependencyTimeout, cancellationToken)
+            return await WorkerOperationBoundary.ExecuteAsync(
+                    _destination.IsAvailableAsync,
+                    _options.DependencyTimeout,
+                    _options.CancellationConfirmationTimeout,
+                    _timeProvider,
+                    cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (WorkerOperationTerminationUnconfirmedException)
+        {
+            _readiness.MarkStopped();
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -304,10 +386,18 @@ public sealed class OutboxDispatchCoordinator
     {
         try
         {
-            return await _store.SettleAsync(settlement, cancellationToken)
-                .AsTask()
-                .WaitAsync(_options.DependencyTimeout, cancellationToken)
+            return await WorkerOperationBoundary.ExecuteAsync(
+                    token => _store.SettleAsync(settlement, token),
+                    _options.DependencyTimeout,
+                    _options.CancellationConfirmationTimeout,
+                    _timeProvider,
+                    cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (WorkerOperationTerminationUnconfirmedException)
+        {
+            _readiness.MarkStopped();
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

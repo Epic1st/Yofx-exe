@@ -23,7 +23,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
 
     public string? UnavailableDiagnostic { get; private set; }
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         string? externalConnectionString = Environment.GetEnvironmentVariable(
             ExternalAdministratorConnectionStringEnvironmentVariable);
@@ -59,7 +59,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         }
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_container is not null)
         {
@@ -82,16 +82,19 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         RequireAvailable();
         string suffix = Guid.CreateVersion7().ToString("N");
         string databaseName = $"yo4x_{suffix}";
-        string roleName = $"yo4x_app_{suffix}";
-        string rolePassword = CreateEphemeralPassword();
+        string contextIssuerPassword = CreateEphemeralPassword();
         string controlApiPassword = CreateEphemeralPassword();
         string adminBffPassword = CreateEphemeralPassword();
+        string emergencyPassword = CreateEphemeralPassword();
         string secretIngestionPassword = CreateEphemeralPassword();
         string conversionWorkerPassword = CreateEphemeralPassword();
         string strategyVerifierPassword = CreateEphemeralPassword();
+        string runtimeEvidencePassword = CreateEphemeralPassword();
         string workerPassword = CreateEphemeralPassword();
+        string supervisorRuntimePassword = CreateEphemeralPassword();
         string tradeAuthorizerPassword = CreateEphemeralPassword();
         string gatewayRuntimePassword = CreateEphemeralPassword();
+        string credentialRuntimePassword = CreateEphemeralPassword();
 
         var serverBuilder = new NpgsqlConnectionStringBuilder(_administratorConnectionString)
         {
@@ -104,20 +107,12 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         {
             await serverConnection.OpenAsync().ConfigureAwait(false);
             await ProvisionCapabilityRolesAsync(serverConnection).ConfigureAwait(false);
-            string quotedRole = QuoteIdentifier(roleName);
             string quotedDatabase = QuoteIdentifier(databaseName);
-            string escapedPassword = rolePassword.Replace("'", "''", StringComparison.Ordinal);
 
-            await using (var createRole = new NpgsqlCommand(
-                $"create role {quotedRole} login password '{escapedPassword}' "
-                + "nosuperuser nocreatedb nocreaterole noinherit nobypassrls noreplication; "
-                + $"alter role {quotedRole} set log_parameter_max_length = 0; "
-                + $"alter role {quotedRole} set log_parameter_max_length_on_error = 0",
-                serverConnection))
-            {
-                await createRole.ExecuteNonQueryAsync().ConfigureAwait(false);
-            }
-
+            await EnableRoleLoginAsync(
+                serverConnection,
+                "yo4x_context_issuer",
+                contextIssuerPassword).ConfigureAwait(false);
             await EnableRoleLoginAsync(
                 serverConnection,
                 "yo4x_control_api",
@@ -126,6 +121,10 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                 serverConnection,
                 "yo4x_admin_bff",
                 adminBffPassword).ConfigureAwait(false);
+            await EnableRoleLoginAsync(
+                serverConnection,
+                "yo4x_emergency",
+                emergencyPassword).ConfigureAwait(false);
             await EnableRoleLoginAsync(
                 serverConnection,
                 "yo4x_secret_ingestion",
@@ -140,8 +139,16 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                 strategyVerifierPassword).ConfigureAwait(false);
             await EnableRoleLoginAsync(
                 serverConnection,
+                "yo4x_runtime_evidence",
+                runtimeEvidencePassword).ConfigureAwait(false);
+            await EnableRoleLoginAsync(
+                serverConnection,
                 "yo4x_worker",
                 workerPassword).ConfigureAwait(false);
+            await EnableRoleLoginAsync(
+                serverConnection,
+                "yo4x_supervisor_runtime",
+                supervisorRuntimePassword).ConfigureAwait(false);
             await EnableRoleLoginAsync(
                 serverConnection,
                 "yo4x_trade_authorizer",
@@ -150,9 +157,21 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                 serverConnection,
                 "yo4x_gateway_runtime",
                 gatewayRuntimePassword).ConfigureAwait(false);
+            await EnableRoleLoginAsync(
+                serverConnection,
+                "yo4x_credential_runtime",
+                credentialRuntimePassword).ConfigureAwait(false);
 
             await using var createDatabase = new NpgsqlCommand(
-                $"create database {quotedDatabase} owner postgres",
+                $"""
+                create database {quotedDatabase}
+                    owner postgres
+                    template template0
+                    encoding 'UTF8'
+                    locale_provider libc
+                    lc_collate 'C'
+                    lc_ctype 'C'
+                """,
                 serverConnection);
             await createDatabase.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
@@ -160,45 +179,26 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         var administratorBuilder = new NpgsqlConnectionStringBuilder(_administratorConnectionString)
         {
             Database = databaseName,
-            IncludeErrorDetail = true,
             Pooling = true
         };
         var administratorDatabase = new PostgresDatabase(
             administratorBuilder.ConnectionString,
-            PostgresDatabaseUsage.Migrator);
+            PostgresDatabaseUsage.Migrator,
+            allowInsecureLoopbackForDevelopment: true);
         await administratorDatabase.MigrateAsync().ConfigureAwait(false);
 
         await using (NpgsqlConnection administratorConnection =
             await administratorDatabase.OpenConnectionAsync().ConfigureAwait(false))
         {
             await ApplyLeastPrivilegeRoleScriptAsync(administratorConnection).ConfigureAwait(false);
-            string quotedRole = QuoteIdentifier(roleName);
-            string grantSql = $"""
-                grant connect on database {QuoteIdentifier(databaseName)} to {quotedRole};
-                grant usage on schema identity, "authorization", control, operations, governance, audit, messaging, readmodel to {quotedRole};
-                grant select, insert, update on all tables in schema identity, "authorization", control, operations, governance, audit, messaging, readmodel to {quotedRole};
-                grant execute on function control.current_tenant_id() to {quotedRole};
-                grant execute on function control.current_actor_id() to {quotedRole};
-                grant execute on function control.current_correlation_id() to {quotedRole};
-                grant execute on function control.current_session_id() to {quotedRole};
-                grant execute on function control.assert_safe_runtime_role() to {quotedRole};
-                grant execute on function control.acquire_u0_authority_lock() to {quotedRole};
-                grant execute on function control.acquire_u0_tenant_authority_lock(uuid) to {quotedRole};
-                """;
-            await using var grants = new NpgsqlCommand(grantSql, administratorConnection);
-            await grants.ExecuteNonQueryAsync().ConfigureAwait(false);
+            await ApplyBroadActorGrantsAsync(administratorConnection).ConfigureAwait(false);
         }
 
-        var applicationBuilder = new NpgsqlConnectionStringBuilder(administratorBuilder.ConnectionString)
-        {
-            Username = roleName,
-            Password = rolePassword,
-            IncludeErrorDetail = false,
-            LogParameters = false,
-            MaxPoolSize = 10,
-            MinPoolSize = 0,
-            NoResetOnClose = false
-        };
+        var applicationBuilder = CreateRuntimeConnectionBuilder(
+            administratorBuilder,
+            "yo4x_emergency",
+            emergencyPassword);
+        applicationBuilder.MaxPoolSize = 10;
         var conversionWorkerBuilder = new NpgsqlConnectionStringBuilder(administratorBuilder.ConnectionString)
         {
             Username = "yo4x_conversion_worker",
@@ -225,10 +225,18 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
             administratorBuilder,
             "yo4x_worker",
             workerPassword);
+        var runtimeEvidenceBuilder = CreateRuntimeConnectionBuilder(
+            administratorBuilder,
+            "yo4x_runtime_evidence",
+            runtimeEvidencePassword);
         var strategyVerifierBuilder = CreateRuntimeConnectionBuilder(
             administratorBuilder,
             "yo4x_strategy_verifier",
             strategyVerifierPassword);
+        var supervisorRuntimeBuilder = CreateRuntimeConnectionBuilder(
+            administratorBuilder,
+            "yo4x_supervisor_runtime",
+            supervisorRuntimePassword);
         var tradeAuthorizerBuilder = CreateRuntimeConnectionBuilder(
             administratorBuilder,
             "yo4x_trade_authorizer",
@@ -237,20 +245,84 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
             administratorBuilder,
             "yo4x_gateway_runtime",
             gatewayRuntimePassword);
+        var credentialRuntimeBuilder = CreateRuntimeConnectionBuilder(
+            administratorBuilder,
+            "yo4x_credential_runtime",
+            credentialRuntimePassword);
+        var contextIssuerBuilder = CreateRuntimeConnectionBuilder(
+            administratorBuilder,
+            PostgresTenantContextCapabilityProvider.RequiredDatabaseRole,
+            contextIssuerPassword);
+        var contextCapabilityProvider = new PostgresTenantContextCapabilityProvider(
+            contextIssuerBuilder.ConnectionString,
+            requireTls: false);
 
         return new PostgresTestDatabase(
             administratorDatabase,
-            new PostgresDatabase(applicationBuilder.ConnectionString),
+            contextCapabilityProvider,
+            contextIssuerBuilder.ConnectionString,
+            new PostgresDatabase(
+                applicationBuilder.ConnectionString,
+                PostgresDatabaseUsage.Runtime,
+                contextCapabilityProvider,
+                allowInsecureLoopbackForDevelopment: true),
             applicationBuilder.ConnectionString,
-            new PostgresDatabase(controlApiBuilder.ConnectionString),
-            new PostgresDatabase(adminBffBuilder.ConnectionString),
-            new PostgresDatabase(secretIngestionBuilder.ConnectionString),
-            new PostgresDatabase(conversionWorkerBuilder.ConnectionString),
+            new PostgresDatabase(controlApiBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            new PostgresDatabase(adminBffBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            new PostgresDatabase(secretIngestionBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            new PostgresDatabase(conversionWorkerBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
             conversionWorkerBuilder.ConnectionString,
-            new PostgresDatabase(strategyVerifierBuilder.ConnectionString),
-            new PostgresDatabase(workerBuilder.ConnectionString),
-            new PostgresDatabase(tradeAuthorizerBuilder.ConnectionString),
-            new PostgresDatabase(gatewayRuntimeBuilder.ConnectionString));
+            new PostgresDatabase(strategyVerifierBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            runtimeEvidenceBuilder.ConnectionString,
+            new PostgresDatabase(workerBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            workerBuilder.ConnectionString,
+            new PostgresDatabase(supervisorRuntimeBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            supervisorRuntimeBuilder.ConnectionString,
+            new PostgresDatabase(tradeAuthorizerBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            new PostgresDatabase(gatewayRuntimeBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            gatewayRuntimeBuilder.ConnectionString,
+            new PostgresDatabase(credentialRuntimeBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
+            credentialRuntimeBuilder.ConnectionString);
+    }
+
+    internal async Task<PostgresDatabase> CreateUnmigratedDatabaseAsync()
+    {
+        RequireAvailable();
+        string databaseName = $"yo4x_unmigrated_{Guid.CreateVersion7():N}";
+        var serverBuilder = new NpgsqlConnectionStringBuilder(_administratorConnectionString)
+        {
+            Database = "postgres",
+            IncludeErrorDetail = true,
+            Pooling = false
+        };
+
+        await using (var serverConnection = new NpgsqlConnection(serverBuilder.ConnectionString))
+        {
+            await serverConnection.OpenAsync().ConfigureAwait(false);
+            string quotedDatabase = QuoteIdentifier(databaseName);
+            await using var createDatabase = new NpgsqlCommand(
+                $"""
+                create database {quotedDatabase}
+                    owner postgres
+                    template template0
+                    encoding 'UTF8'
+                    locale_provider libc
+                    lc_collate 'C'
+                    lc_ctype 'C'
+                """,
+                serverConnection);
+            await createDatabase.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
+        var databaseBuilder = new NpgsqlConnectionStringBuilder(_administratorConnectionString)
+        {
+            Database = databaseName,
+            Pooling = true
+        };
+        return new PostgresDatabase(
+            databaseBuilder.ConnectionString,
+            PostgresDatabaseUsage.Migrator,
+            allowInsecureLoopbackForDevelopment: true);
     }
 
     private static NpgsqlConnectionStringBuilder CreateRuntimeConnectionBuilder(
@@ -297,6 +369,8 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                 foreach required_role in array array[
                     'yo4x_migrator',
                     'yo4x_control_api',
+                    'yo4x_context_authority',
+                    'yo4x_context_issuer',
                     'yo4x_admin_bff',
                     'yo4x_emergency',
                     'yo4x_secret_ingestion',
@@ -304,8 +378,10 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                     'yo4x_strategy_verifier',
                     'yo4x_runtime_evidence',
                     'yo4x_worker',
+                    'yo4x_supervisor_runtime',
                     'yo4x_trade_authorizer',
-                    'yo4x_gateway_runtime'
+                    'yo4x_gateway_runtime',
+                    'yo4x_credential_runtime'
                 ]
                 loop
                     if not exists
@@ -339,7 +415,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         await command.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
-    private static async Task ApplyLeastPrivilegeRoleScriptAsync(NpgsqlConnection connection)
+    internal static async Task ApplyLeastPrivilegeRoleScriptAsync(NpgsqlConnection connection)
     {
         string scriptPath = Path.Combine(
             AppContext.BaseDirectory,
@@ -358,6 +434,22 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                 "The least-privilege PostgreSQL role script is empty.");
         }
 
+        await using var command = new NpgsqlCommand(sql, connection);
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
+    internal static async Task ApplyBroadActorGrantsAsync(NpgsqlConnection connection)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        const string sql = """
+            grant usage on schema identity, "authorization", control, operations,
+                governance, audit, messaging, readmodel to yo4x_emergency;
+            grant select, insert, update on all tables in schema identity,
+                "authorization", control, operations, governance, audit, messaging,
+                readmodel to yo4x_emergency;
+            grant execute on all functions in schema identity, "authorization", control,
+                operations, governance, audit, messaging, readmodel to yo4x_emergency;
+            """;
         await using var command = new NpgsqlCommand(sql, connection);
         await command.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
@@ -387,11 +479,18 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                 + "password-authenticated loopback PostgreSQL administrator.");
         }
 
+        if (!PostgresRuntimeConnectionPolicy.HasSafeSessionConfiguration(builder))
+        {
+            throw new InvalidOperationException(
+                $"{sourceDescription} contains PostgreSQL session configuration "
+                + "rejected by PostgresRuntimeConnectionPolicy.");
+        }
+
         builder.Database = "postgres";
+        builder.SslMode = SslMode.Disable;
         builder.Pooling = false;
         builder.Timeout = Math.Clamp(builder.Timeout, 1, 5);
         builder.CommandTimeout = Math.Clamp(builder.CommandTimeout, 1, 30);
-        builder.IncludeErrorDetail = true;
 
         await using var connection = new NpgsqlConnection(builder.ConnectionString);
         await connection.OpenAsync().ConfigureAwait(false);
@@ -439,6 +538,8 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
 
 public sealed class PostgresTestDatabase(
     PostgresDatabase administrator,
+    PostgresTenantContextCapabilityProvider tenantContextCapabilityProvider,
+    string contextIssuerConnectionString,
     PostgresDatabase application,
     string applicationConnectionString,
     PostgresDatabase controlApi,
@@ -447,11 +548,23 @@ public sealed class PostgresTestDatabase(
     PostgresDatabase conversionWorker,
     string conversionWorkerConnectionString,
     PostgresDatabase strategyVerifier,
+    string runtimeEvidenceConnectionString,
     PostgresDatabase worker,
+    string workerConnectionString,
+    PostgresDatabase supervisorRuntime,
+    string supervisorRuntimeConnectionString,
     PostgresDatabase tradeAuthorizer,
-    PostgresDatabase gatewayRuntime) : IAsyncDisposable
+    PostgresDatabase gatewayRuntime,
+    string gatewayRuntimeConnectionString,
+    PostgresDatabase credentialRuntime,
+    string credentialRuntimeConnectionString) : IAsyncDisposable
 {
     public PostgresDatabase Administrator { get; } = administrator;
+
+    public PostgresTenantContextCapabilityProvider TenantContextCapabilityProvider { get; } =
+        tenantContextCapabilityProvider;
+
+    public string ContextIssuerConnectionString { get; } = contextIssuerConnectionString;
 
     public PostgresDatabase Application { get; } = application;
 
@@ -469,16 +582,33 @@ public sealed class PostgresTestDatabase(
 
     public PostgresDatabase StrategyVerifier { get; } = strategyVerifier;
 
+    public string RuntimeEvidenceConnectionString { get; } =
+        runtimeEvidenceConnectionString;
+
     public PostgresDatabase Worker { get; } = worker;
+
+    public string WorkerConnectionString { get; } = workerConnectionString;
+
+    public PostgresDatabase SupervisorRuntime { get; } = supervisorRuntime;
+
+    public string SupervisorRuntimeConnectionString { get; } = supervisorRuntimeConnectionString;
 
     public PostgresDatabase TradeAuthorizer { get; } = tradeAuthorizer;
 
     public PostgresDatabase GatewayRuntime { get; } = gatewayRuntime;
 
+    public string GatewayRuntimeConnectionString { get; } = gatewayRuntimeConnectionString;
+
+    public PostgresDatabase CredentialRuntime { get; } = credentialRuntime;
+
+    public string CredentialRuntimeConnectionString { get; } = credentialRuntimeConnectionString;
+
     public async ValueTask DisposeAsync()
     {
+        await CredentialRuntime.DisposeAsync().ConfigureAwait(false);
         await GatewayRuntime.DisposeAsync().ConfigureAwait(false);
         await TradeAuthorizer.DisposeAsync().ConfigureAwait(false);
+        await SupervisorRuntime.DisposeAsync().ConfigureAwait(false);
         await Worker.DisposeAsync().ConfigureAwait(false);
         await StrategyVerifier.DisposeAsync().ConfigureAwait(false);
         await ConversionWorker.DisposeAsync().ConfigureAwait(false);
@@ -486,6 +616,7 @@ public sealed class PostgresTestDatabase(
         await AdminBff.DisposeAsync().ConfigureAwait(false);
         await ControlApi.DisposeAsync().ConfigureAwait(false);
         await Application.DisposeAsync().ConfigureAwait(false);
+        await TenantContextCapabilityProvider.DisposeAsync().ConfigureAwait(false);
         await Administrator.DisposeAsync().ConfigureAwait(false);
     }
 }

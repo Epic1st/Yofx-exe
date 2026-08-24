@@ -2,6 +2,7 @@ using YO4X.Supervisor;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<SupervisorRuntimeStatus>();
+builder.Services.AddSupervisorUserOperationProtocol(builder.Configuration);
 
 var app = builder.Build();
 

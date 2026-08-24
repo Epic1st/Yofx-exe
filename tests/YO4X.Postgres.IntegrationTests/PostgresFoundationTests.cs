@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Npgsql;
@@ -7,6 +8,7 @@ using YO4X.BuildingBlocks;
 using YO4X.Conversion.Worker;
 using YO4X.Outbox;
 using YO4X.Persistence.Postgres;
+using YO4X.RuntimeControl.Postgres;
 using YO4X.SecretCoordination;
 using YO4X.StrategyGovernance;
 using YO4X.Tenancy;
@@ -14,12 +16,12 @@ using YO4X.Tenancy;
 namespace YO4X.Postgres.IntegrationTests;
 
 [Collection(PostgresTestGroup.Name)]
-public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
+public sealed partial class PostgresFoundationTests(PostgresContainerFixture postgres)
 {
     private readonly PostgresContainerFixture _postgres = postgres;
 
     [PostgresFact]
-    public async Task FreshDatabaseMigratesAllSchemasWithNoDomainSeedRows()
+    public async Task FreshDatabaseMigratesAllSchemasWithOnlyRequiredCursorSeedRows()
     {
         _postgres.RequireAvailable();
         await using PostgresTestDatabase database = await _postgres.CreateDatabaseAsync();
@@ -59,13 +61,57 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         {
             Assert.True(await reader.ReadAsync());
             Assert.Equal(8L, reader.GetInt64(0));
-            Assert.Equal(1L, reader.GetInt64(1));
+            Assert.Equal(2L, reader.GetInt64(1));
             Assert.True(reader.GetBoolean(2));
             Assert.Equal(0L, reader.GetInt64(3));
             Assert.Equal(0L, reader.GetInt64(4));
         }
 
         await AssertNoDomainRowsAsync(connection);
+    }
+
+    [PostgresFact]
+    public async Task RecordedFoundationChecksumMismatchFailsClosedWithoutRewrite()
+    {
+        _postgres.RequireAvailable();
+        await using PostgresTestDatabase database = await _postgres.CreateDatabaseAsync();
+        const string mismatchedChecksum =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+
+        await using (NpgsqlConnection connection =
+            await database.Administrator.OpenConnectionAsync())
+        await using (var tamper = new NpgsqlCommand(
+            """
+            update control.schema_migrations
+            set sha256 = @sha256
+            where migration_id = '001_foundation'
+            """,
+            connection))
+        {
+            tamper.Parameters.AddWithValue("sha256", NpgsqlDbType.Text, mismatchedChecksum);
+            Assert.Equal(1, await tamper.ExecuteNonQueryAsync());
+        }
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await database.Administrator.MigrateAsync());
+        Assert.Equal(
+            "Migration '001_foundation' was modified after it was applied.",
+            exception.Message);
+
+        await using NpgsqlConnection verification =
+            await database.Administrator.OpenConnectionAsync();
+        await using var read = new NpgsqlCommand(
+            """
+            select sha256, (select count(*) from control.schema_migrations)
+            from control.schema_migrations
+            where migration_id = '001_foundation'
+            """,
+            verification);
+        await using NpgsqlDataReader reader = await read.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(mismatchedChecksum, reader.GetString(0));
+        Assert.Equal(2L, reader.GetInt64(1));
+        Assert.False(await reader.ReadAsync());
     }
 
     [PostgresFact]
@@ -146,7 +192,11 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
             MaxPoolSize = 1,
             MinPoolSize = 0
         };
-        await using var singleConnectionPool = new PostgresDatabase(connectionString.ConnectionString);
+        await using var singleConnectionPool = new PostgresDatabase(
+            connectionString.ConnectionString,
+            PostgresDatabaseUsage.Runtime,
+            database.TenantContextCapabilityProvider,
+            allowInsecureLoopbackForDevelopment: true);
         TenantExecutionContext context = NewContext();
         await SeedTenantAsync(singleConnectionPool, context);
 
@@ -279,7 +329,15 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         var firstStore = new PostgresCredentialIngestionGrantStore(database.SecretIngestion);
         var secondStore = new PostgresCredentialIngestionGrantStore(database.SecretIngestion);
         await AssertSecretIngestionExecuteOnlyBoundaryAsync(database.SecretIngestion);
-        Assert.True(await firstStore.IsReadyAsync(CancellationToken.None));
+        await PostgresProductionReadinessFixture.RemoveBroadActorGrantsAsync(database);
+        try
+        {
+            Assert.True(await firstStore.IsReadyAsync(CancellationToken.None));
+        }
+        finally
+        {
+            await PostgresProductionReadinessFixture.RestoreBroadActorGrantsAsync(database);
+        }
 
         var wrongProof = new CredentialIngestionProof(
             context.TenantId,
@@ -877,13 +935,502 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
     }
 
     [PostgresFact]
+    public async Task BrokerResultV4AcceptsExactRequestedV3CapabilityAndRejectsForgery()
+    {
+        _postgres.RequireAvailable();
+        await using PostgresTestDatabase database = await _postgres.CreateDatabaseAsync();
+        TenantExecutionContext ownerContext = NewContext();
+        CredentialBoundaryFixture accounts = await SeedCredentialBoundaryFixtureAsync(
+            database.Application,
+            ownerContext);
+        BrokerOperationFixture fixture = await SeedConfirmedBrokerOperationFixtureAsync(
+            database,
+            ownerContext,
+            accounts.RotateAccountId,
+            seedResults: false);
+        await using var runtimeEvidence = new PostgresDatabase(
+            database.RuntimeEvidenceConnectionString,
+            PostgresDatabaseUsage.Runtime,
+            database.TenantContextCapabilityProvider,
+            allowInsecureLoopbackForDevelopment: true);
+
+        await using (NpgsqlConnection raw = new(database.RuntimeEvidenceConnectionString))
+        {
+            await raw.OpenAsync();
+            await using var directInsert = new NpgsqlCommand(
+                "insert into operations.user_operation_results default values",
+                raw);
+            PostgresException denied = await Assert.ThrowsAsync<PostgresException>(
+                () => directInsert.ExecuteNonQueryAsync());
+            Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, denied.SqlState);
+        }
+
+        string wrongCapability = RandomResultCapability();
+        PostgresException wrongPossession = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                accounts.RotateAccountId,
+                fixture.RotateResultId,
+                fixture.RotateResultId,
+                wrongCapability,
+                fixture.RotateRequestSha256));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, wrongPossession.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+
+        await SetDispatchMessageVersionForBoundaryTestAsync(
+            database,
+            fixture.RotateDispatchId,
+            "yo4x.broker-account.credential-rotation.requested.v2");
+        PostgresException legacyV2Dispatch = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                accounts.RotateAccountId,
+                fixture.RotateResultId,
+                fixture.RotateResultId,
+                fixture.RotateResultCapability,
+                fixture.RotateRequestSha256));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, legacyV2Dispatch.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+        await SetDispatchMessageVersionForBoundaryTestAsync(
+            database,
+            fixture.RotateDispatchId,
+            "yo4x.broker-account.credential-rotation.requested.v3");
+
+        PostgresException ambiguousTerminalFailure =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordBrokerResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    fixture,
+                    accounts.RotateAccountId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultCapability,
+                    fixture.RotateRequestSha256,
+                    outcome: "failed",
+                    gatewayInvoked: true,
+                    brokerConfirmed: false,
+                    errorCode: "gateway_outcome_unknown"));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, ambiguousTerminalFailure.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+
+        PostgresException callerAssertedNotSent =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordBrokerResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    fixture,
+                    accounts.RotateAccountId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultCapability,
+                    fixture.RotateRequestSha256,
+                    outcome: "failed",
+                    preInvocationNotSentProven: true,
+                    gatewayInvoked: false,
+                    brokerConfirmed: false,
+                    errorCode: "pre_invocation_not_sent"));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, callerAssertedNotSent.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+
+        DispatchAuthorityWindow brokerAuthority = await ReadDispatchAuthorityWindowAsync(
+            database,
+            fixture.RotateOperationId);
+        PostgresException atExecutionDeadline = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                accounts.RotateAccountId,
+                fixture.RotateResultId,
+                fixture.RotateResultId,
+                fixture.RotateResultCapability,
+                fixture.RotateRequestSha256,
+                brokerAuthority.ExecutionDeadline));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, atExecutionDeadline.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+
+        AssignmentObservationWindow historicalWindow =
+            await SetHistoricalAssignmentWindowForBoundaryTestAsync(
+                database,
+                fixture.WorkerAssignmentId);
+        PostgresException atRevocation = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                accounts.RotateAccountId,
+                fixture.RotateResultId,
+                fixture.RotateResultId,
+                fixture.RotateResultCapability,
+                fixture.RotateRequestSha256,
+                historicalWindow.RevokedAt));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, atRevocation.SqlState);
+        PostgresException atLeaseExpiry = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                accounts.RotateAccountId,
+                fixture.RotateResultId,
+                fixture.RotateResultId,
+                fixture.RotateResultCapability,
+                fixture.RotateRequestSha256,
+                historicalWindow.LeaseExpiresAt));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, atLeaseExpiry.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+        PostgresException afterRevocation = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                accounts.RotateAccountId,
+                fixture.RotateResultId,
+                fixture.RotateResultId,
+                fixture.RotateResultCapability,
+                fixture.RotateRequestSha256,
+                historicalWindow.RevokedAt.AddTicks(10)));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, afterRevocation.SqlState);
+        PostgresException afterLease = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                accounts.RotateAccountId,
+                fixture.RotateResultId,
+                fixture.RotateResultId,
+                fixture.RotateResultCapability,
+                fixture.RotateRequestSha256,
+                historicalWindow.LeaseExpiresAt.AddTicks(10)));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, afterLease.SqlState);
+
+        // Revoked-capability world: EXECUTE on the legacy recorder is denied
+        // before any function-internal validation, so every payload variant —
+        // including the exact requested capability inside a valid authority
+        // window — fails closed with insufficient_privilege. Acceptance lives
+        // solely on control.record_user_operation_result_v5 (covered by
+        // PostgresInvocationProtocolTests).
+        PostgresException exactCapabilityAlsoDenied =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordBrokerResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    fixture,
+                    accounts.RotateAccountId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultCapability,
+                    fixture.RotateRequestSha256,
+                    historicalWindow.RevokedAt.AddTicks(-10)));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, exactCapabilityAlsoDenied.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+
+        await ExpireResultCapabilityForBoundaryTestAsync(
+            database,
+            fixture.RotateOperationId);
+        await ExpireResultCapabilityForBoundaryTestAsync(
+            database,
+            fixture.DeleteOperationId);
+        PostgresException replayAfterExpiryAlsoDenied =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordBrokerResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    fixture,
+                    accounts.RotateAccountId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultCapability,
+                    fixture.RotateRequestSha256,
+                    historicalWindow.RevokedAt.AddTicks(-10)));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, replayAfterExpiryAlsoDenied.SqlState);
+
+        PostgresException sameDigestDifferentBrokerEvidence =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordBrokerResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    fixture,
+                    accounts.RotateAccountId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultId,
+                    fixture.RotateResultCapability,
+                    fixture.RotateRequestSha256,
+                    historicalWindow.RevokedAt.AddTicks(-10),
+                    evidenceSha256Override: RandomHexDigest()));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, sameDigestDifferentBrokerEvidence.SqlState);
+
+        PostgresException conflictingReplay = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                accounts.RotateAccountId,
+                fixture.RotateResultId,
+                fixture.RotateResultId,
+                fixture.RotateResultCapability,
+                RandomHexDigest()));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, conflictingReplay.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+
+        PostgresException expiredNewResult = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordBrokerResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                fixture,
+                fixture.DeleteAccountId,
+                Guid.CreateVersion7(),
+                Guid.CreateVersion7(),
+                fixture.DeleteResultCapability,
+                RandomHexDigest(),
+                useDeleteOperation: true));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, expiredNewResult.SqlState);
+        Assert.Equal(0L, await CountBrokerResultsAsync(database, fixture.RotateOperationId));
+    }
+
+    [PostgresFact]
+    public async Task DeploymentResultV4AcceptsExactRequestedV3CapabilityAndRejectsForgery()
+    {
+        _postgres.RequireAvailable();
+        await using PostgresTestDatabase database = await _postgres.CreateDatabaseAsync();
+        TenantExecutionContext ownerContext = NewContext();
+        CredentialBoundaryFixture accounts = await SeedCredentialBoundaryFixtureAsync(
+            database.Application,
+            ownerContext);
+        BrokerOperationFixture route = await SeedConfirmedBrokerOperationFixtureAsync(
+            database,
+            ownerContext,
+            accounts.RotateAccountId,
+            seedResults: false);
+        DeploymentOperationResultFixture acceptedFixture =
+            await SeedDeploymentOperationResultFixtureAsync(database, ownerContext, route);
+        DeploymentOperationResultFixture expiredFixture =
+            await SeedDeploymentOperationResultFixtureAsync(database, ownerContext, route);
+        DeploymentOperationResultFixture failedFixture =
+            await SeedDeploymentOperationResultFixtureAsync(database, ownerContext, route);
+        await using var runtimeEvidence = new PostgresDatabase(
+            database.RuntimeEvidenceConnectionString,
+            PostgresDatabaseUsage.Runtime,
+            database.TenantContextCapabilityProvider,
+            allowInsecureLoopbackForDevelopment: true);
+
+        foreach (string connectionString in new[]
+                 {
+                     database.RuntimeEvidenceConnectionString,
+                     database.WorkerConnectionString
+                 })
+        {
+            await using NpgsqlConnection raw = new(connectionString);
+            await raw.OpenAsync();
+            await using var directInsert = new NpgsqlCommand(
+                "insert into operations.deployment_reconciliations default values",
+                raw);
+            PostgresException denied = await Assert.ThrowsAsync<PostgresException>(
+                () => directInsert.ExecuteNonQueryAsync());
+            Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, denied.SqlState);
+        }
+
+        PostgresException invalidTerminalFailure = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordDeploymentResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                acceptedFixture,
+                Guid.CreateVersion7(),
+                acceptedFixture.ResultId,
+                acceptedFixture.ResultCapability,
+                acceptedFixture.RequestSha256,
+                outcome: "failed",
+                preInvocationNotSentProven: false,
+                gatewayInvoked: true));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, invalidTerminalFailure.SqlState);
+        Assert.Equal(0L, await CountDeploymentResultsAsync(
+            database,
+            acceptedFixture.OperationId));
+
+        PostgresException wrongPossession = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordDeploymentResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                acceptedFixture,
+                Guid.CreateVersion7(),
+                acceptedFixture.ResultId,
+                RandomResultCapability(),
+                acceptedFixture.RequestSha256));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, wrongPossession.SqlState);
+        Assert.Equal(0L, await CountDeploymentResultsAsync(
+            database,
+            acceptedFixture.OperationId));
+
+        await SetDispatchMessageVersionForBoundaryTestAsync(
+            database,
+            acceptedFixture.DispatchMessageId,
+            "yo4x.deployment.close-only.requested.v2");
+        PostgresException legacyV2Dispatch = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordDeploymentResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                acceptedFixture,
+                Guid.CreateVersion7(),
+                acceptedFixture.ResultId,
+                acceptedFixture.ResultCapability,
+                acceptedFixture.RequestSha256));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, legacyV2Dispatch.SqlState);
+        Assert.Equal(0L, await CountDeploymentResultsAsync(
+            database,
+            acceptedFixture.OperationId));
+        await SetDispatchMessageVersionForBoundaryTestAsync(
+            database,
+            acceptedFixture.DispatchMessageId,
+            "yo4x.deployment.close-only.requested.v3");
+
+        PostgresException callerAssertedNotSent =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordDeploymentResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    failedFixture,
+                    Guid.CreateVersion7(),
+                    failedFixture.ResultId,
+                    failedFixture.ResultCapability,
+                    failedFixture.RequestSha256,
+                    outcome: "failed",
+                    preInvocationNotSentProven: true,
+                    gatewayInvoked: false));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, callerAssertedNotSent.SqlState);
+        Assert.Equal(0L, await CountDeploymentResultsAsync(
+            database,
+            failedFixture.OperationId));
+
+        DispatchAuthorityWindow deploymentAuthority = await ReadDispatchAuthorityWindowAsync(
+            database,
+            acceptedFixture.OperationId);
+        PostgresException atExecutionDeadline = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordDeploymentResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                acceptedFixture,
+                Guid.CreateVersion7(),
+                acceptedFixture.ResultId,
+                acceptedFixture.ResultCapability,
+                acceptedFixture.RequestSha256,
+                observedAt: deploymentAuthority.ExecutionDeadline));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, atExecutionDeadline.SqlState);
+        Assert.Equal(0L, await CountDeploymentResultsAsync(
+            database,
+            acceptedFixture.OperationId));
+
+        // Revoked-capability world: EXECUTE on the legacy recorder is denied
+        // before any function-internal validation, so every payload variant —
+        // including the exact requested capability — fails closed with
+        // insufficient_privilege. Acceptance lives solely on
+        // control.record_user_operation_result_v5 (covered by
+        // PostgresInvocationProtocolTests).
+        PostgresException exactCapabilityAlsoDenied =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordDeploymentResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    acceptedFixture,
+                    Guid.CreateVersion7(),
+                    acceptedFixture.ResultId,
+                    acceptedFixture.ResultCapability,
+                    acceptedFixture.RequestSha256));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, exactCapabilityAlsoDenied.SqlState);
+
+        await ExpireResultCapabilityForBoundaryTestAsync(
+            database,
+            acceptedFixture.OperationId);
+        PostgresException replayAfterExpiryAlsoDenied =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordDeploymentResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    acceptedFixture,
+                    Guid.CreateVersion7(),
+                    acceptedFixture.ResultId,
+                    acceptedFixture.ResultCapability,
+                    acceptedFixture.RequestSha256));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, replayAfterExpiryAlsoDenied.SqlState);
+
+        PostgresException sameDigestDifferentRuntimeEvidence =
+            await Assert.ThrowsAsync<PostgresException>(
+                () => RecordDeploymentResultCapabilityAsync(
+                    runtimeEvidence,
+                    ownerContext.TenantId,
+                    acceptedFixture,
+                    Guid.CreateVersion7(),
+                    acceptedFixture.ResultId,
+                    acceptedFixture.ResultCapability,
+                    acceptedFixture.RequestSha256,
+                    runtimeEvidenceSha256Override: RandomHexDigest()));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, sameDigestDifferentRuntimeEvidence.SqlState);
+
+        PostgresException conflictingReplay = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordDeploymentResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                acceptedFixture,
+                Guid.CreateVersion7(),
+                acceptedFixture.ResultId,
+                acceptedFixture.ResultCapability,
+                RandomHexDigest()));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, conflictingReplay.SqlState);
+        Assert.Equal(0L, await CountDeploymentResultsAsync(
+            database,
+            acceptedFixture.OperationId));
+
+        await ExpireResultCapabilityForBoundaryTestAsync(
+            database,
+            expiredFixture.OperationId);
+        PostgresException expiredNewResult = await Assert.ThrowsAsync<PostgresException>(
+            () => RecordDeploymentResultCapabilityAsync(
+                runtimeEvidence,
+                ownerContext.TenantId,
+                expiredFixture,
+                Guid.CreateVersion7(),
+                expiredFixture.ResultId,
+                expiredFixture.ResultCapability,
+                expiredFixture.RequestSha256));
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, expiredNewResult.SqlState);
+        Assert.Equal(0L, await CountDeploymentResultsAsync(
+            database,
+            expiredFixture.OperationId));
+    }
+
+    [PostgresFact]
     public async Task RuntimeTransactionRejectsMigrationOwnerRole()
     {
         _postgres.RequireAvailable();
         await using PostgresTestDatabase database = await _postgres.CreateDatabaseAsync();
-        PostgresException exception = await Assert.ThrowsAsync<PostgresException>(
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
             async () => await database.Administrator.BeginTenantTransactionAsync(NewContext()));
-        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, exception.SqlState);
+        // Runtime/migrator usage split fails closed in-process: BeginTenantTransactionAsync
+        // must refuse a migrator connection before any tenant transaction SQL reaches PostgreSQL.
+        Assert.Equal(
+            "Tenant transactions require a runtime PostgreSQL connection.",
+            exception.Message);
+        await using NpgsqlConnection migratorSession =
+            await database.Administrator.OpenConnectionAsync();
+        await using (var becomeMigrator = new NpgsqlCommand(
+            "set role yo4x_migrator",
+            migratorSession))
+        {
+            await becomeMigrator.ExecuteNonQueryAsync();
+        }
+
+        PostgresException dbLevelRejection = await Assert.ThrowsAsync<PostgresException>(
+            () => new NpgsqlCommand(
+                "select control.assert_safe_runtime_role();",
+                migratorSession).ExecuteScalarAsync());
+        // Acting directly as the migration-owner role, the first statement every tenant
+        // transaction executes must still be rejected by PostgreSQL itself.
+        Assert.Equal(
+            PostgresErrorCodes.InsufficientPrivilege,
+            dbLevelRejection.SqlState);
     }
 
     [PostgresFact]
@@ -928,10 +1475,190 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         Assert.Equal("25001", rejected.SqlState);
     }
 
+    [PostgresFact]
+    public async Task TenantAuthorityStatementLockPrecedesEveryTargetRowLock()
+    {
+        _postgres.RequireAvailable();
+        await using PostgresTestDatabase database = await _postgres.CreateDatabaseAsync();
+        TenantExecutionContext context = NewContext();
+        await SeedTenantAsync(database.Application, context);
+
+        await using TenantPostgresTransaction authority =
+            await database.Application.BeginTenantTransactionAsync(context);
+        await using (NpgsqlCommand acquire = authority.CreateCommand(
+            "select control.acquire_u0_authority_lock()"))
+        {
+            await acquire.ExecuteNonQueryAsync();
+        }
+
+        await using TenantPostgresTransaction direct =
+            await database.Application.BeginTenantTransactionAsync(context);
+        int directBackendPid;
+        await using (NpgsqlCommand pid = direct.CreateCommand("select pg_backend_pid()"))
+        {
+            directBackendPid = Convert.ToInt32(
+                await pid.ExecuteScalarAsync(),
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        await using NpgsqlCommand directUpdate = direct.CreateCommand(
+            "update identity.tenants set display_name = display_name || ' updated' where id = @tenant_id");
+        directUpdate.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, context.TenantId);
+        Task<int> pendingUpdate = directUpdate.ExecuteNonQueryAsync();
+
+        await using NpgsqlConnection monitor = await database.Administrator.OpenConnectionAsync();
+        await WaitForAdvisoryLockWaitAsync(monitor, directBackendPid);
+
+        await using (NpgsqlCommand timeout = authority.CreateCommand(
+            "set local lock_timeout = '1s'"))
+        {
+            await timeout.ExecuteNonQueryAsync();
+        }
+
+        await using (NpgsqlCommand rowLock = authority.CreateCommand(
+            "select id from identity.tenants where id = @tenant_id for update"))
+        {
+            rowLock.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, context.TenantId);
+            Assert.Equal(context.TenantId, Assert.IsType<Guid>(await rowLock.ExecuteScalarAsync()));
+        }
+
+        await authority.CommitAsync();
+        Assert.Equal(1, await pendingUpdate.WaitAsync(TimeSpan.FromSeconds(3)));
+        await direct.CommitAsync();
+    }
+
+    [PostgresFact]
+    public async Task StatementU0PrecedesRowsForDeploymentAssignmentAndUserOperationDml()
+    {
+        _postgres.RequireAvailable();
+        await using PostgresTestDatabase database = await _postgres.CreateDatabaseAsync();
+        TenantExecutionContext context = NewContext();
+        CredentialBoundaryFixture accounts = await SeedCredentialBoundaryFixtureAsync(
+            database.Application,
+            context);
+        BrokerOperationFixture fixture = await SeedConfirmedBrokerOperationFixtureAsync(
+            database,
+            context,
+            accounts.RotateAccountId);
+
+        await AssertStatementU0PrecedesTargetRowAsync(
+            database,
+            context,
+            """
+            update operations.deployments
+            set updated_at = greatest(updated_at, clock_timestamp())
+            where tenant_id = @tenant_id and id = @target_id
+            """,
+            "select id from operations.deployments where tenant_id = @tenant_id and id = @target_id for update",
+            fixture.DeploymentId);
+        await AssertStatementU0PrecedesTargetRowAsync(
+            database,
+            context,
+            """
+            update operations.worker_assignments
+            set lease_expires_at = lease_expires_at + interval '1 second',
+                row_version = row_version + 1
+            where tenant_id = @tenant_id and id = @target_id
+            """,
+            "select id from operations.worker_assignments where tenant_id = @tenant_id and id = @target_id for update",
+            fixture.WorkerAssignmentId);
+        await AssertStatementU0PrecedesTargetRowAsync(
+            database,
+            context,
+            """
+            update control.user_operations
+            set state = 'propagating', dispatch_attempts = dispatch_attempts + 1,
+                row_version = row_version + 1, updated_at = clock_timestamp()
+            where tenant_id = @tenant_id and id = @target_id
+            """,
+            "select id from control.user_operations where tenant_id = @tenant_id and id = @target_id for update",
+            fixture.DeleteOperationId);
+    }
+
     private static TenantExecutionContext NewContext() => new(
         Guid.CreateVersion7(),
         Guid.CreateVersion7(),
         Guid.CreateVersion7());
+
+    private static async Task AssertStatementU0PrecedesTargetRowAsync(
+        PostgresTestDatabase database,
+        TenantExecutionContext context,
+        string updateSql,
+        string rowLockSql,
+        Guid targetId)
+    {
+        await using TenantPostgresTransaction authority =
+            await database.Application.BeginTenantTransactionAsync(context);
+        await using (NpgsqlCommand acquire = authority.CreateCommand(
+            "select control.acquire_u0_authority_lock()"))
+        {
+            await acquire.ExecuteNonQueryAsync();
+        }
+
+        await using TenantPostgresTransaction direct =
+            await database.Application.BeginTenantTransactionAsync(context);
+        int directBackendPid;
+        await using (NpgsqlCommand pid = direct.CreateCommand("select pg_backend_pid()"))
+        {
+            directBackendPid = Convert.ToInt32(
+                await pid.ExecuteScalarAsync(),
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        await using NpgsqlCommand directUpdate = direct.CreateCommand(updateSql);
+        directUpdate.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, context.TenantId);
+        directUpdate.Parameters.AddWithValue("target_id", NpgsqlDbType.Uuid, targetId);
+        Task<int> pendingUpdate = directUpdate.ExecuteNonQueryAsync();
+
+        await using NpgsqlConnection monitor = await database.Administrator.OpenConnectionAsync();
+        await WaitForAdvisoryLockWaitAsync(monitor, directBackendPid);
+        await using (NpgsqlCommand timeout = authority.CreateCommand("set local lock_timeout = '1s'"))
+        {
+            await timeout.ExecuteNonQueryAsync();
+        }
+
+        await using (NpgsqlCommand rowLock = authority.CreateCommand(rowLockSql))
+        {
+            rowLock.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, context.TenantId);
+            rowLock.Parameters.AddWithValue("target_id", NpgsqlDbType.Uuid, targetId);
+            Assert.Equal(targetId, Assert.IsType<Guid>(await rowLock.ExecuteScalarAsync()));
+        }
+
+        await authority.CommitAsync();
+        Assert.Equal(1, await pendingUpdate.WaitAsync(TimeSpan.FromSeconds(3)));
+        await direct.CommitAsync();
+    }
+
+    private static async Task WaitForAdvisoryLockWaitAsync(
+        NpgsqlConnection monitor,
+        int backendPid)
+    {
+        var elapsed = Stopwatch.StartNew();
+        while (elapsed.Elapsed < TimeSpan.FromSeconds(3))
+        {
+            await using var command = new NpgsqlCommand(
+                """
+                select exists
+                (
+                    select 1
+                    from pg_locks
+                    where pid = @pid
+                      and locktype = 'advisory'
+                      and not granted
+                )
+                """,
+                monitor);
+            command.Parameters.AddWithValue("pid", NpgsqlDbType.Integer, backendPid);
+            if (Assert.IsType<bool>(await command.ExecuteScalarAsync()))
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10));
+        }
+
+        Assert.Fail("The direct tenant mutation did not wait at the statement-level U0 lock.");
+    }
 
     private static async Task SeedTenantAsync(
         PostgresDatabase database,
@@ -1002,10 +1729,11 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
             """
             insert into control.credential_ingestion_grants
                 (id, tenant_id, broker_account_id, operation, allowed_origin,
-                 bearer_hash, nonce_hash, expires_at)
+                 bearer_hash, nonce_hash, proof_key_id, expires_at)
             values
                 (@grant_id, @tenant_id, @broker_account_id, 'create', @origin,
-                 @bearer_hash, @nonce_hash, statement_timestamp() + interval '5 minutes');
+                 @bearer_hash, @nonce_hash, repeat('a', 64),
+                 statement_timestamp() + interval '5 minutes');
 
             update operations.broker_accounts
             set credential_state = 'ingestion_pending',
@@ -1197,20 +1925,17 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
     {
         Guid grantId = Guid.CreateVersion7();
         Guid targetTenantId = insertedTenantId ?? context.TenantId;
-        TenantExecutionContext transactionContext = advanceAccountState
-            ? new TenantExecutionContext(context.TenantId, context.ActorId, grantId)
-            : context;
         await using TenantPostgresTransaction transaction =
-            await database.BeginTenantTransactionAsync(transactionContext);
+            await database.BeginTenantTransactionAsync(context);
         await using NpgsqlCommand command = transaction.CreateCommand(
             """
             insert into control.credential_ingestion_grants
                 (id, tenant_id, broker_account_id, operation, allowed_origin,
-                 bearer_hash, nonce_hash, expires_at)
+                 bearer_hash, nonce_hash, proof_key_id, expires_at)
             values
                 (@grant_id, @tenant_id, @broker_account_id, @operation,
                  'https://ingest.test', @bearer_hash, @nonce_hash,
-                 statement_timestamp() + @lifetime);
+                 repeat('a', 64), statement_timestamp() + @lifetime);
             """);
         command.Parameters.AddWithValue("grant_id", NpgsqlDbType.Uuid, grantId);
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, targetTenantId);
@@ -1286,11 +2011,12 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
             """
             insert into control.credential_ingestion_grants
                 (id, tenant_id, broker_account_id, operation, allowed_origin,
-                 bearer_hash, nonce_hash, state, reservation_id, reserved_at,
+                 bearer_hash, nonce_hash, proof_key_id, state, reservation_id, reserved_at,
                  reservation_expires_at, expires_at, row_version)
             values
                 (@grant_id, @tenant_id, @broker_account_id, 'create',
-                 'https://ingest.test', @bearer_hash, @nonce_hash, 'reserved',
+                 'https://ingest.test', @bearer_hash, @nonce_hash,
+                 repeat('a', 64), 'reserved',
                  @reservation_id, statement_timestamp(),
                  statement_timestamp() + interval '1 minute',
                  statement_timestamp() + interval '5 minutes', 9)
@@ -1628,10 +2354,10 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
                     """
                     insert into control.strategy_import_jobs
                         (id, tenant_id, user_id, correlation_id, source_label,
-                         capability_sha256, expires_at)
+                         capability_sha256, proof_key_id, expires_at)
                     values
                         (@id, @tenant_id, @user_id, @correlation_id,
-                         'foundation-operation-ea', @capability_sha256,
+                         'foundation-operation-ea', @capability_sha256, repeat('a', 64),
                          statement_timestamp() + interval '20 minutes')
                     """);
                 command.Parameters.AddWithValue("id", NpgsqlDbType.Uuid, importJobId);
@@ -1918,10 +2644,221 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         }
     }
 
+    private static async Task<DeploymentOperationResultFixture>
+        SeedDeploymentOperationResultFixtureAsync(
+            PostgresTestDatabase database,
+            TenantExecutionContext context,
+            BrokerOperationFixture route)
+    {
+        Guid operationId = Guid.CreateVersion7();
+        Guid resultId = Guid.CreateVersion7();
+        Guid dispatchMessageId = Guid.CreateVersion7();
+        Guid idempotencyRecordId = Guid.CreateVersion7();
+        string resultCapability = RandomResultCapability();
+        string resultCapabilitySha256 = Sha256Hex(Encoding.UTF8.GetBytes(resultCapability));
+        string dispatchTargetBindingSha256 = RandomHexDigest();
+        string policySnapshotSha256 = RandomHexDigest();
+        string runtimeEvidenceSha256 = RandomHexDigest();
+        string brokerDigest = RandomHexDigest();
+        string requestSha256 = RandomHexDigest();
+        DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
+
+        TenantExecutionContext operationContext;
+        await using (NpgsqlConnection administrator =
+            await database.Administrator.OpenConnectionAsync())
+        await using (var sourceContext = new NpgsqlCommand(
+            """
+            select user_id, session_family_id, correlation_id
+            from control.user_operations
+            where tenant_id = @tenant_id and id = @operation_id
+            """,
+            administrator))
+        {
+            sourceContext.Parameters.AddWithValue(
+                "tenant_id",
+                NpgsqlDbType.Uuid,
+                context.TenantId);
+            sourceContext.Parameters.AddWithValue(
+                "operation_id",
+                NpgsqlDbType.Uuid,
+                route.RotateOperationId);
+            await using NpgsqlDataReader reader = await sourceContext.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            operationContext = new TenantExecutionContext(
+                context.TenantId,
+                reader.GetGuid(0),
+                reader.GetGuid(2),
+                reader.GetGuid(1));
+            Assert.False(await reader.ReadAsync());
+        }
+
+        await using TenantPostgresTransaction transaction =
+            await database.Application.BeginTenantTransactionAsync(operationContext);
+        await using (NpgsqlCommand authority = transaction.CreateCommand(
+            "select control.acquire_u0_authority_lock()"))
+        {
+            await authority.ExecuteNonQueryAsync();
+        }
+
+        long submittedResourceVersion;
+        await using (NpgsqlCommand version = transaction.CreateCommand(
+            "select row_version from operations.deployments where id = @deployment_id"))
+        {
+            version.Parameters.AddWithValue(
+                "deployment_id",
+                NpgsqlDbType.Uuid,
+                route.DeploymentId);
+            submittedResourceVersion = Assert.IsType<long>(
+                await version.ExecuteScalarAsync());
+        }
+
+        await using (NpgsqlCommand command = transaction.CreateCommand(
+            """
+            insert into control.idempotency_records
+                (id, tenant_id, actor_id, operation, idempotency_key,
+                 request_sha256, state, created_at, expires_at)
+            values
+                (@idempotency_record_id, @tenant_id, @actor_id,
+                 'deployment.close_only', @idempotency_key,
+                 @idempotency_request_sha256, 'processing', @now,
+                 @now + interval '1 hour');
+
+            insert into messaging.outbox_messages
+                (id, tenant_id, message_type, aggregate_type, aggregate_id,
+                 payload, payload_sha256, correlation_id, causation_id,
+                 occurred_at, available_at, state, attempts)
+            values
+                (@dispatch_message_id, @tenant_id,
+                 'yo4x.deployment.close-only.requested.v3',
+                 'user_operation', @operation_id::text, '{}'::jsonb,
+                 @dispatch_payload_sha256, @correlation_id, @operation_id,
+                 @now, @now, 'pending', 0);
+
+            insert into control.user_operations
+                (id, tenant_id, user_id, session_family_id, operation_type,
+                 target_type, target_id, state, idempotency_record_id,
+                 expected_resource_version, submitted_resource_version,
+                 requested_target_state, reason, correlation_id,
+                 dispatch_message_id, dispatch_route_deployment_id,
+                 dispatch_fence_generation, dispatch_worker_assignment_id,
+                 dispatch_worker_instance_id, dispatch_target_binding_sha256,
+                 dispatch_policy_snapshot_sha256, result_capability_sha256,
+                 result_capability_expires_at,
+                 dispatch_assignment_lease_expires_at,
+                 dispatch_execution_deadline, dispatch_attempts, dispatched_at,
+                 created_at, updated_at)
+            select @operation_id, source.tenant_id, source.user_id,
+                source.session_family_id, 'deployment.close_only',
+                'deployment', @deployment_id, 'propagating',
+                @idempotency_record_id, @submitted_resource_version,
+                @submitted_resource_version, 'close_only',
+                'integration deployment result capability', @correlation_id,
+                @dispatch_message_id, @deployment_id, assignment.fence_generation,
+                assignment.id, assignment.worker_node_id,
+                @dispatch_target_binding_sha256, @policy_snapshot_sha256,
+                @result_capability_sha256, @now + interval '24 hours',
+                assignment.lease_expires_at, @now + interval '2 minutes', 1,
+                @now, @now, @now
+            from control.user_operations as source
+            join operations.worker_assignments as assignment
+              on assignment.tenant_id = source.tenant_id
+             and assignment.id = @worker_assignment_id
+             and assignment.deployment_id = @deployment_id
+            where source.tenant_id = @tenant_id
+              and source.id = @source_operation_id;
+            """))
+        {
+            command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, context.TenantId);
+            command.Parameters.AddWithValue(
+                "actor_id",
+                NpgsqlDbType.Uuid,
+                operationContext.ActorId);
+            command.Parameters.AddWithValue(
+                "correlation_id",
+                NpgsqlDbType.Uuid,
+                operationContext.CorrelationId);
+            command.Parameters.AddWithValue(
+                "idempotency_record_id",
+                NpgsqlDbType.Uuid,
+                idempotencyRecordId);
+            command.Parameters.AddWithValue(
+                "idempotency_key",
+                NpgsqlDbType.Text,
+                $"deployment-close-only-{operationId:N}");
+            command.Parameters.AddWithValue(
+                "idempotency_request_sha256",
+                NpgsqlDbType.Text,
+                RandomHexDigest());
+            command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operationId);
+            command.Parameters.AddWithValue(
+                "dispatch_message_id",
+                NpgsqlDbType.Uuid,
+                dispatchMessageId);
+            command.Parameters.AddWithValue(
+                "dispatch_payload_sha256",
+                NpgsqlDbType.Text,
+                RandomHexDigest());
+            command.Parameters.AddWithValue(
+                "deployment_id",
+                NpgsqlDbType.Uuid,
+                route.DeploymentId);
+            command.Parameters.AddWithValue(
+                "worker_assignment_id",
+                NpgsqlDbType.Uuid,
+                route.WorkerAssignmentId);
+            command.Parameters.AddWithValue(
+                "source_operation_id",
+                NpgsqlDbType.Uuid,
+                route.RotateOperationId);
+            command.Parameters.AddWithValue(
+                "submitted_resource_version",
+                NpgsqlDbType.Bigint,
+                submittedResourceVersion);
+            command.Parameters.AddWithValue(
+                "dispatch_target_binding_sha256",
+                NpgsqlDbType.Text,
+                dispatchTargetBindingSha256);
+            command.Parameters.AddWithValue(
+                "policy_snapshot_sha256",
+                NpgsqlDbType.Text,
+                policySnapshotSha256);
+            command.Parameters.AddWithValue(
+                "result_capability_sha256",
+                NpgsqlDbType.Text,
+                resultCapabilitySha256);
+            command.Parameters.AddWithValue(
+                "now",
+                NpgsqlDbType.TimestampTz,
+                dispatchedAt);
+            Assert.Equal(3, await command.ExecuteNonQueryAsync());
+        }
+
+        await transaction.CommitAsync();
+        return new DeploymentOperationResultFixture(
+            operationId,
+            resultId,
+            dispatchMessageId,
+            resultCapability,
+            dispatchTargetBindingSha256,
+            policySnapshotSha256,
+            runtimeEvidenceSha256,
+            brokerDigest,
+            requestSha256,
+            submittedResourceVersion,
+            dispatchedAt,
+            operationContext.CorrelationId,
+            route.DeploymentId,
+            route.WorkerAssignmentId,
+            route.WorkerInstanceId,
+            route.SupervisorWorkloadId,
+            operationContext.SessionId);
+    }
+
     private static async Task<BrokerOperationFixture> SeedConfirmedBrokerOperationFixtureAsync(
         PostgresTestDatabase database,
         TenantExecutionContext context,
-        Guid rotateAccountId)
+        Guid rotateAccountId,
+        bool seedResults = true)
     {
         Guid deleteAccountId = Guid.CreateVersion7();
         Guid gatewayArtifactId = Guid.CreateVersion7();
@@ -1931,6 +2868,9 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         Guid deploymentId = Guid.CreateVersion7();
         Guid workerNodeId = Guid.CreateVersion7();
         Guid workerAssignmentId = Guid.CreateVersion7();
+        Guid supervisorWorkloadId = Guid.CreateVersion7();
+        Guid strategyHostWorkloadId = Guid.CreateVersion7();
+        Guid gatewayHostWorkloadId = Guid.CreateVersion7();
         Guid sessionFamilyId = Guid.CreateVersion7();
         Guid deleteIdempotencyId = Guid.CreateVersion7();
         Guid rotateIdempotencyId = Guid.CreateVersion7();
@@ -1944,7 +2884,19 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         string strategyDigest = RandomHexDigest();
         string riskDigest = RandomHexDigest();
         string policySnapshotDigest = RandomHexDigest();
+        string deleteBindingDigest = RandomHexDigest();
+        string rotateBindingDigest = RandomHexDigest();
+        string deleteEvidenceDigest = RandomHexDigest();
+        string rotateEvidenceDigest = RandomHexDigest();
+        string deleteRequestDigest = RandomHexDigest();
+        string rotateRequestDigest = RandomHexDigest();
         string runtimeDigest = $"sha256:{RandomHexDigest()}";
+        string deleteResultCapability = RandomResultCapability();
+        string rotateResultCapability = RandomResultCapability();
+        string deleteResultCapabilityDigest = Sha256Hex(
+            Encoding.UTF8.GetBytes(deleteResultCapability));
+        string rotateResultCapabilityDigest = Sha256Hex(
+            Encoding.UTF8.GetBytes(rotateResultCapability));
         DateTimeOffset now = DateTimeOffset.UtcNow;
         ExactStrategyProofFixture strategyProof = await SeedExactStrategyProofAsync(
             database,
@@ -2038,8 +2990,8 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
                  lease_expires_at)
             values
                 (@assignment_id, @tenant_id, @deployment_id, @worker_node_id,
-                 'integration-supervisor', 'integration-strategy-host',
-                 'integration-gateway-host', 1, @runtime_digest, @gateway_id,
+                 @supervisor_identity, @strategy_host_identity,
+                 @gateway_host_identity, 1, @runtime_digest, @gateway_id,
                  'active', @now, @now + interval '10 minutes');
 
             insert into identity.user_session_families
@@ -2065,11 +3017,11 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
                  payload, payload_sha256, correlation_id, causation_id,
                  occurred_at, available_at, state, attempts)
             values
-                (@delete_dispatch_id, @tenant_id, 'user_operation.dispatched.v1',
+                (@delete_dispatch_id, @tenant_id, 'yo4x.broker-account.delete.requested.v3',
                  'user_operation', @delete_operation_id::text, '{}'::jsonb,
                  @delete_dispatch_payload_digest, @correlation_id,
                  @delete_operation_id, @now, @now, 'pending', 0),
-                (@rotate_dispatch_id, @tenant_id, 'user_operation.dispatched.v1',
+                (@rotate_dispatch_id, @tenant_id, 'yo4x.broker-account.credential-rotation.requested.v3',
                  'user_operation', @rotate_operation_id::text, '{}'::jsonb,
                  @rotate_dispatch_payload_digest, @correlation_id,
                  @rotate_operation_id, @now, @now, 'pending', 0);
@@ -2082,7 +3034,10 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
                  dispatch_message_id, dispatch_route_deployment_id,
                  dispatch_fence_generation, dispatch_worker_assignment_id,
                  dispatch_worker_instance_id, dispatch_target_binding_sha256,
-                 dispatch_policy_snapshot_sha256, dispatch_attempts, dispatched_at,
+                 dispatch_policy_snapshot_sha256, result_capability_sha256,
+                 result_capability_expires_at,
+                 dispatch_assignment_lease_expires_at,
+                 dispatch_execution_deadline, dispatch_attempts, dispatched_at,
                  created_at, updated_at)
             values
                 (@delete_operation_id, @tenant_id, @user_id, @session_id,
@@ -2091,6 +3046,8 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
                  'integration confirmed delete', @correlation_id,
                  @delete_dispatch_id, @deployment_id, 1, @assignment_id,
                  @worker_node_id, @delete_binding_digest, @policy_snapshot_digest,
+                 @delete_result_capability_digest, @result_capability_expires_at,
+                 @now + interval '10 minutes', @now + interval '2 minutes',
                  1, @now, @now, @now),
                 (@rotate_operation_id, @tenant_id, @user_id, @session_id,
                  'broker_account.credential_rotation', 'broker_account', @rotate_account_id,
@@ -2098,29 +3055,55 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
                  'integration confirmed rotation', @correlation_id,
                  @rotate_dispatch_id, @deployment_id, 1, @assignment_id,
                  @worker_node_id, @rotate_binding_digest, @policy_snapshot_digest,
+                 @rotate_result_capability_digest, @result_capability_expires_at,
+                 @now + interval '10 minutes', @now + interval '2 minutes',
                  1, @now, @now, @now);
 
             insert into operations.user_operation_results
-                (id, tenant_id, result_id, operation_id, dispatch_message_id,
+                 (id, tenant_id, result_id, operation_id, dispatch_message_id,
+                 dispatch_target_binding_sha256, result_capability_sha256,
                  broker_account_id, route_deployment_id, generation,
                  worker_assignment_id, worker_instance_id, operation_type,
                  submitted_resource_version, requested_target_state,
-                 policy_snapshot_sha256, proof_kind, outcome, broker_confirmed,
+                 policy_snapshot_sha256, proof_kind, outcome,
+                 pre_invocation_not_sent_proven, gateway_invoked, broker_confirmed,
                  account_state, credential_state, evidence_sha256,
                  request_sha256, observed_at)
-            values
-                (@delete_result_id, @tenant_id, @delete_result_id,
-                 @delete_operation_id, @delete_dispatch_id, @delete_account_id,
+            select seeded.*
+            from
+            (
+              values
+                 (@delete_result_id, @tenant_id, @delete_result_id,
+                 @delete_operation_id, @delete_dispatch_id, @delete_binding_digest,
+                 @delete_result_capability_digest,
+                 @delete_account_id,
                  @deployment_id, 1, @assignment_id, @worker_node_id,
                  'broker_account.delete', 0, 'disabled:deleted', @policy_snapshot_digest,
-                 'credential_deleted', 'succeeded', true, 'disabled', 'deleted',
+                 'credential_deleted', 'succeeded', false, true, true,
+                 'disabled', 'deleted',
                  @delete_evidence_digest, @delete_request_digest, @now),
-                (@rotate_result_id, @tenant_id, @rotate_result_id,
-                 @rotate_operation_id, @rotate_dispatch_id, @rotate_account_id,
+                 (@rotate_result_id, @tenant_id, @rotate_result_id,
+                 @rotate_operation_id, @rotate_dispatch_id, @rotate_binding_digest,
+                 @rotate_result_capability_digest,
+                 @rotate_account_id,
                  @deployment_id, 1, @assignment_id, @worker_node_id,
                  'broker_account.credential_rotation', 1, 'active:ready', @policy_snapshot_digest,
-                 'credential_rotated', 'succeeded', true, 'active', 'ready',
-                 @rotate_evidence_digest, @rotate_request_digest, @now);
+                 'credential_rotated', 'succeeded', false, true, true,
+                 'active', 'ready',
+                 @rotate_evidence_digest, @rotate_request_digest, @now)
+            ) as seeded
+            (
+                id, tenant_id, result_id, operation_id, dispatch_message_id,
+                dispatch_target_binding_sha256, result_capability_sha256,
+                broker_account_id, route_deployment_id, generation,
+                worker_assignment_id, worker_instance_id, operation_type,
+                submitted_resource_version, requested_target_state,
+                policy_snapshot_sha256, proof_kind, outcome,
+                pre_invocation_not_sent_proven, gateway_invoked, broker_confirmed,
+                account_state, credential_state, evidence_sha256,
+                request_sha256, observed_at
+            )
+            where @seed_results;
             """);
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, context.TenantId);
         command.Parameters.AddWithValue("user_id", NpgsqlDbType.Uuid, context.ActorId);
@@ -2164,6 +3147,18 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         command.Parameters.AddWithValue("worker_node_id", NpgsqlDbType.Uuid, workerNodeId);
         command.Parameters.AddWithValue("worker_node_name", NpgsqlDbType.Text, $"worker-{workerNodeId:N}");
         command.Parameters.AddWithValue("assignment_id", NpgsqlDbType.Uuid, workerAssignmentId);
+        command.Parameters.AddWithValue(
+            "supervisor_identity",
+            NpgsqlDbType.Text,
+            supervisorWorkloadId.ToString("D"));
+        command.Parameters.AddWithValue(
+            "strategy_host_identity",
+            NpgsqlDbType.Text,
+            strategyHostWorkloadId.ToString("D"));
+        command.Parameters.AddWithValue(
+            "gateway_host_identity",
+            NpgsqlDbType.Text,
+            gatewayHostWorkloadId.ToString("D"));
         command.Parameters.AddWithValue("session_id", NpgsqlDbType.Uuid, sessionFamilyId);
         command.Parameters.AddWithValue("device_id", NpgsqlDbType.Uuid, Guid.CreateVersion7());
         command.Parameters.AddWithValue("token_hash", NpgsqlDbType.Text, new string('t', 64));
@@ -2177,25 +3172,55 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         command.Parameters.AddWithValue("rotate_dispatch_id", NpgsqlDbType.Uuid, rotateDispatchId);
         command.Parameters.AddWithValue("delete_dispatch_payload_digest", NpgsqlDbType.Text, RandomHexDigest());
         command.Parameters.AddWithValue("rotate_dispatch_payload_digest", NpgsqlDbType.Text, RandomHexDigest());
-        command.Parameters.AddWithValue("delete_binding_digest", NpgsqlDbType.Text, RandomHexDigest());
-        command.Parameters.AddWithValue("rotate_binding_digest", NpgsqlDbType.Text, RandomHexDigest());
+        command.Parameters.AddWithValue("delete_binding_digest", NpgsqlDbType.Text, deleteBindingDigest);
+        command.Parameters.AddWithValue("rotate_binding_digest", NpgsqlDbType.Text, rotateBindingDigest);
+        command.Parameters.AddWithValue(
+            "delete_result_capability_digest",
+            NpgsqlDbType.Text,
+            deleteResultCapabilityDigest);
+        command.Parameters.AddWithValue(
+            "rotate_result_capability_digest",
+            NpgsqlDbType.Text,
+            rotateResultCapabilityDigest);
+        command.Parameters.AddWithValue(
+            "result_capability_expires_at",
+            NpgsqlDbType.TimestampTz,
+            now.AddHours(24));
         command.Parameters.AddWithValue("policy_snapshot_digest", NpgsqlDbType.Text, policySnapshotDigest);
         command.Parameters.AddWithValue("delete_result_id", NpgsqlDbType.Uuid, deleteResultId);
         command.Parameters.AddWithValue("rotate_result_id", NpgsqlDbType.Uuid, rotateResultId);
-        command.Parameters.AddWithValue("delete_evidence_digest", NpgsqlDbType.Text, RandomHexDigest());
-        command.Parameters.AddWithValue("rotate_evidence_digest", NpgsqlDbType.Text, RandomHexDigest());
-        command.Parameters.AddWithValue("delete_request_digest", NpgsqlDbType.Text, RandomHexDigest());
-        command.Parameters.AddWithValue("rotate_request_digest", NpgsqlDbType.Text, RandomHexDigest());
+        command.Parameters.AddWithValue("delete_evidence_digest", NpgsqlDbType.Text, deleteEvidenceDigest);
+        command.Parameters.AddWithValue("rotate_evidence_digest", NpgsqlDbType.Text, rotateEvidenceDigest);
+        command.Parameters.AddWithValue("delete_request_digest", NpgsqlDbType.Text, deleteRequestDigest);
+        command.Parameters.AddWithValue("rotate_request_digest", NpgsqlDbType.Text, rotateRequestDigest);
+        command.Parameters.AddWithValue("seed_results", NpgsqlDbType.Boolean, seedResults);
         command.Parameters.AddWithValue("now", NpgsqlDbType.TimestampTz, now);
-        Assert.Equal(16, await command.ExecuteNonQueryAsync());
+        Assert.Equal(seedResults ? 16 : 14, await command.ExecuteNonQueryAsync());
         await transaction.CommitAsync();
         return new BrokerOperationFixture(
             deleteAccountId,
             deleteOperationId,
             deleteResultId,
+            deleteDispatchId,
+            deleteResultCapability,
+            deleteBindingDigest,
+            policySnapshotDigest,
+            deleteEvidenceDigest,
+            deleteRequestDigest,
             rotateOperationId,
             rotateResultId,
-            context.CorrelationId);
+            rotateDispatchId,
+            rotateResultCapability,
+            rotateBindingDigest,
+            policySnapshotDigest,
+            rotateEvidenceDigest,
+            rotateRequestDigest,
+            context.CorrelationId,
+            deploymentId,
+            workerAssignmentId,
+            workerNodeId,
+            supervisorWorkloadId,
+            seedResults);
     }
 
     private static async Task<bool> ApplyConfirmedBrokerOperationResultAsync(
@@ -2221,12 +3246,458 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         return applied;
     }
 
+    private static async Task<DeploymentResultCapabilityReceipt>
+        RecordDeploymentResultCapabilityAsync(
+            PostgresDatabase runtimeEvidence,
+            Guid tenantId,
+            DeploymentOperationResultFixture fixture,
+            Guid reconciliationId,
+            Guid resultId,
+            string rawCapability,
+            string requestSha256,
+            string outcome = "succeeded",
+            bool preInvocationNotSentProven = false,
+            bool gatewayInvoked = true,
+            string? runtimeEvidenceSha256Override = null,
+            DateTimeOffset? observedAt = null)
+    {
+        bool failedBeforeInvocation = string.Equals(
+            outcome,
+            "failed",
+            StringComparison.Ordinal);
+        await using TenantPostgresTransaction transaction =
+            await runtimeEvidence.BeginTenantTransactionAsync(
+                new TenantExecutionContext(
+                    tenantId,
+                    fixture.SupervisorWorkloadId,
+                    fixture.CorrelationId,
+                    fixture.SessionFamilyId));
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            """
+            select acceptance_status, reconciliation_id, received_at
+            from control.record_deployment_user_operation_result(
+                @reconciliation_id, @result_id, @operation_id,
+                @dispatch_message_id, @raw_capability, @deployment_id,
+                @submitted_resource_version, 'close_only',
+                @policy_snapshot_sha256, @dispatch_target_binding_sha256,
+                @outcome, @pre_invocation_not_sent_proven, @gateway_invoked,
+                @observed_state, @observed_digest, @runtime_evidence_sha256,
+                @broker_confirmed, @broker_digest, @broker_execution_state,
+                @broker_position_state, @error_code, @request_sha256,
+                @observed_at)
+            """);
+        command.Parameters.AddWithValue(
+            "reconciliation_id",
+            NpgsqlDbType.Uuid,
+            reconciliationId);
+        command.Parameters.AddWithValue("result_id", NpgsqlDbType.Uuid, resultId);
+        command.Parameters.AddWithValue(
+            "operation_id",
+            NpgsqlDbType.Uuid,
+            fixture.OperationId);
+        command.Parameters.AddWithValue(
+            "dispatch_message_id",
+            NpgsqlDbType.Uuid,
+            fixture.DispatchMessageId);
+        command.Parameters.AddWithValue("raw_capability", NpgsqlDbType.Text, rawCapability);
+        command.Parameters.AddWithValue(
+            "deployment_id",
+            NpgsqlDbType.Uuid,
+            fixture.DeploymentId);
+        command.Parameters.AddWithValue(
+            "submitted_resource_version",
+            NpgsqlDbType.Bigint,
+            fixture.SubmittedResourceVersion);
+        command.Parameters.AddWithValue(
+            "policy_snapshot_sha256",
+            NpgsqlDbType.Text,
+            fixture.PolicySnapshotSha256);
+        command.Parameters.AddWithValue(
+            "dispatch_target_binding_sha256",
+            NpgsqlDbType.Text,
+            fixture.DispatchTargetBindingSha256);
+        command.Parameters.AddWithValue("outcome", NpgsqlDbType.Text, outcome);
+        command.Parameters.AddWithValue(
+            "pre_invocation_not_sent_proven",
+            NpgsqlDbType.Boolean,
+            preInvocationNotSentProven);
+        command.Parameters.AddWithValue(
+            "gateway_invoked",
+            NpgsqlDbType.Boolean,
+            gatewayInvoked);
+        command.Parameters.AddWithValue(
+            "observed_state",
+            NpgsqlDbType.Text,
+            failedBeforeInvocation ? DBNull.Value : "close_only");
+        command.Parameters.AddWithValue(
+            "observed_digest",
+            NpgsqlDbType.Text,
+            failedBeforeInvocation
+                ? DBNull.Value
+                : fixture.DispatchTargetBindingSha256);
+        command.Parameters.AddWithValue(
+            "runtime_evidence_sha256",
+            NpgsqlDbType.Text,
+            runtimeEvidenceSha256Override ?? fixture.RuntimeEvidenceSha256);
+        command.Parameters.AddWithValue(
+            "broker_confirmed",
+            NpgsqlDbType.Boolean,
+            !failedBeforeInvocation);
+        command.Parameters.AddWithValue(
+            "broker_digest",
+            NpgsqlDbType.Text,
+            failedBeforeInvocation ? DBNull.Value : fixture.BrokerDigest);
+        command.Parameters.AddWithValue(
+            "broker_execution_state",
+            NpgsqlDbType.Text,
+            failedBeforeInvocation ? DBNull.Value : "close_only");
+        command.Parameters.AddWithValue(
+            "broker_position_state",
+            NpgsqlDbType.Text,
+            failedBeforeInvocation ? DBNull.Value : "open");
+        command.Parameters.AddWithValue(
+            "error_code",
+            NpgsqlDbType.Text,
+            failedBeforeInvocation ? "gateway-not-invoked" : DBNull.Value);
+        command.Parameters.AddWithValue(
+            "request_sha256",
+            NpgsqlDbType.Text,
+            requestSha256);
+        command.Parameters.AddWithValue(
+            "observed_at",
+            NpgsqlDbType.TimestampTz,
+            observedAt?.ToUniversalTime() ?? fixture.DispatchedAt);
+
+        DeploymentResultCapabilityReceipt receipt;
+        await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync())
+        {
+            Assert.True(await reader.ReadAsync());
+            receipt = new DeploymentResultCapabilityReceipt(
+                reader.GetString(0),
+                reader.GetGuid(1),
+                reader.GetFieldValue<DateTimeOffset>(2));
+            Assert.False(await reader.ReadAsync());
+        }
+
+        await transaction.CommitAsync();
+        return receipt;
+    }
+
+    private static async Task<long> CountDeploymentResultsAsync(
+        PostgresTestDatabase database,
+        Guid operationId)
+    {
+        await using NpgsqlConnection administrator =
+            await database.Administrator.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand(
+            "select count(*) from operations.deployment_reconciliations where operation_id = @operation_id",
+            administrator);
+        command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operationId);
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(),
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+
+    private static async Task<BrokerResultCapabilityReceipt>
+        RecordBrokerResultCapabilityAsync(
+            PostgresDatabase runtimeEvidence,
+            Guid tenantId,
+            BrokerOperationFixture fixture,
+            Guid brokerAccountId,
+            Guid resultRecordId,
+            Guid resultId,
+            string rawCapability,
+            string requestSha256,
+            DateTimeOffset? observedAt = null,
+            bool useDeleteOperation = false,
+            string outcome = "succeeded",
+            bool preInvocationNotSentProven = false,
+            bool gatewayInvoked = true,
+            bool brokerConfirmed = true,
+            string? errorCode = null,
+            string? evidenceSha256Override = null)
+    {
+        Guid operationId = useDeleteOperation
+            ? fixture.DeleteOperationId
+            : fixture.RotateOperationId;
+        Guid dispatchMessageId = useDeleteOperation
+            ? fixture.DeleteDispatchId
+            : fixture.RotateDispatchId;
+        long submittedResourceVersion = useDeleteOperation ? 0 : 1;
+        string requestedTargetState = useDeleteOperation
+            ? "disabled:deleted"
+            : "active:ready";
+        string policySnapshotSha256 = useDeleteOperation
+            ? fixture.DeletePolicySnapshotSha256
+            : fixture.PolicySnapshotSha256;
+        string targetBindingSha256 = useDeleteOperation
+            ? fixture.DeleteBindingSha256
+            : fixture.RotateBindingSha256;
+        string evidenceSha256 = useDeleteOperation
+            ? fixture.DeleteEvidenceSha256
+            : fixture.RotateEvidenceSha256;
+        string accountState = useDeleteOperation ? "disabled" : "active";
+        string credentialState = useDeleteOperation ? "deleted" : "ready";
+
+        await using TenantPostgresTransaction transaction =
+            await runtimeEvidence.BeginTenantTransactionAsync(
+                new TenantExecutionContext(
+                    tenantId,
+                    fixture.SupervisorWorkloadId,
+                    fixture.CorrelationId));
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            """
+            select acceptance_status, result_record_id, received_at
+            from control.record_broker_user_operation_result(
+                @result_record_id, @result_id, @operation_id,
+                @dispatch_message_id, @raw_capability, @broker_account_id,
+                @submitted_resource_version, @requested_target_state,
+                @policy_snapshot_sha256, @dispatch_target_binding_sha256,
+                @outcome, @pre_invocation_not_sent_proven, @gateway_invoked,
+                @broker_confirmed, @account_state, @credential_state,
+                @evidence_sha256, @error_code, @request_sha256, @observed_at)
+            """);
+        command.Parameters.AddWithValue(
+            "result_record_id", NpgsqlDbType.Uuid, resultRecordId);
+        command.Parameters.AddWithValue("result_id", NpgsqlDbType.Uuid, resultId);
+        command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operationId);
+        command.Parameters.AddWithValue(
+            "dispatch_message_id", NpgsqlDbType.Uuid, dispatchMessageId);
+        command.Parameters.AddWithValue("raw_capability", NpgsqlDbType.Text, rawCapability);
+        command.Parameters.AddWithValue(
+            "broker_account_id", NpgsqlDbType.Uuid, brokerAccountId);
+        command.Parameters.AddWithValue(
+            "submitted_resource_version", NpgsqlDbType.Bigint, submittedResourceVersion);
+        command.Parameters.AddWithValue(
+            "requested_target_state", NpgsqlDbType.Text, requestedTargetState);
+        command.Parameters.AddWithValue(
+            "policy_snapshot_sha256", NpgsqlDbType.Text, policySnapshotSha256);
+        command.Parameters.AddWithValue(
+            "dispatch_target_binding_sha256", NpgsqlDbType.Text, targetBindingSha256);
+        command.Parameters.AddWithValue("outcome", NpgsqlDbType.Text, outcome);
+        command.Parameters.AddWithValue(
+            "pre_invocation_not_sent_proven",
+            NpgsqlDbType.Boolean,
+            preInvocationNotSentProven);
+        command.Parameters.AddWithValue(
+            "gateway_invoked",
+            NpgsqlDbType.Boolean,
+            gatewayInvoked);
+        command.Parameters.AddWithValue(
+            "broker_confirmed",
+            NpgsqlDbType.Boolean,
+            brokerConfirmed);
+        command.Parameters.AddWithValue(
+            "account_state",
+            NpgsqlDbType.Text,
+            outcome == "succeeded" ? accountState : DBNull.Value);
+        command.Parameters.AddWithValue(
+            "credential_state",
+            NpgsqlDbType.Text,
+            outcome == "succeeded" ? credentialState : DBNull.Value);
+        command.Parameters.AddWithValue(
+            "evidence_sha256",
+            NpgsqlDbType.Text,
+            evidenceSha256Override ?? evidenceSha256);
+        command.Parameters.AddWithValue(
+            "error_code",
+            NpgsqlDbType.Text,
+            errorCode is null ? DBNull.Value : errorCode);
+        command.Parameters.AddWithValue(
+            "request_sha256", NpgsqlDbType.Text, requestSha256);
+        command.Parameters.AddWithValue(
+            "observed_at",
+            NpgsqlDbType.TimestampTz,
+            observedAt?.ToUniversalTime() ?? DateTimeOffset.UtcNow);
+
+        BrokerResultCapabilityReceipt receipt;
+        await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync())
+        {
+            Assert.True(await reader.ReadAsync());
+            receipt = new BrokerResultCapabilityReceipt(
+                reader.GetString(0),
+                reader.GetGuid(1),
+                reader.GetFieldValue<DateTimeOffset>(2));
+            Assert.False(await reader.ReadAsync());
+        }
+
+        await transaction.CommitAsync();
+        return receipt;
+    }
+
+    private static async Task ExpireResultCapabilityForBoundaryTestAsync(
+        PostgresTestDatabase database,
+        Guid operationId)
+    {
+        await using NpgsqlConnection administrator =
+            await database.Administrator.OpenConnectionAsync();
+        await using NpgsqlTransaction transaction =
+            await administrator.BeginTransactionAsync();
+        await using (var replica = new NpgsqlCommand(
+            "set local session_replication_role = 'replica'",
+            administrator,
+            transaction))
+        {
+            await replica.ExecuteNonQueryAsync();
+        }
+
+        await using (var expire = new NpgsqlCommand(
+            """
+            update control.user_operations
+            set result_capability_expires_at =
+                    dispatched_at + interval '1 microsecond',
+                dispatch_execution_deadline =
+                    dispatched_at + interval '1 microsecond'
+            where id = @operation_id
+            """,
+            administrator,
+            transaction))
+        {
+            expire.Parameters.AddWithValue(
+                "operation_id", NpgsqlDbType.Uuid, operationId);
+            Assert.Equal(1, await expire.ExecuteNonQueryAsync());
+        }
+
+        await transaction.CommitAsync();
+    }
+
+    private static async Task<DispatchAuthorityWindow> ReadDispatchAuthorityWindowAsync(
+        PostgresTestDatabase database,
+        Guid operationId)
+    {
+        await using NpgsqlConnection administrator =
+            await database.Administrator.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand(
+            """
+            select result_capability_expires_at,
+                dispatch_assignment_lease_expires_at,
+                dispatch_execution_deadline
+            from control.user_operations
+            where id = @operation_id
+            """,
+            administrator);
+        command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operationId);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        var result = new DispatchAuthorityWindow(
+            reader.GetFieldValue<DateTimeOffset>(0),
+            reader.GetFieldValue<DateTimeOffset>(1),
+            reader.GetFieldValue<DateTimeOffset>(2));
+        Assert.False(await reader.ReadAsync());
+        return result;
+    }
+
+    private static async Task SetDispatchMessageVersionForBoundaryTestAsync(
+        PostgresTestDatabase database,
+        Guid dispatchMessageId,
+        string messageType)
+    {
+        await using NpgsqlConnection administrator =
+            await database.Administrator.OpenConnectionAsync();
+        await using NpgsqlTransaction transaction =
+            await administrator.BeginTransactionAsync();
+        await using (var replica = new NpgsqlCommand(
+            "set local session_replication_role = 'replica'",
+            administrator,
+            transaction))
+        {
+            await replica.ExecuteNonQueryAsync();
+        }
+
+        await using (var update = new NpgsqlCommand(
+            "update messaging.outbox_messages set message_type = @message_type where id = @id",
+            administrator,
+            transaction))
+        {
+            update.Parameters.AddWithValue("message_type", NpgsqlDbType.Text, messageType);
+            update.Parameters.AddWithValue("id", NpgsqlDbType.Uuid, dispatchMessageId);
+            Assert.Equal(1, await update.ExecuteNonQueryAsync());
+        }
+
+        await transaction.CommitAsync();
+    }
+
+    private static async Task<AssignmentObservationWindow>
+        SetHistoricalAssignmentWindowForBoundaryTestAsync(
+            PostgresTestDatabase database,
+            Guid assignmentId)
+    {
+        await using NpgsqlConnection administrator =
+            await database.Administrator.OpenConnectionAsync();
+        await using NpgsqlTransaction transaction =
+            await administrator.BeginTransactionAsync();
+        await using (var replica = new NpgsqlCommand(
+            "set local session_replication_role = 'replica'",
+            administrator,
+            transaction))
+        {
+            await replica.ExecuteNonQueryAsync();
+        }
+
+        AssignmentObservationWindow window;
+        await using (var command = new NpgsqlCommand(
+            """
+            update operations.worker_assignments
+            set state = 'revoking',
+                revoked_at = assigned_at + interval '1 second',
+                lease_expires_at = assigned_at + interval '2 seconds'
+            where id = @assignment_id
+            returning assigned_at, revoked_at, lease_expires_at
+            """,
+            administrator,
+            transaction))
+        {
+            command.Parameters.AddWithValue(
+                "assignment_id", NpgsqlDbType.Uuid, assignmentId);
+            await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            window = new AssignmentObservationWindow(
+                reader.GetFieldValue<DateTimeOffset>(0),
+                reader.GetFieldValue<DateTimeOffset>(1),
+                reader.GetFieldValue<DateTimeOffset>(2));
+            Assert.False(await reader.ReadAsync());
+        }
+
+        await transaction.CommitAsync();
+        return window;
+    }
+
+    private static async Task<long> CountBrokerResultsAsync(
+        PostgresTestDatabase database,
+        Guid operationId)
+    {
+        await using NpgsqlConnection administrator =
+            await database.Administrator.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand(
+            "select count(*) from operations.user_operation_results where operation_id = @id",
+            administrator);
+        command.Parameters.AddWithValue("id", NpgsqlDbType.Uuid, operationId);
+        return (long)(await command.ExecuteScalarAsync())!;
+    }
+
     private static string RandomHexDigest()
     {
         byte[] bytes = RandomNumberGenerator.GetBytes(32);
         try
         {
             return Convert.ToHexString(bytes).ToLowerInvariant();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    private static string RandomResultCapability()
+    {
+        byte[] bytes = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            return Convert.ToBase64String(bytes)
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_');
         }
         finally
         {
@@ -2323,7 +3794,10 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         {
             string qualifiedName = $"{quoter.QuoteIdentifier(schema)}.{quoter.QuoteIdentifier(table)}";
             await using var count = new NpgsqlCommand($"select count(*) from {qualifiedName}", connection);
-            Assert.Equal(0L, (long)(await count.ExecuteScalarAsync())!);
+            long expectedRows = schema == "control" && table == "worker_tenant_scan_cursors"
+                ? 4L
+                : 0L;
+            Assert.Equal(expectedRows, (long)(await count.ExecuteScalarAsync())!);
         }
     }
 
@@ -2372,11 +3846,67 @@ public sealed class PostgresFoundationTests(PostgresContainerFixture postgres)
         string VerificationSignatureSha256,
         string SigningKeyId);
 
+    private sealed record BrokerResultCapabilityReceipt(
+        string Status,
+        Guid ResultRecordId,
+        DateTimeOffset ReceivedAt);
+
+    private sealed record DeploymentResultCapabilityReceipt(
+        string Status,
+        Guid ReconciliationId,
+        DateTimeOffset ReceivedAt);
+
+    private sealed record DeploymentOperationResultFixture(
+        Guid OperationId,
+        Guid ResultId,
+        Guid DispatchMessageId,
+        string ResultCapability,
+        string DispatchTargetBindingSha256,
+        string PolicySnapshotSha256,
+        string RuntimeEvidenceSha256,
+        string BrokerDigest,
+        string RequestSha256,
+        long SubmittedResourceVersion,
+        DateTimeOffset DispatchedAt,
+        Guid CorrelationId,
+        Guid DeploymentId,
+        Guid WorkerAssignmentId,
+        Guid WorkerInstanceId,
+        Guid SupervisorWorkloadId,
+        Guid? SessionFamilyId);
+
+    private sealed record AssignmentObservationWindow(
+        DateTimeOffset AssignedAt,
+        DateTimeOffset RevokedAt,
+        DateTimeOffset LeaseExpiresAt);
+
+    private sealed record DispatchAuthorityWindow(
+        DateTimeOffset ResultCapabilityExpiresAt,
+        DateTimeOffset AssignmentLeaseExpiresAt,
+        DateTimeOffset ExecutionDeadline);
+
     private sealed record BrokerOperationFixture(
         Guid DeleteAccountId,
         Guid DeleteOperationId,
         Guid DeleteResultId,
+        Guid DeleteDispatchId,
+        string DeleteResultCapability,
+        string DeleteBindingSha256,
+        string DeletePolicySnapshotSha256,
+        string DeleteEvidenceSha256,
+        string DeleteRequestSha256,
         Guid RotateOperationId,
         Guid RotateResultId,
-        Guid CorrelationId);
+        Guid RotateDispatchId,
+        string RotateResultCapability,
+        string RotateBindingSha256,
+        string PolicySnapshotSha256,
+        string RotateEvidenceSha256,
+        string RotateRequestSha256,
+        Guid CorrelationId,
+        Guid DeploymentId,
+        Guid WorkerAssignmentId,
+        Guid WorkerInstanceId,
+        Guid SupervisorWorkloadId,
+        bool ResultsSeeded);
 }

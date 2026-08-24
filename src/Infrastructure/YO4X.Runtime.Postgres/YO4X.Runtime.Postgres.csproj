@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Application\YO4X.Runtime.Application\YO4X.Runtime.Application.csproj" />
+    <ProjectReference Include="..\..\BuildingBlocks\YO4X.Persistence.Postgres\YO4X.Persistence.Postgres.csproj" />
+    <ProjectReference Include="..\..\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
+    <ProjectReference Include="..\..\Runtime\YO4X.Strategy.Abstractions\YO4X.Strategy.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="YO4X.Postgres.IntegrationTests" />
+  </ItemGroup>
+
+</Project>

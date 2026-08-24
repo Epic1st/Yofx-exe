@@ -15,6 +15,22 @@ public sealed class ApiFoundationOptions
     public string ErrorTypeBase { get; set; } = "https://errors.yo4x.invalid";
 }
 
+public sealed class ApiHealthOptions
+{
+    /// <summary>
+    /// Maximum interval for which a completed process-local health result may
+    /// be reused. This deliberately small window bounds stale readiness while
+    /// preventing anonymous callers from amplifying dependency probes.
+    /// </summary>
+    public TimeSpan SnapshotLifetime { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Independent deadline for a shared dependency probe. Disconnecting one
+    /// caller does not cancel work awaited by other callers.
+    /// </summary>
+    public TimeSpan ProbeTimeout { get; set; } = TimeSpan.FromSeconds(5);
+}
+
 public static class ApiFoundation
 {
     public static IServiceCollection AddYo4xApiFoundation(
@@ -64,16 +80,41 @@ public static class ApiFoundation
     public static IEndpointRouteBuilder MapYo4xHealth(
         this IEndpointRouteBuilder endpoints,
         Func<CancellationToken, ValueTask<bool>> startup,
-        Func<CancellationToken, ValueTask<bool>> ready)
+        Func<CancellationToken, ValueTask<bool>> ready,
+        Action<ApiHealthOptions>? configure = null)
     {
+        ArgumentNullException.ThrowIfNull(endpoints);
+        ArgumentNullException.ThrowIfNull(startup);
+        ArgumentNullException.ThrowIfNull(ready);
+
+        var options = new ApiHealthOptions();
+        configure?.Invoke(options);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(
+            options.SnapshotLifetime,
+            TimeSpan.Zero,
+            nameof(options.SnapshotLifetime));
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(
+            options.ProbeTimeout,
+            TimeSpan.Zero,
+            nameof(options.ProbeTimeout));
+
+        var startupProbe = new BoundedBooleanProbe(
+            startup,
+            options.SnapshotLifetime,
+            options.ProbeTimeout);
+        var readinessProbe = new BoundedBooleanProbe(
+            ready,
+            options.SnapshotLifetime,
+            options.ProbeTimeout);
+
         endpoints.MapGet("/health/live", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
         endpoints.MapGet("/health/startup", async (CancellationToken cancellationToken) =>
-            await startup(cancellationToken).ConfigureAwait(false)
+            await startupProbe.GetAsync(cancellationToken).ConfigureAwait(false)
                 ? Results.Ok(new { status = "healthy" })
                 : Results.Json(new { status = "unhealthy" }, statusCode: StatusCodes.Status503ServiceUnavailable))
             .AllowAnonymous();
         endpoints.MapGet("/health/ready", async (CancellationToken cancellationToken) =>
-            await ready(cancellationToken).ConfigureAwait(false)
+            await readinessProbe.GetAsync(cancellationToken).ConfigureAwait(false)
                 ? Results.Ok(new { status = "healthy" })
                 : Results.Json(new { status = "unhealthy" }, statusCode: StatusCodes.Status503ServiceUnavailable))
             .AllowAnonymous();

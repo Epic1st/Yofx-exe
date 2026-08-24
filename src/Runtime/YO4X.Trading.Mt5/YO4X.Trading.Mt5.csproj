@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />
+    <ProjectReference Include="..\YO4X.Trading.ProcessIsolation\YO4X.Trading.ProcessIsolation.csproj" />
   </ItemGroup>
 
   <ItemGroup>

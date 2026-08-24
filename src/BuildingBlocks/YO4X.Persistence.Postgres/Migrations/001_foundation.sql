@@ -18,44 +18,700 @@ alter default privileges revoke all on tables from public;
 alter default privileges revoke all on sequences from public;
 alter default privileges revoke all on functions from public;
 
+-- Runtime tenant identity is activated from a one-use capability issued by a
+-- separately trusted database principal. The raw 256-bit bearer is never
+-- stored. A capability is bound to one database, direct runtime login,
+-- backend PID, full xid8 transaction identifier, and exact tenant context.
+-- Caller-writable custom GUCs are deliberately not consulted by RLS.
+create table control.tenant_context_capabilities
+(
+    capability_sha256 bytea primary key
+        check (octet_length(capability_sha256) = 32)
+        check (capability_sha256 <> pg_catalog.decode(repeat('00', 32), 'hex')),
+    database_oid oid not null,
+    database_name text not null
+        check (length(database_name) between 1 and 63)
+        check (database_name = btrim(database_name)),
+    runtime_role text not null check
+    (
+        runtime_role in
+        (
+            'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency',
+            'yo4x_secret_ingestion', 'yo4x_conversion_worker',
+            'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker',
+            'yo4x_supervisor_runtime', 'yo4x_trade_authorizer',
+            'yo4x_gateway_runtime'
+        )
+    ),
+    runtime_role_oid oid not null check (runtime_role_oid <> 0::oid),
+    backend_pid integer not null check (backend_pid > 0),
+    transaction_id xid8 not null check (transaction_id::text <> '0'),
+    tenant_id uuid not null
+        check (tenant_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    actor_id uuid not null
+        check (actor_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    correlation_id uuid not null
+        check (correlation_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    session_id uuid
+        check (session_id is null or session_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    issued_at timestamptz not null,
+    activation_expires_at timestamptz not null,
+    expires_at timestamptz not null,
+    activated_at timestamptz,
+    unique
+    (
+        database_oid, runtime_role_oid, runtime_role,
+        backend_pid, transaction_id
+    ),
+    check (activation_expires_at > issued_at),
+    check (activation_expires_at <= issued_at + interval '15 seconds'),
+    check (expires_at > activation_expires_at),
+    check (expires_at <= issued_at + interval '2 minutes'),
+    check
+    (
+        activated_at is null
+        or (activated_at >= issued_at and activated_at < expires_at)
+    )
+);
+
+alter table control.tenant_context_capabilities enable row level security;
+alter table control.tenant_context_capabilities force row level security;
+
+create policy tenant_context_capability_owner
+on control.tenant_context_capabilities
+for all
+using (current_user = 'yo4x_context_authority')
+with check (current_user = 'yo4x_context_authority');
+
+create function control.reject_tenant_context_capability_rewrite()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+    if tg_op = 'INSERT' then
+        if session_user = 'yo4x_context_issuer'
+            and new.activated_at is null then
+            return new;
+        end if;
+
+        if session_user = 'yo4x_conversion_worker'
+            and new.runtime_role = session_user
+            and new.runtime_role_oid =
+                (select role.oid
+                 from pg_catalog.pg_roles as role
+                 where role.rolname = session_user)
+            and new.activated_at is not null then
+            return new;
+        end if;
+
+    elsif tg_op = 'UPDATE' then
+        if session_user = old.runtime_role
+            and old.activated_at is null
+            and new.activated_at is not null
+            and new.capability_sha256 = old.capability_sha256
+            and new.database_oid = old.database_oid
+            and new.database_name = old.database_name
+            and new.runtime_role = old.runtime_role
+            and new.runtime_role_oid = old.runtime_role_oid
+            and new.backend_pid = old.backend_pid
+            and new.transaction_id = old.transaction_id
+            and new.tenant_id = old.tenant_id
+            and new.actor_id = old.actor_id
+            and new.correlation_id = old.correlation_id
+            and new.session_id is not distinct from old.session_id
+            and new.issued_at = old.issued_at
+            and new.activation_expires_at = old.activation_expires_at
+            and new.expires_at = old.expires_at then
+            return new;
+        end if;
+    elsif tg_op = 'DELETE'
+        and session_user in
+            ('yo4x_context_issuer', 'yo4x_conversion_worker') then
+        return old;
+    end if;
+
+    raise exception using
+        errcode = '55000',
+        message = 'Tenant context capability evidence is immutable.';
+end
+$$;
+
+create trigger tenant_context_capability_immutable
+before insert or update or delete on control.tenant_context_capabilities
+for each row execute function control.reject_tenant_context_capability_rewrite();
+
 create or replace function control.current_tenant_id()
 returns uuid
 language sql
 stable
-parallel safe
+security definer
+parallel restricted
 set search_path = ''
 as $$
-    select nullif(current_setting('yo4x.tenant_id', true), '')::uuid
+    select capability.tenant_id
+    from control.tenant_context_capabilities as capability
+    where capability.database_oid =
+            (select database.oid
+             from pg_catalog.pg_database as database
+             where database.datname = current_database())
+      and capability.database_name = current_database()
+      and capability.runtime_role = session_user
+      and capability.runtime_role_oid =
+            (select role.oid
+             from pg_catalog.pg_roles as role
+             where role.rolname = session_user)
+      and capability.backend_pid = pg_catalog.pg_backend_pid()
+      and capability.transaction_id = pg_catalog.pg_current_xact_id_if_assigned()
+      and capability.activated_at is not null
+      and capability.expires_at > statement_timestamp()
 $$;
 
 create or replace function control.current_actor_id()
 returns uuid
 language sql
 stable
-parallel safe
+security definer
+parallel restricted
 set search_path = ''
 as $$
-    select nullif(current_setting('yo4x.actor_id', true), '')::uuid
+    select capability.actor_id
+    from control.tenant_context_capabilities as capability
+    where capability.database_oid =
+            (select database.oid
+             from pg_catalog.pg_database as database
+             where database.datname = current_database())
+      and capability.database_name = current_database()
+      and capability.runtime_role = session_user
+      and capability.runtime_role_oid =
+            (select role.oid
+             from pg_catalog.pg_roles as role
+             where role.rolname = session_user)
+      and capability.backend_pid = pg_catalog.pg_backend_pid()
+      and capability.transaction_id = pg_catalog.pg_current_xact_id_if_assigned()
+      and capability.activated_at is not null
+      and capability.expires_at > statement_timestamp()
 $$;
 
 create or replace function control.current_correlation_id()
 returns uuid
 language sql
 stable
-parallel safe
+security definer
+parallel restricted
 set search_path = ''
 as $$
-    select nullif(current_setting('yo4x.correlation_id', true), '')::uuid
+    select capability.correlation_id
+    from control.tenant_context_capabilities as capability
+    where capability.database_oid =
+            (select database.oid
+             from pg_catalog.pg_database as database
+             where database.datname = current_database())
+      and capability.database_name = current_database()
+      and capability.runtime_role = session_user
+      and capability.runtime_role_oid =
+            (select role.oid
+             from pg_catalog.pg_roles as role
+             where role.rolname = session_user)
+      and capability.backend_pid = pg_catalog.pg_backend_pid()
+      and capability.transaction_id = pg_catalog.pg_current_xact_id_if_assigned()
+      and capability.activated_at is not null
+      and capability.expires_at > statement_timestamp()
 $$;
 
 create or replace function control.current_session_id()
 returns uuid
 language sql
 stable
-parallel safe
+security definer
+parallel restricted
 set search_path = ''
 as $$
-    select nullif(current_setting('yo4x.session_id', true), '')::uuid
+    select capability.session_id
+    from control.tenant_context_capabilities as capability
+    where capability.database_oid =
+            (select database.oid
+             from pg_catalog.pg_database as database
+             where database.datname = current_database())
+      and capability.database_name = current_database()
+      and capability.runtime_role = session_user
+      and capability.runtime_role_oid =
+            (select role.oid
+             from pg_catalog.pg_roles as role
+             where role.rolname = session_user)
+      and capability.backend_pid = pg_catalog.pg_backend_pid()
+      and capability.transaction_id = pg_catalog.pg_current_xact_id_if_assigned()
+      and capability.activated_at is not null
+      and capability.expires_at > statement_timestamp()
+$$;
+
+create function control.issue_tenant_context_capability(
+    supplied_capability_sha256 bytea,
+    target_database_name text,
+    target_runtime_role text,
+    target_backend_pid integer,
+    target_transaction_id text,
+    target_tenant_id uuid,
+    target_actor_id uuid,
+    target_correlation_id uuid,
+    target_session_id uuid)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+    target_database_oid oid;
+    target_runtime_role_oid oid;
+    parsed_transaction_id xid8;
+    authorization_now timestamptz;
+begin
+    if session_user <> 'yo4x_context_issuer'
+        or supplied_capability_sha256 is null
+        or octet_length(supplied_capability_sha256) <> 32
+        or supplied_capability_sha256 = pg_catalog.decode(repeat('00', 32), 'hex')
+        or target_database_name is distinct from current_database()
+        or target_runtime_role not in
+        (
+            'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency',
+            'yo4x_secret_ingestion', 'yo4x_conversion_worker',
+            'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker',
+            'yo4x_supervisor_runtime', 'yo4x_trade_authorizer',
+            'yo4x_gateway_runtime'
+        )
+        or target_backend_pid is null
+        or target_backend_pid <= 0
+        or target_transaction_id is null
+        or target_transaction_id !~ '^[1-9][0-9]{0,19}$'
+        or target_tenant_id is null
+        or target_tenant_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_actor_id is null
+        or target_actor_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_correlation_id is null
+        or target_correlation_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_session_id = '00000000-0000-0000-0000-000000000000'::uuid then
+        raise exception using
+            errcode = '22023',
+            message = 'The tenant context capability request is invalid.';
+    end if;
+
+    if not exists
+    (
+        select 1
+        from pg_catalog.pg_roles as role
+        where role.rolname = session_user
+          and role.rolcanlogin
+          and not role.rolinherit
+          and not role.rolsuper
+          and not role.rolbypassrls
+          and not role.rolcreatedb
+          and not role.rolcreaterole
+          and not role.rolreplication
+          and not exists
+          (
+              select 1
+              from pg_catalog.pg_auth_members as membership
+              where membership.member = role.oid
+                 or membership.roleid = role.oid
+          )
+    )
+        or current_setting('session_replication_role') <> 'origin'
+        or current_setting('row_security') <> 'on'
+        or current_setting('search_path') <> '""'
+        or current_setting('transaction_read_only') <> 'off'
+        or current_setting('transaction_timeout') <> '2min'
+        or current_setting('max_prepared_transactions')::integer <> 0 then
+        raise exception using
+            errcode = '42501',
+            message = 'The tenant context authority is not valid.';
+    end if;
+
+    begin
+        parsed_transaction_id := target_transaction_id::xid8;
+    exception
+        when invalid_text_representation or numeric_value_out_of_range then
+            raise exception using
+                errcode = '22023',
+                message = 'The tenant context capability request is invalid.';
+    end;
+
+    if parsed_transaction_id::text is distinct from target_transaction_id then
+        raise exception using
+            errcode = '22023',
+            message = 'The tenant context capability request is invalid.';
+    end if;
+
+    select database.oid
+    into strict target_database_oid
+    from pg_catalog.pg_database as database
+    where database.datname = current_database();
+
+    select role.oid
+    into target_runtime_role_oid
+    from pg_catalog.pg_roles as role
+    where role.rolname = target_runtime_role
+      and role.rolcanlogin
+      and not role.rolinherit
+      and not role.rolsuper
+      and not role.rolbypassrls
+      and not role.rolcreatedb
+      and not role.rolcreaterole
+      and not role.rolreplication
+      and not exists
+      (
+          select 1
+          from pg_catalog.pg_auth_members as membership
+          where membership.member = role.oid
+             or membership.roleid = role.oid
+      );
+
+    if target_runtime_role_oid is null then
+        raise exception using
+            errcode = '42501',
+            message = 'The tenant context authority is not valid.';
+    end if;
+
+    authorization_now := clock_timestamp();
+
+    -- Bound storage growth without a separate scheduler. Locked rows belong to
+    -- an in-flight activation transaction and are skipped; committed activated
+    -- rows and expired unused rows are safe to reclaim.
+    with cleanup_candidate as
+    (
+        select capability.ctid
+        from control.tenant_context_capabilities as capability
+        where capability.activated_at is not null
+           or capability.activation_expires_at <= authorization_now
+        order by capability.activation_expires_at, capability.capability_sha256
+        for update skip locked
+        limit 64
+    )
+    delete from control.tenant_context_capabilities as capability
+    using cleanup_candidate
+    where capability.ctid = cleanup_candidate.ctid;
+
+    insert into control.tenant_context_capabilities
+    (
+        capability_sha256, database_oid, database_name, runtime_role,
+        runtime_role_oid,
+        backend_pid, transaction_id, tenant_id, actor_id, correlation_id,
+        session_id, issued_at, activation_expires_at, expires_at, activated_at
+    )
+    values
+    (
+        supplied_capability_sha256, target_database_oid, current_database(),
+        target_runtime_role, target_runtime_role_oid,
+        target_backend_pid, parsed_transaction_id,
+        target_tenant_id, target_actor_id, target_correlation_id,
+        target_session_id, authorization_now,
+        authorization_now + interval '15 seconds',
+        authorization_now + interval '2 minutes', null
+    );
+end
+$$;
+
+create function control.activate_tenant_context(
+    supplied_capability bytea,
+    target_tenant_id uuid,
+    target_actor_id uuid,
+    target_correlation_id uuid,
+    target_session_id uuid)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+    target_database_oid oid;
+    target_runtime_role_oid oid;
+    target_transaction_id xid8;
+    authorization_now timestamptz;
+begin
+    if session_user not in
+        (
+            'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency',
+            'yo4x_secret_ingestion', 'yo4x_conversion_worker',
+            'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker',
+            'yo4x_supervisor_runtime', 'yo4x_trade_authorizer',
+            'yo4x_gateway_runtime'
+        )
+        or supplied_capability is null
+        or octet_length(supplied_capability) <> 32
+        or supplied_capability = pg_catalog.decode(repeat('00', 32), 'hex')
+        or target_tenant_id is null
+        or target_actor_id is null
+        or target_correlation_id is null then
+        raise exception using
+            errcode = '42501',
+            message = 'The tenant context capability is not valid.';
+    end if;
+
+    select role.oid
+    into target_runtime_role_oid
+    from pg_catalog.pg_roles as role
+    where role.rolname = session_user
+      and role.rolcanlogin
+      and not role.rolinherit
+      and not role.rolsuper
+      and not role.rolbypassrls
+      and not role.rolcreatedb
+      and not role.rolcreaterole
+      and not role.rolreplication
+      and not exists
+      (
+          select 1
+          from pg_catalog.pg_auth_members as membership
+          where membership.member = role.oid
+             or membership.roleid = role.oid
+      );
+
+    if target_runtime_role_oid is null
+        or current_setting('session_replication_role') <> 'origin'
+        or current_setting('row_security') <> 'on'
+        or current_setting('search_path') <> '""'
+        or current_setting('transaction_read_only') <> 'off'
+        or current_setting('transaction_timeout') <> '2min'
+        or current_setting('max_prepared_transactions')::integer <> 0 then
+        raise exception using
+            errcode = '42501',
+            message = 'The tenant context capability is not valid.';
+    end if;
+
+    select database.oid
+    into strict target_database_oid
+    from pg_catalog.pg_database as database
+    where database.datname = current_database();
+
+    target_transaction_id := pg_catalog.pg_current_xact_id();
+    authorization_now := clock_timestamp();
+
+    update control.tenant_context_capabilities as capability
+    set activated_at = authorization_now
+    where capability.capability_sha256 = pg_catalog.sha256(supplied_capability)
+      and capability.database_oid = target_database_oid
+      and capability.database_name = current_database()
+      and capability.runtime_role = session_user
+      and capability.runtime_role_oid = target_runtime_role_oid
+      and capability.backend_pid = pg_catalog.pg_backend_pid()
+      and capability.transaction_id = target_transaction_id
+      and capability.tenant_id = target_tenant_id
+      and capability.actor_id = target_actor_id
+      and capability.correlation_id = target_correlation_id
+      and capability.session_id is not distinct from target_session_id
+      and capability.activated_at is null
+      and capability.activation_expires_at > authorization_now;
+
+    if not found then
+        raise exception using
+            errcode = '42501',
+            message = 'The tenant context capability is not valid.';
+    end if;
+end
+$$;
+
+create function control.cleanup_tenant_context_capabilities(maximum_rows integer)
+returns integer
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+    deleted_rows integer;
+begin
+    if session_user <> 'yo4x_context_issuer'
+        or maximum_rows is null
+        or maximum_rows not between 1 and 1000 then
+        raise exception using
+            errcode = '42501',
+            message = 'Tenant context capability cleanup is not authorized.';
+    end if;
+
+    with cleanup_candidate as
+    (
+        select capability.ctid
+        from control.tenant_context_capabilities as capability
+        where capability.activated_at is not null
+           or capability.activation_expires_at <= clock_timestamp()
+        order by capability.activation_expires_at, capability.capability_sha256
+        for update skip locked
+        limit maximum_rows
+    )
+    delete from control.tenant_context_capabilities as capability
+    using cleanup_candidate
+    where capability.ctid = cleanup_candidate.ctid;
+
+    get diagnostics deleted_rows = row_count;
+    return deleted_rows;
+end
+$$;
+
+-- The conversion import capability is an independent authorization boundary.
+-- After acquire_strategy_import_job validates it, this private helper binds the
+-- verified job identity to the caller's current transaction without requiring
+-- the general context issuer. It is idempotent only for the exact same binding.
+create function control.bind_verified_strategy_import_tenant_context(
+    supplied_import_capability bytea,
+    target_job_id uuid,
+    target_tenant_id uuid,
+    target_actor_id uuid,
+    target_correlation_id uuid)
+returns void
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+    target_database_oid oid;
+    target_runtime_role_oid oid;
+    target_transaction_id xid8;
+    authorization_now timestamptz;
+    binding_sha256 bytea;
+begin
+    if session_user <> 'yo4x_conversion_worker'
+        or supplied_import_capability is null
+        or octet_length(supplied_import_capability) <> 32
+        or target_job_id is null
+        or target_tenant_id is null
+        or target_actor_id is null
+        or target_correlation_id is null then
+        raise exception using
+            errcode = '42501',
+            message = 'The verified strategy import tenant context is not valid.';
+    end if;
+
+    select role.oid
+    into target_runtime_role_oid
+    from pg_catalog.pg_roles as role
+    where role.rolname = session_user
+      and role.rolcanlogin
+      and not role.rolinherit
+      and not role.rolsuper
+      and not role.rolbypassrls
+      and not role.rolcreatedb
+      and not role.rolcreaterole
+      and not role.rolreplication
+      and not exists
+      (
+          select 1
+          from pg_catalog.pg_auth_members as membership
+          where membership.member = role.oid
+             or membership.roleid = role.oid
+      );
+
+    if target_runtime_role_oid is null
+        or current_setting('session_replication_role') <> 'origin'
+        or current_setting('row_security') <> 'on'
+        or current_setting('search_path') <> '""'
+        or current_setting('transaction_read_only') <> 'off'
+        or current_setting('transaction_timeout') <> '2min'
+        or current_setting('max_prepared_transactions')::integer <> 0 then
+        raise exception using
+            errcode = '42501',
+            message = 'The verified strategy import tenant context is not valid.';
+    end if;
+
+    select database.oid
+    into strict target_database_oid
+    from pg_catalog.pg_database as database
+    where database.datname = current_database();
+
+    target_transaction_id := pg_catalog.pg_current_xact_id();
+    authorization_now := clock_timestamp();
+    binding_sha256 := pg_catalog.sha256(
+        pg_catalog.convert_to(
+            'yo4x:verified-strategy-import-context:v1',
+            'UTF8')
+        || pg_catalog.int4send(octet_length(supplied_import_capability))
+        || supplied_import_capability
+        || pg_catalog.uuid_send(target_job_id)
+        || pg_catalog.int4send(target_database_oid::integer)
+        || pg_catalog.int4send(
+            octet_length(pg_catalog.convert_to(current_database(), 'UTF8')))
+        || pg_catalog.convert_to(current_database(), 'UTF8')
+        || pg_catalog.int4send(
+            octet_length(pg_catalog.convert_to(session_user, 'UTF8')))
+        || pg_catalog.convert_to(session_user, 'UTF8')
+        || pg_catalog.int4send(pg_catalog.pg_backend_pid())
+        || pg_catalog.int4send(
+            octet_length(
+                pg_catalog.convert_to(target_transaction_id::text, 'UTF8')))
+        || pg_catalog.convert_to(target_transaction_id::text, 'UTF8'));
+
+    -- Conversion imports may be the only context-capability traffic. Reclaim a
+    -- bounded number of committed dead rows here as well as on general issuance,
+    -- while retaining the exact current transaction binding for idempotent
+    -- same-xid acquire calls.
+    with cleanup_candidate as
+    (
+        select capability.ctid
+        from control.tenant_context_capabilities as capability
+        where
+            (
+                capability.activated_at is not null
+                or capability.activation_expires_at <= authorization_now
+            )
+          and not
+            (
+                capability.database_oid = target_database_oid
+                and capability.runtime_role_oid = target_runtime_role_oid
+                and capability.runtime_role = session_user
+                and capability.backend_pid = pg_catalog.pg_backend_pid()
+                and capability.transaction_id = target_transaction_id
+            )
+        order by capability.activation_expires_at, capability.capability_sha256
+        for update skip locked
+        limit 64
+    )
+    delete from control.tenant_context_capabilities as capability
+    using cleanup_candidate
+    where capability.ctid = cleanup_candidate.ctid;
+
+    insert into control.tenant_context_capabilities
+    (
+        capability_sha256, database_oid, database_name, runtime_role,
+        runtime_role_oid,
+        backend_pid, transaction_id, tenant_id, actor_id, correlation_id,
+        session_id, issued_at, activation_expires_at, expires_at, activated_at
+    )
+    values
+    (
+        binding_sha256, target_database_oid, current_database(), session_user,
+        target_runtime_role_oid,
+        pg_catalog.pg_backend_pid(), target_transaction_id, target_tenant_id,
+        target_actor_id, target_correlation_id, null, authorization_now,
+        authorization_now + interval '15 seconds',
+        authorization_now + interval '2 minutes', authorization_now
+    )
+    on conflict do nothing;
+
+    if not exists
+    (
+        select 1
+        from control.tenant_context_capabilities as capability
+        where capability.capability_sha256 = binding_sha256
+          and capability.database_oid = target_database_oid
+          and capability.database_name = current_database()
+          and capability.runtime_role = session_user
+          and capability.runtime_role_oid = target_runtime_role_oid
+          and capability.backend_pid = pg_catalog.pg_backend_pid()
+          and capability.transaction_id = target_transaction_id
+          and capability.tenant_id = target_tenant_id
+          and capability.actor_id = target_actor_id
+          and capability.correlation_id = target_correlation_id
+          and capability.session_id is null
+          and capability.activated_at is not null
+          and capability.expires_at > authorization_now
+    ) then
+        raise exception using
+            errcode = '42501',
+            message = 'The verified strategy import tenant context is not valid.';
+    end if;
+end
 $$;
 
 -- Runtime connections fail fast when configured with a database/schema/table
@@ -83,6 +739,7 @@ begin
     where role.rolname = current_user;
 
     if runtime_role is null
+        or session_user <> current_user
         or is_superuser
         or bypasses_rls
         or can_create_database
@@ -90,11 +747,18 @@ begin
         or can_replicate
         or current_setting('log_parameter_max_length')::integer <> 0
         or current_setting('log_parameter_max_length_on_error')::integer <> 0
+        or current_setting('session_replication_role') <> 'origin'
+        or current_setting('row_security') <> 'on'
+        or current_setting('search_path') <> '""'
+        or current_setting('transaction_read_only') <> 'off'
+        or current_setting('transaction_timeout') <> '2min'
+        or current_setting('max_prepared_transactions')::integer <> 0
         or exists
         (
             select 1
             from pg_catalog.pg_auth_members as membership
             where membership.member = runtime_role
+               or membership.roleid = runtime_role
         )
         or pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
         or exists
@@ -527,6 +1191,7 @@ create table control.strategy_import_jobs
         (correlation_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     source_label text not null check (source_label ~ '^[a-z0-9][a-z0-9._-]{0,99}$'),
     capability_sha256 bytea not null check (octet_length(capability_sha256) = 32),
+    proof_key_id text not null check (proof_key_id ~ '^[0-9a-f]{64}$'),
     state text not null default 'active'
         check (state in ('active', 'reserved', 'consumed', 'expired', 'revoked')),
     reservation_id uuid,
@@ -687,6 +1352,100 @@ create table governance.strategy_source_files
     )
 );
 
+-- Static conversion classification is retained as immutable evidence only. It
+-- is deliberately linked to a source corpus, never to a strategy version,
+-- deployment, execution lease, or promotion record.
+create table governance.strategy_conversion_classifications
+(
+    tenant_id uuid not null references identity.tenants(id),
+    corpus_id uuid not null,
+    user_id uuid not null,
+    import_job_id uuid not null,
+    reservation_id uuid not null,
+    schema_version text not null check
+        (length(btrim(schema_version)) between 1 and 100),
+    analyzer_version text not null check
+        (length(btrim(analyzer_version)) between 1 and 200),
+    input_static_schema_version text not null check
+        (length(btrim(input_static_schema_version)) between 1 and 100),
+    input_static_analyzer_version text not null check
+        (length(btrim(input_static_analyzer_version)) between 1 and 200),
+    input_corpus_sha256 text not null check
+        (input_corpus_sha256 ~ '^[0-9a-f]{64}$'),
+    dependency_graph_sha256 text not null check
+        (dependency_graph_sha256 ~ '^[0-9a-f]{64}$'),
+    -- The analyzer's embedded digest, the exact formatted JSON digest, and the
+    -- canonical typed-object digest are distinct and cannot substitute for one another.
+    embedded_evidence_sha256 text not null check
+        (embedded_evidence_sha256 ~ '^[0-9a-f]{64}$'),
+    formatted_evidence_sha256 text not null check
+        (formatted_evidence_sha256 ~ '^[0-9a-f]{64}$'),
+    canonical_evidence_sha256 text not null check
+        (canonical_evidence_sha256 ~ '^[0-9a-f]{64}$'),
+    file_count integer not null check (file_count between 1 and 10000),
+    total_bytes bigint not null check (total_bytes between 1 and 268435456),
+    disposition_counts jsonb not null check
+        (jsonb_typeof(disposition_counts) = 'object'
+            and octet_length(disposition_counts::text) <= 4096),
+    formatted_evidence_document jsonb not null,
+    formatted_evidence_content bytea not null check
+        (octet_length(formatted_evidence_content) between 2 and 67108864),
+    canonical_evidence_document jsonb not null,
+    canonical_evidence_content bytea not null check
+        (octet_length(canonical_evidence_content) between 2 and 67108864),
+    audit_event_id uuid not null,
+    outbox_message_id uuid not null,
+    created_at timestamptz not null default statement_timestamp(),
+    primary key (tenant_id, corpus_id),
+    unique (tenant_id, import_job_id),
+    unique (tenant_id, audit_event_id),
+    unique (tenant_id, outbox_message_id),
+    foreign key (tenant_id, corpus_id, user_id, import_job_id, reservation_id)
+        references governance.strategy_source_corpora
+            (tenant_id, id, user_id, import_job_id, reservation_id),
+    check (corpus_id = import_job_id),
+    check (formatted_evidence_sha256 = encode(
+        pg_catalog.sha256(formatted_evidence_content), 'hex')),
+    check (canonical_evidence_sha256 = encode(
+        pg_catalog.sha256(canonical_evidence_content), 'hex')),
+    check (formatted_evidence_document =
+        convert_from(formatted_evidence_content, 'UTF8')::jsonb),
+    check (canonical_evidence_document =
+        convert_from(canonical_evidence_content, 'UTF8')::jsonb),
+    check
+    (
+        jsonb_typeof(formatted_evidence_document) = 'object'
+        and (formatted_evidence_document - 'files') = jsonb_build_object(
+            'schemaVersion', schema_version,
+            'analyzerVersion', analyzer_version,
+            'inputStaticSchemaVersion', input_static_schema_version,
+            'inputStaticAnalyzerVersion', input_static_analyzer_version,
+            'inputCorpusSha256', input_corpus_sha256,
+            'dependencyGraphSha256', dependency_graph_sha256,
+            'evidenceSha256', embedded_evidence_sha256,
+            'fileCount', file_count,
+            'totalBytes', total_bytes)
+        and jsonb_typeof(formatted_evidence_document -> 'files') = 'array'
+        and jsonb_array_length(formatted_evidence_document -> 'files') = file_count
+    ),
+    check
+    (
+        jsonb_typeof(canonical_evidence_document) = 'object'
+        and (canonical_evidence_document - 'files') = jsonb_build_object(
+            'schemaVersion', schema_version,
+            'analyzerVersion', analyzer_version,
+            'inputStaticSchemaVersion', input_static_schema_version,
+            'inputStaticAnalyzerVersion', input_static_analyzer_version,
+            'inputCorpusSha256', input_corpus_sha256,
+            'dependencyGraphSha256', dependency_graph_sha256,
+            'evidenceSha256', embedded_evidence_sha256,
+            'fileCount', file_count,
+            'totalBytes', total_bytes)
+        and jsonb_typeof(canonical_evidence_document -> 'files') = 'array'
+        and jsonb_array_length(canonical_evidence_document -> 'files') = file_count
+    )
+);
+
 alter table control.strategy_import_jobs
     add constraint strategy_import_jobs_corpus_fk
     foreign key (tenant_id, corpus_id)
@@ -739,7 +1498,6 @@ begin
                 message = 'Strategy import creation is not authorized.';
         end if;
 
-        perform control.acquire_u0_authority_lock();
         if not exists
         (
             select 1
@@ -761,10 +1519,10 @@ begin
 
     if row(
         old.id, old.tenant_id, old.user_id, old.correlation_id, old.source_label,
-        old.capability_sha256, old.expires_at, old.created_at)
+        old.capability_sha256, old.proof_key_id, old.expires_at, old.created_at)
         is distinct from row(
         new.id, new.tenant_id, new.user_id, new.correlation_id, new.source_label,
-        new.capability_sha256, new.expires_at, new.created_at) then
+        new.capability_sha256, new.proof_key_id, new.expires_at, new.created_at) then
         raise exception using
             errcode = '55000',
             message = 'Strategy import authority binding is immutable.';
@@ -910,6 +1668,9 @@ before update or delete on governance.strategy_source_corpora
 for each row execute function governance.reject_strategy_source_evidence_mutation();
 create trigger strategy_source_files_immutable
 before update or delete on governance.strategy_source_files
+for each row execute function governance.reject_strategy_source_evidence_mutation();
+create trigger strategy_conversion_classifications_immutable
+before update or delete on governance.strategy_conversion_classifications
 for each row execute function governance.reject_strategy_source_evidence_mutation();
 
 create table governance.strategy_versions
@@ -1883,7 +2644,7 @@ create table operations.broker_commands
         state in
         (
             'authorized', 'send_in_progress', 'acknowledged', 'partially_filled',
-            'filled', 'cancelled', 'rejected', 'unknown',
+            'filled', 'cancelled', 'rejected', 'submission_disabled', 'unknown',
             'reconciliation_pending', 'reconciled'
         )
     ),
@@ -2093,7 +2854,8 @@ begin
         (
             (old.state = 'authorized' and new.state = 'send_in_progress')
             or (old.state = 'send_in_progress'
-                and new.state in ('acknowledged', 'rejected', 'unknown'))
+                and new.state in
+                    ('acknowledged', 'rejected', 'submission_disabled', 'unknown'))
             or (old.state in
                     ('acknowledged', 'partially_filled', 'filled', 'cancelled', 'rejected')
                 and new.state = 'unknown')
@@ -2204,6 +2966,412 @@ alter table operations.runtime_event_cursors
     foreign key (tenant_id, deployment_id, generation, last_event_id)
     references operations.runtime_event_inbox(tenant_id, deployment_id, generation, event_id);
 
+-- Strategy evaluation never holds a database transaction open while untrusted
+-- code runs. Intake appends immutable canonical evidence, a short claim pins
+-- the exact prior state, and a later short commit atomically advances this head.
+create table operations.strategy_deployment_heads
+(
+    tenant_id uuid not null references identity.tenants(id),
+    deployment_id uuid not null,
+    generation bigint not null check (generation > 0),
+    worker_assignment_id uuid not null,
+    worker_instance_id uuid not null references operations.worker_nodes(id),
+    execution_lease_id uuid not null,
+    supervisor_workload_id uuid not null,
+    strategy_host_workload_id uuid not null,
+    last_enqueued_sequence bigint not null default 0 check (last_enqueued_sequence >= 0),
+    last_committed_sequence bigint not null default 0 check (last_committed_sequence >= 0),
+    current_state_version bigint not null default 0 check (current_state_version >= 0),
+    current_state_sha256 text not null check (current_state_sha256 ~ '^[0-9a-f]{64}$'),
+    row_version bigint not null default 0 check (row_version >= 0),
+    initialized_at timestamptz not null,
+    updated_at timestamptz not null,
+    primary key (tenant_id, deployment_id, generation),
+    foreign key (tenant_id, deployment_id)
+        references operations.deployments(tenant_id, id),
+    foreign key
+        (tenant_id, worker_assignment_id, deployment_id, generation, worker_instance_id)
+        references operations.worker_assignments
+            (tenant_id, id, deployment_id, fence_generation, worker_node_id),
+    foreign key (tenant_id, deployment_id, generation, execution_lease_id)
+        references operations.execution_leases(tenant_id, deployment_id, generation, id),
+    check (last_committed_sequence <= last_enqueued_sequence),
+    check (current_state_version = last_committed_sequence),
+    check (updated_at >= initialized_at)
+);
+
+create table operations.strategy_state_revisions
+(
+    tenant_id uuid not null references identity.tenants(id),
+    deployment_id uuid not null,
+    generation bigint not null check (generation > 0),
+    state_version bigint not null check (state_version >= 0),
+    state_document jsonb not null,
+    state_content bytea not null check
+        (octet_length(state_content) between 1 and 1048576),
+    state_sha256 text not null check (state_sha256 ~ '^[0-9a-f]{64}$'),
+    produced_by_event_id uuid,
+    result_sha256 text check
+        (result_sha256 is null or result_sha256 ~ '^[0-9a-f]{64}$'),
+    commit_evidence_sha256 text check
+        (commit_evidence_sha256 is null or commit_evidence_sha256 ~ '^[0-9a-f]{64}$'),
+    committed_at timestamptz not null,
+    primary key (tenant_id, deployment_id, generation, state_version),
+    unique (tenant_id, deployment_id, generation, produced_by_event_id),
+    foreign key (tenant_id, deployment_id, generation)
+        references operations.strategy_deployment_heads
+            (tenant_id, deployment_id, generation),
+    check (state_document = convert_from(state_content, 'UTF8')::jsonb),
+    check (state_sha256 = encode(pg_catalog.sha256(state_content), 'hex')),
+    check
+    (
+        (state_version = 0 and produced_by_event_id is null
+            and result_sha256 is null and commit_evidence_sha256 is null)
+        or
+        (state_version > 0 and produced_by_event_id is not null
+            and result_sha256 is not null and commit_evidence_sha256 is not null)
+    )
+);
+
+alter table operations.strategy_deployment_heads
+    add constraint strategy_deployment_head_current_state_fk
+    foreign key
+        (tenant_id, deployment_id, generation, current_state_version)
+    references operations.strategy_state_revisions
+        (tenant_id, deployment_id, generation, state_version)
+    deferrable initially deferred;
+
+create table operations.strategy_event_journal
+(
+    tenant_id uuid not null references identity.tenants(id),
+    deployment_id uuid not null,
+    generation bigint not null check (generation > 0),
+    sequence bigint not null check (sequence > 0),
+    event_id uuid not null,
+    worker_assignment_id uuid not null,
+    worker_instance_id uuid not null references operations.worker_nodes(id),
+    execution_lease_id uuid not null,
+    event_kind integer not null check (event_kind between 0 and 6),
+    event_contract_version integer not null check (event_contract_version = 1),
+    event_document jsonb not null check (jsonb_typeof(event_document) = 'object'),
+    event_content bytea not null check
+        (octet_length(event_content) between 2 and 1048576),
+    event_sha256 text not null check (event_sha256 ~ '^[0-9a-f]{64}$'),
+    snapshot_sequence bigint not null check (snapshot_sequence > 0),
+    snapshot_contract_version integer not null check (snapshot_contract_version = 1),
+    snapshot_document jsonb not null check (jsonb_typeof(snapshot_document) = 'object'),
+    snapshot_content bytea not null check
+        (octet_length(snapshot_content) between 2 and 4194304),
+    snapshot_sha256 text not null check (snapshot_sha256 ~ '^[0-9a-f]{64}$'),
+    envelope_received_at timestamptz not null,
+    broker_timestamp timestamptz,
+    persisted_at timestamptz not null,
+    processing_state text not null default 'pending'
+        check (processing_state in ('pending', 'claimed', 'committed')),
+    claim_token uuid,
+    claimed_by uuid,
+    claim_authority_now timestamptz,
+    claim_expires_at timestamptz,
+    claim_attempts integer not null default 0 check (claim_attempts >= 0),
+    pinned_state_version bigint,
+    pinned_state_sha256 text check
+        (pinned_state_sha256 is null or pinned_state_sha256 ~ '^[0-9a-f]{64}$'),
+    commit_id uuid,
+    result_sha256 text check
+        (result_sha256 is null or result_sha256 ~ '^[0-9a-f]{64}$'),
+    committed_state_version bigint,
+    committed_state_sha256 text check
+        (committed_state_sha256 is null or committed_state_sha256 ~ '^[0-9a-f]{64}$'),
+    committed_action_count integer check
+        (committed_action_count is null or committed_action_count >= 0),
+    commit_evidence_document jsonb,
+    commit_evidence_content bytea check
+        (commit_evidence_content is null or octet_length(commit_evidence_content) between 2 and 8388608),
+    commit_evidence_sha256 text check
+        (commit_evidence_sha256 is null or commit_evidence_sha256 ~ '^[0-9a-f]{64}$'),
+    committed_at timestamptz,
+    row_version bigint not null default 0 check (row_version >= 0),
+    primary key (tenant_id, deployment_id, generation, event_id),
+    unique (tenant_id, deployment_id, generation, sequence),
+    unique (tenant_id, commit_id),
+    foreign key (tenant_id, deployment_id, generation)
+        references operations.strategy_deployment_heads
+            (tenant_id, deployment_id, generation),
+    foreign key
+        (tenant_id, worker_assignment_id, deployment_id, generation, worker_instance_id)
+        references operations.worker_assignments
+            (tenant_id, id, deployment_id, fence_generation, worker_node_id),
+    foreign key (tenant_id, deployment_id, generation, execution_lease_id)
+        references operations.execution_leases(tenant_id, deployment_id, generation, id),
+    foreign key (tenant_id, deployment_id, generation, pinned_state_version)
+        references operations.strategy_state_revisions
+            (tenant_id, deployment_id, generation, state_version),
+    foreign key (tenant_id, deployment_id, generation, committed_state_version)
+        references operations.strategy_state_revisions
+            (tenant_id, deployment_id, generation, state_version)
+        deferrable initially deferred,
+    check (event_document = convert_from(event_content, 'UTF8')::jsonb),
+    check (event_sha256 = encode(pg_catalog.sha256(event_content), 'hex')),
+    check (snapshot_document = convert_from(snapshot_content, 'UTF8')::jsonb),
+    check (snapshot_sha256 = encode(pg_catalog.sha256(snapshot_content), 'hex')),
+    check (envelope_received_at <= persisted_at + interval '5 minutes'),
+    check (broker_timestamp is null or broker_timestamp <= persisted_at + interval '5 minutes'),
+    check
+    (
+        (processing_state = 'pending'
+            and claim_token is null and claimed_by is null
+            and claim_authority_now is null and claim_expires_at is null
+            and pinned_state_version is null and pinned_state_sha256 is null)
+        or
+        (processing_state in ('claimed', 'committed')
+            and claim_token is not null and claimed_by is not null
+            and claim_authority_now is not null and claim_expires_at is not null
+            and pinned_state_version is not null and pinned_state_sha256 is not null
+            and claim_expires_at > claim_authority_now)
+    ),
+    check
+    (
+        (processing_state <> 'committed'
+            and commit_id is null and result_sha256 is null
+            and committed_state_version is null and committed_state_sha256 is null
+            and committed_action_count is null
+            and commit_evidence_document is null and commit_evidence_content is null
+            and commit_evidence_sha256 is null and committed_at is null)
+        or
+        (processing_state = 'committed'
+            and commit_id is not null and result_sha256 is not null
+            and committed_state_version is not null and committed_state_sha256 is not null
+            and committed_action_count is not null
+            and commit_evidence_document is not null and commit_evidence_content is not null
+            and commit_evidence_sha256 is not null and committed_at is not null
+            and commit_evidence_document = convert_from(commit_evidence_content, 'UTF8')::jsonb
+            and commit_evidence_sha256 = encode(pg_catalog.sha256(commit_evidence_content), 'hex'))
+    )
+);
+
+alter table operations.strategy_state_revisions
+    add constraint strategy_state_revision_event_fk
+    foreign key (tenant_id, deployment_id, generation, produced_by_event_id)
+    references operations.strategy_event_journal
+        (tenant_id, deployment_id, generation, event_id)
+    deferrable initially deferred;
+
+create table operations.strategy_requested_actions
+(
+    id uuid primary key,
+    tenant_id uuid not null references identity.tenants(id),
+    deployment_id uuid not null,
+    generation bigint not null check (generation > 0),
+    event_id uuid not null,
+    event_sequence bigint not null check (event_sequence > 0),
+    state_version bigint not null check (state_version > 0),
+    action_ordinal integer not null check (action_ordinal >= 0),
+    idempotency_key text not null check
+        (length(btrim(idempotency_key)) between 1 and 500),
+    action_kind integer not null check (action_kind between 0 and 3),
+    exposure_hint integer not null check (exposure_hint between 0 and 4),
+    symbol text not null check (length(btrim(symbol)) between 1 and 100),
+    market_data_sequence bigint not null check (market_data_sequence > 0),
+    action_document jsonb not null check (jsonb_typeof(action_document) = 'object'),
+    action_content bytea not null check
+        (octet_length(action_content) between 2 and 1048576),
+    action_sha256 text not null check (action_sha256 ~ '^[0-9a-f]{64}$'),
+    outbox_message_id uuid not null,
+    outbox_topic text not null check
+        (outbox_topic = 'strategy.action.risk-evaluation-requested.v1'),
+    outbox_payload_document jsonb not null
+        check (jsonb_typeof(outbox_payload_document) = 'object'),
+    outbox_payload_content bytea not null check
+        (octet_length(outbox_payload_content) between 2 and 1048576),
+    outbox_payload_sha256 text not null
+        check (outbox_payload_sha256 ~ '^[0-9a-f]{64}$'),
+    created_at timestamptz not null,
+    unique (tenant_id, id),
+    unique (tenant_id, deployment_id, generation, event_id, action_ordinal),
+    unique (tenant_id, deployment_id, generation, idempotency_key),
+    unique (tenant_id, outbox_message_id),
+    foreign key (tenant_id, deployment_id, generation, event_id)
+        references operations.strategy_event_journal
+            (tenant_id, deployment_id, generation, event_id),
+    foreign key (tenant_id, deployment_id, generation, state_version)
+        references operations.strategy_state_revisions
+            (tenant_id, deployment_id, generation, state_version),
+    check (action_document = convert_from(action_content, 'UTF8')::jsonb),
+    check (action_sha256 = encode(pg_catalog.sha256(action_content), 'hex')),
+    check (outbox_payload_document = convert_from(outbox_payload_content, 'UTF8')::jsonb),
+    check (outbox_payload_sha256 = encode(pg_catalog.sha256(outbox_payload_content), 'hex')),
+    check (action_document ->> 'actionId' is not distinct from id::text),
+    check (action_document ->> 'idempotencyKey' is not distinct from idempotency_key),
+    check ((action_document ->> 'kind')::integer is not distinct from action_kind),
+    check ((action_document ->> 'exposureHint')::integer is not distinct from exposure_hint),
+    check (action_document ->> 'symbol' is not distinct from symbol),
+    check ((action_document ->> 'marketDataSequence')::bigint
+        is not distinct from market_data_sequence),
+    check ((outbox_payload_document ->> 'contractVersion')::integer
+        is not distinct from 1),
+    check (outbox_payload_document ->> 'tenantId'
+        is not distinct from tenant_id::text),
+    check (outbox_payload_document ->> 'deploymentId'
+        is not distinct from deployment_id::text),
+    check ((outbox_payload_document ->> 'generation')::bigint
+        is not distinct from generation),
+    check ((outbox_payload_document ->> 'eventSequence')::bigint
+        is not distinct from event_sequence),
+    check (outbox_payload_document ->> 'eventId'
+        is not distinct from event_id::text),
+    check ((outbox_payload_document ->> 'stateVersion')::bigint
+        is not distinct from state_version),
+    check ((outbox_payload_document ->> 'actionOrdinal')::integer
+        is not distinct from action_ordinal),
+    check (outbox_payload_document ->> 'actionId' is not distinct from id::text),
+    check (outbox_payload_document ->> 'idempotencyKey'
+        is not distinct from idempotency_key),
+    check ((outbox_payload_document ->> 'actionKind')::integer
+        is not distinct from action_kind),
+    check ((outbox_payload_document ->> 'exposureHint')::integer
+        is not distinct from exposure_hint),
+    check (outbox_payload_document ->> 'actionSha256'
+        is not distinct from action_sha256)
+);
+
+create function operations.reject_strategy_evidence_mutation()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+    raise exception using
+        errcode = '55000',
+        message = format('operations.%s is immutable strategy evidence', tg_table_name);
+    return null;
+end
+$$;
+
+create trigger strategy_state_revisions_immutable
+before update or delete on operations.strategy_state_revisions
+for each row execute function operations.reject_strategy_evidence_mutation();
+
+create trigger strategy_requested_actions_immutable
+before update or delete on operations.strategy_requested_actions
+for each row execute function operations.reject_strategy_evidence_mutation();
+
+create function operations.enforce_strategy_event_journal_transition()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+    legal_transition boolean;
+begin
+    if tg_op = 'DELETE' then
+        raise exception using
+            errcode = '55000',
+            message = 'Strategy-event journal evidence cannot be deleted.';
+    end if;
+
+    legal_transition :=
+        (old.processing_state = 'pending' and new.processing_state = 'claimed')
+        or (old.processing_state = 'claimed'
+            and new.processing_state in ('pending', 'claimed', 'committed'));
+
+    if old.processing_state = 'committed' then
+        raise exception using
+            errcode = '55000',
+            message = 'Committed strategy-event evidence is immutable.';
+    end if;
+
+    if not legal_transition then
+        raise exception using
+            errcode = '55000',
+            message = 'The strategy-event journal transition is not allowed.';
+    end if;
+
+    if
+    (
+        old.tenant_id, old.deployment_id, old.generation, old.sequence,
+        old.event_id, old.worker_assignment_id, old.worker_instance_id,
+        old.execution_lease_id, old.event_kind, old.event_contract_version,
+        old.event_document, old.event_content, old.event_sha256,
+        old.snapshot_sequence, old.snapshot_contract_version,
+        old.snapshot_document, old.snapshot_content, old.snapshot_sha256,
+        old.envelope_received_at, old.broker_timestamp, old.persisted_at
+    ) is distinct from
+    (
+        new.tenant_id, new.deployment_id, new.generation, new.sequence,
+        new.event_id, new.worker_assignment_id, new.worker_instance_id,
+        new.execution_lease_id, new.event_kind, new.event_contract_version,
+        new.event_document, new.event_content, new.event_sha256,
+        new.snapshot_sequence, new.snapshot_contract_version,
+        new.snapshot_document, new.snapshot_content, new.snapshot_sha256,
+        new.envelope_received_at, new.broker_timestamp, new.persisted_at
+    ) or new.claim_attempts < old.claim_attempts
+      or new.row_version <> old.row_version + 1 then
+        raise exception using
+            errcode = '55000',
+            message = 'Strategy-event immutable bindings or monotonic evidence changed.';
+    end if;
+
+    return new;
+end
+$$;
+
+create trigger strategy_event_journal_transition_guard
+before update or delete on operations.strategy_event_journal
+for each row execute function operations.enforce_strategy_event_journal_transition();
+
+create function operations.enforce_strategy_deployment_head_transition()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+    enqueue_step boolean;
+    commit_step boolean;
+begin
+    if tg_op = 'DELETE' then
+        raise exception using
+            errcode = '55000',
+            message = 'A strategy deployment head cannot be deleted.';
+    end if;
+
+    enqueue_step :=
+        new.last_enqueued_sequence = old.last_enqueued_sequence + 1
+        and new.last_committed_sequence = old.last_committed_sequence
+        and new.current_state_version = old.current_state_version
+        and new.current_state_sha256 = old.current_state_sha256;
+    commit_step :=
+        new.last_enqueued_sequence = old.last_enqueued_sequence
+        and new.last_committed_sequence = old.last_committed_sequence + 1
+        and new.current_state_version = old.current_state_version + 1;
+
+    if
+    (
+        old.tenant_id, old.deployment_id, old.generation,
+        old.worker_assignment_id, old.worker_instance_id,
+        old.execution_lease_id, old.supervisor_workload_id,
+        old.strategy_host_workload_id, old.initialized_at
+    ) is distinct from
+    (
+        new.tenant_id, new.deployment_id, new.generation,
+        new.worker_assignment_id, new.worker_instance_id,
+        new.execution_lease_id, new.supervisor_workload_id,
+        new.strategy_host_workload_id, new.initialized_at
+    ) or not (enqueue_step or commit_step)
+      or new.row_version <> old.row_version + 1
+      or new.updated_at < old.updated_at then
+        raise exception using
+            errcode = '55000',
+            message = 'The strategy deployment head may advance by one enqueue or one commit only.';
+    end if;
+
+    return new;
+end
+$$;
+
+create trigger strategy_deployment_heads_transition_guard
+before update or delete on operations.strategy_deployment_heads
+for each row execute function operations.enforce_strategy_deployment_head_transition();
+
 create table operations.deployment_reconciliations
 (
     id uuid primary key,
@@ -2212,12 +3380,25 @@ create table operations.deployment_reconciliations
     generation bigint not null check (generation > 0),
     worker_assignment_id uuid not null,
     worker_instance_id uuid not null,
+    result_id uuid,
+    operation_id uuid,
     dispatch_message_id uuid,
+    dispatch_target_binding_sha256 text
+        check
+        (
+            dispatch_target_binding_sha256 is null
+            or dispatch_target_binding_sha256 ~ '^[0-9a-f]{64}$'
+        ),
     submitted_resource_version bigint check (submitted_resource_version is null or submitted_resource_version >= 0),
     requested_target_state text check
         (requested_target_state is null or requested_target_state in ('running', 'close_only', 'stopped')),
     policy_snapshot_sha256 text
         check (policy_snapshot_sha256 is null or policy_snapshot_sha256 ~ '^[0-9a-f]{64}$'),
+    result_capability_sha256 text
+        check (result_capability_sha256 is null or result_capability_sha256 ~ '^[0-9a-f]{64}$'),
+    reconciliation_challenge_id uuid,
+    request_sha256 text
+        check (request_sha256 is null or request_sha256 ~ '^[0-9a-f]{64}$'),
     observed_state text
         check (observed_state is null or observed_state in ('running', 'close_only', 'stopped', 'faulted', 'unknown')),
     runtime_evidence_sha256 text
@@ -2225,35 +3406,188 @@ create table operations.deployment_reconciliations
     desired_digest text not null check (desired_digest ~ '^[0-9a-f]{64}$'),
     observed_digest text check (observed_digest is null or observed_digest ~ '^[0-9a-f]{64}$'),
     broker_digest text check (broker_digest is null or broker_digest ~ '^[0-9a-f]{64}$'),
+    pre_invocation_not_sent_proven boolean,
+    gateway_invoked boolean,
     broker_confirmed boolean not null default false,
     broker_execution_state text
         check (broker_execution_state is null or broker_execution_state in ('running', 'close_only', 'stopped', 'unknown')),
     broker_position_state text
         check (broker_position_state is null or broker_position_state in ('open', 'flat', 'unknown')),
+    error_code text
+        check (error_code is null or length(btrim(error_code)) between 1 and 200),
     state text not null check (state in ('requested', 'matching', 'diverged', 'reconciled', 'unknown', 'failed')),
     evidence jsonb not null default '{}'::jsonb check (jsonb_typeof(evidence) = 'object'),
+    observed_at timestamptz,
+    received_at timestamptz,
     started_at timestamptz not null,
     completed_at timestamptz,
     unique (tenant_id, id),
+    unique (tenant_id, result_id),
+    unique (tenant_id, dispatch_message_id),
+    unique (tenant_id, reconciliation_challenge_id),
     foreign key (tenant_id, deployment_id) references operations.deployments(tenant_id, id),
     foreign key (tenant_id, worker_assignment_id, deployment_id, generation, worker_instance_id)
         references operations.worker_assignments(tenant_id, id, deployment_id, fence_generation, worker_node_id),
     check
     (
         (dispatch_message_id is null
+            and result_id is null
+            and operation_id is null
+            and dispatch_target_binding_sha256 is null
             and submitted_resource_version is null
             and requested_target_state is null
-            and policy_snapshot_sha256 is null)
+            and policy_snapshot_sha256 is null
+            and result_capability_sha256 is null
+            and request_sha256 is null
+            and pre_invocation_not_sent_proven is null
+            and gateway_invoked is null
+            and error_code is null
+            and observed_at is null
+            and received_at is null)
         or (dispatch_message_id is not null
+            and result_id is not null
+            and operation_id is not null
+            and dispatch_target_binding_sha256 is not null
             and submitted_resource_version is not null
             and requested_target_state is not null
-            and policy_snapshot_sha256 is not null)
+            and policy_snapshot_sha256 is not null
+            and result_capability_sha256 is not null
+            and request_sha256 is not null
+            and pre_invocation_not_sent_proven is not null
+            and gateway_invoked is not null
+            and observed_at is not null
+            and received_at is not null)
+    ),
+    check
+    (
+        dispatch_message_id is null
+        or
+        (
+            completed_at is not null
+            and state in ('reconciled', 'diverged', 'failed')
+        )
+    ),
+    check
+    (
+        reconciliation_challenge_id is null
+        or
+        (
+            state in ('reconciled', 'diverged')
+            and not pre_invocation_not_sent_proven
+            and gateway_invoked
+            and broker_confirmed
+        )
     ),
     check (not broker_confirmed or (broker_digest is not null and broker_execution_state is not null)),
-    check (state <> 'reconciled' or (observed_state is not null and runtime_evidence_sha256 is not null)),
+    check
+    (
+        dispatch_message_id is null
+        or
+        (
+            desired_digest = dispatch_target_binding_sha256
+            and runtime_evidence_sha256 is not null
+            and (observed_state is null) = (observed_digest is null)
+            and received_at = completed_at
+            and started_at = received_at
+            and
+            (
+                (state = 'reconciled'
+                    and error_code is null
+                    and not pre_invocation_not_sent_proven
+                    and gateway_invoked
+                    and observed_state = requested_target_state
+                    and observed_digest = desired_digest
+                    and broker_confirmed
+                    and broker_digest is not null
+                    and broker_execution_state = requested_target_state
+                    and broker_position_state is not null
+                    and
+                    (
+                        requested_target_state <> 'stopped'
+                        or broker_position_state = 'flat'
+                    ))
+                or
+                (state = 'diverged'
+                    and error_code is not null
+                    and not pre_invocation_not_sent_proven
+                    and gateway_invoked
+                    and observed_state is not null
+                    and observed_digest is not null
+                    and broker_confirmed
+                    and broker_digest is not null
+                    and broker_execution_state is not null
+                    and broker_position_state is not null
+                    and
+                    (
+                        observed_state <> requested_target_state
+                        or observed_digest <> desired_digest
+                        or broker_execution_state <> requested_target_state
+                        or
+                        (
+                            requested_target_state = 'stopped'
+                            and broker_position_state <> 'flat'
+                        )
+                    ))
+                or
+                (state = 'failed'
+                    and error_code is not null
+                    and pre_invocation_not_sent_proven
+                    and not gateway_invoked
+                    and observed_state is null
+                    and observed_digest is null
+                    and not broker_confirmed
+                    and broker_digest is null
+                    and broker_execution_state is null
+                    and broker_position_state is null)
+            )
+        )
+    ),
+    check
+    (
+        state <> 'reconciled'
+        or
+        (
+            observed_state is not null
+            and runtime_evidence_sha256 is not null
+            and
+            (
+                dispatch_message_id is null
+                or
+                (
+                    observed_state = requested_target_state
+                    and observed_digest = desired_digest
+                    and broker_confirmed
+                    and broker_digest is not null
+                    and broker_execution_state = requested_target_state
+                    and
+                    (
+                        requested_target_state <> 'stopped'
+                        or broker_position_state = 'flat'
+                    )
+                )
+            )
+        )
+    ),
     check (broker_position_state is null or broker_confirmed),
+    check (observed_at is null or observed_at <= received_at + interval '5 minutes'),
     check (completed_at is null or completed_at >= started_at)
 );
+
+create function operations.reject_deployment_reconciliation_mutation()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+    raise exception using
+        errcode = '55000',
+        message = 'Deployment reconciliation proof is immutable.';
+end
+$$;
+
+create trigger deployment_reconciliations_immutable
+before update or delete on operations.deployment_reconciliations
+for each row execute function operations.reject_deployment_reconciliation_mutation();
 
 create table operations.support_cases
 (
@@ -2311,6 +3645,269 @@ create table control.tenant_contexts
     check (expires_at > established_at)
 );
 
+-- Durable, process-independent worker scan progress. The global cursor set has
+-- exactly one migration-seeded row per bounded work consumer; runtime cannot
+-- add, remove, or rename consumers. Deployment progress is tenant-private and
+-- is protected by the same activated transaction authority as business data.
+create table control.worker_tenant_scan_cursors
+(
+    consumer text primary key check
+    (
+        consumer in
+        (
+            'outbox',
+            'credential_grant_expiry',
+            'deployment_projection',
+            'user_operations'
+        )
+    ),
+    last_tenant_id uuid,
+    last_scan_at timestamptz,
+    last_advanced_at timestamptz,
+    last_rotation_completed_at timestamptz,
+    rotation_count bigint not null default 0 check (rotation_count >= 0),
+    row_version bigint not null default 0 check (row_version >= 0),
+    check ((last_tenant_id is null) = (last_advanced_at is null)),
+    check ((last_scan_at is null) = (row_version = 0)),
+    check ((last_rotation_completed_at is null) = (rotation_count = 0)),
+    check (last_advanced_at is null or last_advanced_at <= last_scan_at),
+    check
+    (
+        last_rotation_completed_at is null
+        or last_rotation_completed_at <= last_scan_at
+    )
+);
+
+insert into control.worker_tenant_scan_cursors (consumer)
+values
+    ('outbox'),
+    ('credential_grant_expiry'),
+    ('deployment_projection'),
+    ('user_operations');
+
+create table control.deployment_scan_cursors
+(
+    tenant_id uuid primary key references identity.tenants(id) on delete cascade,
+    last_deployment_id uuid,
+    last_scan_at timestamptz,
+    last_advanced_at timestamptz,
+    last_rotation_completed_at timestamptz,
+    rotation_count bigint not null default 0 check (rotation_count >= 0),
+    row_version bigint not null default 0 check (row_version >= 0),
+    check ((last_deployment_id is null) = (last_advanced_at is null)),
+    check ((last_scan_at is null) = (row_version = 0)),
+    check ((last_rotation_completed_at is null) = (rotation_count = 0)),
+    check (last_advanced_at is null or last_advanced_at <= last_scan_at),
+    check
+    (
+        last_rotation_completed_at is null
+        or last_rotation_completed_at <= last_scan_at
+    )
+);
+
+create function control.enforce_worker_tenant_scan_cursor_transition()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+    scan_now timestamptz := clock_timestamp();
+    expected_tenant_id uuid;
+    catalog_is_empty boolean;
+    completes_rotation boolean;
+begin
+    if tg_op <> 'UPDATE'
+        or session_user <> 'yo4x_worker'
+        or current_user <> 'yo4x_worker' then
+        raise exception using
+            errcode = '42501',
+            message = 'Worker tenant scan cursor mutation is not authorized.';
+    end if;
+
+    -- The worker can request only a cursor identifier. All monitoring and
+    -- rotation evidence is derived from the statement snapshot by this guard.
+    if new.consumer is distinct from old.consumer
+        or new.last_scan_at is distinct from old.last_scan_at
+        or new.last_advanced_at is distinct from old.last_advanced_at
+        or new.last_rotation_completed_at
+            is distinct from old.last_rotation_completed_at
+        or new.rotation_count is distinct from old.rotation_count
+        or new.row_version is distinct from old.row_version then
+        raise exception using
+            errcode = '22023',
+            message = 'Worker tenant scan progress is database-owned.';
+    end if;
+
+    select tenant.id
+    into expected_tenant_id
+    from identity.tenants as tenant
+    order by
+        case
+            when old.last_tenant_id is not null
+                and tenant.id <= old.last_tenant_id
+            then 1
+            else 0
+        end,
+        tenant.id
+    limit 1;
+    catalog_is_empty := expected_tenant_id is null;
+
+    if catalog_is_empty then
+        if new.last_tenant_id is distinct from old.last_tenant_id then
+            raise exception using
+                errcode = '22023',
+                message = 'An empty tenant catalog cannot advance its cursor.';
+        end if;
+
+        scan_now := greatest(
+            scan_now,
+            old.last_scan_at + interval '1 microsecond');
+        new.last_scan_at := scan_now;
+        new.last_rotation_completed_at := scan_now;
+        new.rotation_count := old.rotation_count + 1;
+        new.row_version := old.row_version + 1;
+        return new;
+    end if;
+
+    if new.last_tenant_id is distinct from expected_tenant_id then
+        raise exception using
+            errcode = '22023',
+            message = 'The tenant scan cursor did not select the exact next tenant.';
+    end if;
+
+    completes_rotation := old.last_tenant_id is not null
+        and expected_tenant_id <= old.last_tenant_id;
+    scan_now := greatest(
+        scan_now,
+        old.last_scan_at + interval '1 microsecond');
+    new.last_scan_at := scan_now;
+    new.last_advanced_at := scan_now;
+    if completes_rotation then
+        new.last_rotation_completed_at := scan_now;
+        new.rotation_count := old.rotation_count + 1;
+    end if;
+    new.row_version := old.row_version + 1;
+    return new;
+end
+$$;
+
+create trigger worker_tenant_scan_cursor_transition_guard
+before insert or update or delete on control.worker_tenant_scan_cursors
+for each row execute function control.enforce_worker_tenant_scan_cursor_transition();
+
+create function control.enforce_deployment_scan_cursor_transition()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+    scan_now timestamptz := clock_timestamp();
+    expected_deployment_id uuid;
+    catalog_is_empty boolean;
+    completes_rotation boolean;
+begin
+    if session_user <> 'yo4x_worker'
+        or current_user <> 'yo4x_worker'
+        or control.current_tenant_id() is null then
+        raise exception using
+            errcode = '42501',
+            message = 'Deployment scan cursor mutation is not authorized.';
+    end if;
+
+    if tg_op = 'INSERT' then
+        if new.tenant_id is distinct from control.current_tenant_id()
+            or new.last_deployment_id is not null
+            or new.last_scan_at is not null
+            or new.last_advanced_at is not null
+            or new.last_rotation_completed_at is not null
+            or new.rotation_count <> 0
+            or new.row_version <> 0 then
+            raise exception using
+                errcode = '22023',
+                message = 'Deployment scan cursor initialization is invalid.';
+        end if;
+
+        return new;
+    end if;
+
+    if tg_op <> 'UPDATE'
+        or old.tenant_id is distinct from control.current_tenant_id()
+        or new.tenant_id is distinct from old.tenant_id then
+        raise exception using
+            errcode = '42501',
+            message = 'Deployment scan cursor mutation is not authorized.';
+    end if;
+
+    if new.last_scan_at is distinct from old.last_scan_at
+        or new.last_advanced_at is distinct from old.last_advanced_at
+        or new.last_rotation_completed_at
+            is distinct from old.last_rotation_completed_at
+        or new.rotation_count is distinct from old.rotation_count
+        or new.row_version is distinct from old.row_version then
+        raise exception using
+            errcode = '22023',
+            message = 'Deployment scan progress is database-owned.';
+    end if;
+
+    select deployment.id
+    into expected_deployment_id
+    from operations.deployments as deployment
+    where deployment.tenant_id = old.tenant_id
+      and deployment.desired_state <> 'draft'
+    order by
+        case
+            when old.last_deployment_id is not null
+                and deployment.id <= old.last_deployment_id
+            then 1
+            else 0
+        end,
+        deployment.id
+    limit 1;
+    catalog_is_empty := expected_deployment_id is null;
+
+    if catalog_is_empty then
+        if new.last_deployment_id is distinct from old.last_deployment_id then
+            raise exception using
+                errcode = '22023',
+                message = 'An empty deployment catalog cannot advance its cursor.';
+        end if;
+
+        scan_now := greatest(
+            scan_now,
+            old.last_scan_at + interval '1 microsecond');
+        new.last_scan_at := scan_now;
+        new.last_rotation_completed_at := scan_now;
+        new.rotation_count := old.rotation_count + 1;
+        new.row_version := old.row_version + 1;
+        return new;
+    end if;
+
+    if new.last_deployment_id is distinct from expected_deployment_id then
+        raise exception using
+            errcode = '22023',
+            message = 'The deployment scan cursor did not select the exact next deployment.';
+    end if;
+
+    completes_rotation := old.last_deployment_id is not null
+        and expected_deployment_id <= old.last_deployment_id;
+    scan_now := greatest(
+        scan_now,
+        old.last_scan_at + interval '1 microsecond');
+    new.last_scan_at := scan_now;
+    new.last_advanced_at := scan_now;
+    if completes_rotation then
+        new.last_rotation_completed_at := scan_now;
+        new.rotation_count := old.rotation_count + 1;
+    end if;
+    new.row_version := old.row_version + 1;
+    return new;
+end
+$$;
+
+create trigger deployment_scan_cursor_transition_guard
+before insert or update on control.deployment_scan_cursors
+for each row execute function control.enforce_deployment_scan_cursor_transition();
+
 create table control.credential_ingestion_grants
 (
     id uuid primary key,
@@ -2320,6 +3917,7 @@ create table control.credential_ingestion_grants
     allowed_origin text not null check (allowed_origin ~ '^https://[^/[:space:]?#@]+$'),
     bearer_hash text not null check (bearer_hash ~ '^[0-9a-f]{64}$'),
     nonce_hash text not null check (nonce_hash ~ '^[0-9a-f]{64}$'),
+    proof_key_id text not null check (proof_key_id ~ '^[0-9a-f]{64}$'),
     state text not null default 'active'
         check (state in ('active', 'reserved', 'consumed', 'expired', 'revoked')),
     reservation_id uuid,
@@ -2380,9 +3978,10 @@ create table control.idempotency_records
     created_at timestamptz not null,
     completed_at timestamptz,
     expires_at timestamptz not null,
+    retired_at timestamptz,
     unique (tenant_id, id),
-    unique (tenant_id, actor_id, operation, idempotency_key),
     check (expires_at > created_at),
+    check (retired_at is null or retired_at >= expires_at),
     check ((state = 'completed') = (completed_at is not null)),
     check
     (
@@ -2399,6 +3998,12 @@ language plpgsql
 set search_path = ''
 as $$
 begin
+    if tg_op = 'DELETE' then
+        raise exception using
+            errcode = '55000',
+            message = 'control.idempotency_records history cannot be deleted';
+    end if;
+
     if
     (
         old.tenant_id, old.actor_id, old.operation, old.idempotency_key,
@@ -2411,6 +4016,21 @@ begin
         raise exception using
             errcode = '55000',
             message = 'control.idempotency_records request binding is immutable';
+    end if;
+
+    if old.retired_at is distinct from new.retired_at then
+        if old.retired_at is not null
+            or new.retired_at is null
+            or session_user not in ('yo4x_control_api', 'yo4x_admin_bff')
+            or old.tenant_id is distinct from control.current_tenant_id()
+            or old.actor_id is distinct from control.current_actor_id()
+            or old.expires_at > statement_timestamp()
+            or new.retired_at < old.expires_at
+            or new.retired_at > statement_timestamp() then
+            raise exception using
+                errcode = '55000',
+                message = 'control.idempotency_records can only retire once after database expiry';
+        end if;
     end if;
 
     if old.state <> 'processing' and
@@ -2432,7 +4052,7 @@ end
 $$;
 
 create trigger idempotency_records_immutable_binding
-before update on control.idempotency_records
+before update or delete on control.idempotency_records
 for each row execute function control.reject_idempotency_record_mutation();
 
 create table control.impact_previews
@@ -2613,6 +4233,14 @@ create table control.user_operations
         check (dispatch_target_binding_sha256 is null or dispatch_target_binding_sha256 ~ '^[0-9a-f]{64}$'),
     dispatch_policy_snapshot_sha256 text
         check (dispatch_policy_snapshot_sha256 is null or dispatch_policy_snapshot_sha256 ~ '^[0-9a-f]{64}$'),
+    result_capability_sha256 text
+        check (result_capability_sha256 is null or result_capability_sha256 ~ '^[0-9a-f]{64}$'),
+    result_capability_expires_at timestamptz,
+    dispatch_assignment_lease_expires_at timestamptz,
+    dispatch_execution_deadline timestamptz,
+    reconciliation_route_deployment_id uuid,
+    reconciliation_fence_generation bigint
+        check (reconciliation_fence_generation is null or reconciliation_fence_generation > 0),
     reconciliation_worker_assignment_id uuid,
     reconciliation_worker_instance_id uuid,
     dispatch_attempts integer not null default 0 check (dispatch_attempts >= 0),
@@ -2620,12 +4248,35 @@ create table control.user_operations
     claimed_by text check (claimed_by is null or length(btrim(claimed_by)) between 1 and 500),
     claim_token uuid,
     claim_expires_at timestamptz,
+    next_processing_at timestamptz,
+    processing_deferral_count bigint not null default 0
+        check (processing_deferral_count >= 0),
+    last_processing_error_code text
+        check
+        (
+            last_processing_error_code is null
+            or last_processing_error_code ~ '^[a-z][a-z0-9_]{0,99}$'
+        ),
     row_version bigint not null default 0 check (row_version >= 0),
     created_at timestamptz not null default transaction_timestamp(),
     updated_at timestamptz not null default transaction_timestamp(),
     completed_at timestamptz,
     unique (tenant_id, id),
+    unique (tenant_id, id, dispatch_message_id),
     unique (tenant_id, idempotency_record_id),
+    unique (tenant_id, id, dispatch_message_id, dispatch_target_binding_sha256),
+    unique
+        (tenant_id, id, dispatch_message_id, dispatch_target_binding_sha256,
+         result_capability_sha256),
+    unique (tenant_id, dispatch_message_id, dispatch_target_binding_sha256),
+    unique
+    (
+        tenant_id, dispatch_message_id, dispatch_target_binding_sha256,
+        submitted_resource_version, requested_target_state,
+        dispatch_fence_generation, dispatch_worker_assignment_id,
+        dispatch_worker_instance_id, dispatch_policy_snapshot_sha256,
+        dispatch_route_deployment_id
+    ),
     foreign key (tenant_id, user_id) references identity.user_identities(tenant_id, id),
     foreign key (tenant_id, session_family_id, user_id)
         references identity.user_session_families(tenant_id, id, user_id),
@@ -2639,9 +4290,13 @@ create table control.user_operations
         references operations.worker_assignments(tenant_id, id, deployment_id, fence_generation, worker_node_id),
     foreign key (tenant_id, reconciliation_worker_assignment_id)
         references operations.worker_assignments(tenant_id, id),
+    foreign key (tenant_id, reconciliation_route_deployment_id)
+        references operations.deployments(tenant_id, id),
     foreign key (reconciliation_worker_instance_id)
         references operations.worker_nodes(id),
-    foreign key (tenant_id, reconciliation_worker_assignment_id, dispatch_route_deployment_id, dispatch_fence_generation, reconciliation_worker_instance_id)
+    foreign key (tenant_id, reconciliation_worker_assignment_id,
+        reconciliation_route_deployment_id, reconciliation_fence_generation,
+        reconciliation_worker_instance_id)
         references operations.worker_assignments(tenant_id, id, deployment_id, fence_generation, worker_node_id),
     check
     (
@@ -2660,8 +4315,23 @@ create table control.user_operations
     check ((dispatch_message_id is null) = (dispatched_at is null)),
     check ((dispatch_message_id is null) = (dispatch_target_binding_sha256 is null)),
     check ((dispatch_message_id is null) = (dispatch_policy_snapshot_sha256 is null)),
+    check ((dispatch_message_id is null) = (result_capability_sha256 is null)),
+    check ((dispatch_message_id is null) = (result_capability_expires_at is null)),
+    check ((dispatch_message_id is null) = (dispatch_assignment_lease_expires_at is null)),
+    check ((dispatch_message_id is null) = (dispatch_execution_deadline is null)),
     check ((dispatch_worker_assignment_id is null) = (dispatch_worker_instance_id is null)),
-    check ((reconciliation_worker_assignment_id is null) = (reconciliation_worker_instance_id is null)),
+    check
+    (
+        (reconciliation_route_deployment_id is null
+            and reconciliation_fence_generation is null
+            and reconciliation_worker_assignment_id is null
+            and reconciliation_worker_instance_id is null)
+        or
+        (reconciliation_route_deployment_id is not null
+            and reconciliation_fence_generation is not null
+            and reconciliation_worker_assignment_id is not null
+            and reconciliation_worker_instance_id is not null)
+    ),
     check
     (
         (operation_type = 'broker_account.connection_test' and requested_target_state = 'active:ready')
@@ -2684,7 +4354,31 @@ create table control.user_operations
             and dispatch_worker_assignment_id is not null)
     ),
     check (target_type <> 'deployment' or dispatch_route_deployment_id is null or dispatch_route_deployment_id = target_id),
-    check (reconciliation_worker_assignment_id is null or state = 'succeeded'),
+    check
+    (
+        result_capability_expires_at is null
+        or
+        (
+            result_capability_expires_at > dispatched_at
+            and result_capability_expires_at <= dispatched_at + interval '24 hours'
+        )
+    ),
+    check
+    (
+        dispatch_execution_deadline is null
+        or
+        (
+            dispatch_assignment_lease_expires_at > dispatched_at
+            and dispatch_execution_deadline > dispatched_at
+            and dispatch_execution_deadline <= dispatch_assignment_lease_expires_at
+            and dispatch_execution_deadline <= result_capability_expires_at
+        )
+    ),
+    check
+    (
+        reconciliation_worker_assignment_id is null
+        or state in ('succeeded', 'failed', 'partial')
+    ),
     check
     (
         (claimed_by is null and claim_token is null and claim_expires_at is null)
@@ -2693,6 +4387,8 @@ create table control.user_operations
             and claim_token <> '00000000-0000-0000-0000-000000000000'::uuid
             and claim_expires_at is not null)
     ),
+    check (next_processing_at is null or next_processing_at >= created_at),
+    check (next_processing_at is not null or last_processing_error_code is null),
     check (completed_at is null or completed_at >= created_at),
     check (updated_at >= created_at)
 );
@@ -2703,14 +4399,31 @@ language plpgsql
 set search_path = ''
 as $$
 declare
-    old_terminal boolean := old.state in ('succeeded', 'failed', 'partial', 'cancelled', 'expired');
-    legal_transition boolean :=
+    old_terminal boolean;
+    legal_transition boolean;
+    expected_retry_delay interval;
+    expected_deferral_count bigint;
+begin
+    if tg_op = 'INSERT' then
+        if new.next_processing_at is not null
+            or new.processing_deferral_count <> 0
+            or new.last_processing_error_code is not null then
+            raise exception using
+                errcode = '55000',
+                message = 'User-operation processing schedule is database-owned.';
+        end if;
+        return new;
+    end if;
+
+    old_terminal := old.state in
+        ('succeeded', 'failed', 'partial', 'cancelled', 'expired');
+    legal_transition :=
         (old.state = 'accepted' and new.state = 'dispatching')
         or (old.state = 'dispatching' and new.state in ('dispatching', 'propagating', 'cancelled', 'failed', 'expired'))
         or (old.state = 'propagating' and new.state in ('propagating', 'reconciling', 'unknown', 'succeeded', 'failed', 'partial', 'cancelled', 'expired'))
         or (old.state = 'reconciling' and new.state in ('reconciling', 'unknown', 'succeeded', 'failed', 'partial', 'cancelled', 'expired'))
         or (old.state = 'unknown' and new.state in ('unknown', 'reconciling', 'succeeded', 'failed', 'partial', 'cancelled', 'expired'));
-begin
+
     if old_terminal then
         raise exception using
             errcode = '55000',
@@ -2751,6 +4464,9 @@ begin
         old.dispatch_route_deployment_id,
         old.dispatch_worker_assignment_id, old.dispatch_worker_instance_id,
         old.dispatch_target_binding_sha256, old.dispatch_policy_snapshot_sha256,
+        old.result_capability_sha256, old.result_capability_expires_at,
+        old.dispatch_assignment_lease_expires_at,
+        old.dispatch_execution_deadline,
         old.dispatched_at
     ) is distinct from
     (
@@ -2758,6 +4474,9 @@ begin
         new.dispatch_route_deployment_id,
         new.dispatch_worker_assignment_id, new.dispatch_worker_instance_id,
         new.dispatch_target_binding_sha256, new.dispatch_policy_snapshot_sha256,
+        new.result_capability_sha256, new.result_capability_expires_at,
+        new.dispatch_assignment_lease_expires_at,
+        new.dispatch_execution_deadline,
         new.dispatched_at
     ) then
         raise exception using
@@ -2767,16 +4486,112 @@ begin
 
     if old.reconciliation_worker_assignment_id is not null and
     (
+        old.reconciliation_route_deployment_id,
+        old.reconciliation_fence_generation,
         old.reconciliation_worker_assignment_id,
         old.reconciliation_worker_instance_id
     ) is distinct from
     (
+        new.reconciliation_route_deployment_id,
+        new.reconciliation_fence_generation,
         new.reconciliation_worker_assignment_id,
         new.reconciliation_worker_instance_id
     ) then
         raise exception using
             errcode = '55000',
             message = 'The user operation reconciliation binding is write-once.';
+    end if;
+
+    -- Callers cannot forge retry evidence. Acquiring a new claim clears the
+    -- due/error markers in this owner trigger, while the deferral capability
+    -- is the only path that may increment the durable counter and schedule a
+    -- new DB-clock retry.
+    if old.claim_token is distinct from new.claim_token
+        and new.claim_token is not null then
+        if session_user <> 'yo4x_worker'
+            or current_user <> 'yo4x_worker'
+            or control.current_tenant_id() is distinct from new.tenant_id
+            or
+            (
+                old.next_processing_at is not null
+                and old.next_processing_at > clock_timestamp()
+            )
+            or
+        (
+            new.next_processing_at,
+            new.processing_deferral_count,
+            new.last_processing_error_code
+        ) is distinct from
+        (
+            old.next_processing_at,
+            old.processing_deferral_count,
+            old.last_processing_error_code
+        ) then
+            raise exception using
+                errcode = '55000',
+                message = 'User-operation processing schedule cannot be supplied with a claim.';
+        end if;
+        new.next_processing_at := null;
+        new.last_processing_error_code := null;
+    elsif new.state in ('succeeded', 'failed', 'partial', 'cancelled', 'expired') then
+        if
+        (
+            new.next_processing_at,
+            new.processing_deferral_count,
+            new.last_processing_error_code
+        ) is distinct from
+        (
+            old.next_processing_at,
+            old.processing_deferral_count,
+            old.last_processing_error_code
+        ) then
+            raise exception using
+                errcode = '55000',
+                message = 'Terminal user-operation processing schedule is database-owned.';
+        end if;
+        new.next_processing_at := null;
+        new.last_processing_error_code := null;
+    elsif
+    (
+        new.next_processing_at,
+        new.processing_deferral_count,
+        new.last_processing_error_code
+    ) is distinct from
+    (
+        old.next_processing_at,
+        old.processing_deferral_count,
+        old.last_processing_error_code
+    ) then
+        expected_retry_delay := make_interval(
+            secs => least(
+                60,
+                power(2, least(old.processing_deferral_count, 6))::integer));
+        expected_deferral_count := case
+            when old.processing_deferral_count = 9223372036854775807::bigint
+                then old.processing_deferral_count
+            else old.processing_deferral_count + 1
+        end;
+        if session_user <> 'yo4x_worker'
+            or current_user <> 'yo4x_migrator'
+            or old.claim_token is null
+            or new.claimed_by is not null
+            or new.claim_token is not null
+            or new.claim_expires_at is not null
+            or new.state not in ('dispatching', 'propagating', 'reconciling', 'unknown')
+            or new.processing_deferral_count <> expected_deferral_count
+            or new.next_processing_at is null
+            or new.updated_at < statement_timestamp()
+            or new.updated_at > clock_timestamp()
+            or new.next_processing_at is distinct from new.updated_at + expected_retry_delay
+            or
+            (
+                new.last_processing_error_code is not null
+                and new.last_processing_error_code !~ '^[a-z][a-z0-9_]{0,99}$'
+            ) then
+            raise exception using
+                errcode = '55000',
+                message = 'User-operation processing deferral is invalid.';
+        end if;
     end if;
 
     if new.row_version <> old.row_version + 1
@@ -2794,8 +4609,1306 @@ end
 $$;
 
 create trigger user_operations_transition_guard
-before update on control.user_operations
+before insert or update on control.user_operations
 for each row execute function control.enforce_user_operation_transition();
+
+create function control.defer_user_operation(
+    p_operation_id uuid,
+    p_claim_token uuid,
+    p_expected_row_version bigint,
+    p_requested_open_state text,
+    p_processing_error_code text)
+returns table
+(
+    row_version bigint,
+    deferred_at timestamptz,
+    next_processing_at timestamptz,
+    processing_deferral_count bigint
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+    active_tenant_id uuid := control.current_tenant_id();
+begin
+    if session_user <> 'yo4x_worker'
+        or current_user <> 'yo4x_migrator'
+        or active_tenant_id is null then
+        raise exception using
+            errcode = '42501',
+            message = 'User-operation deferral requires exact worker tenant authority.';
+    end if;
+    if p_operation_id is null
+        or p_claim_token is null
+        or p_claim_token = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_expected_row_version is null
+        or p_expected_row_version < 0
+        or p_requested_open_state is null
+        or p_requested_open_state not in
+            ('dispatching', 'propagating', 'reconciling', 'unknown')
+        or
+        (
+            p_processing_error_code is not null
+            and p_processing_error_code !~ '^[a-z][a-z0-9_]{0,99}$'
+        ) then
+        raise exception using
+            errcode = '22023',
+            message = 'User-operation deferral evidence is invalid.';
+    end if;
+
+    return query
+    with authority_time as materialized
+    (
+        select clock_timestamp() as deferred_at
+    )
+    update control.user_operations as operation
+    set state = p_requested_open_state,
+        claimed_by = null,
+        claim_token = null,
+        claim_expires_at = null,
+        next_processing_at = authority_time.deferred_at
+            + make_interval(
+                secs => least(
+                    60,
+                    power(2, least(operation.processing_deferral_count, 6))::integer)),
+        processing_deferral_count = case
+            when operation.processing_deferral_count = 9223372036854775807::bigint
+                then operation.processing_deferral_count
+            else operation.processing_deferral_count + 1
+        end,
+        last_processing_error_code = p_processing_error_code,
+        row_version = operation.row_version + 1,
+        updated_at = authority_time.deferred_at
+    from authority_time
+    where operation.tenant_id = active_tenant_id
+      and operation.id = p_operation_id
+      and operation.claim_token = p_claim_token
+      and operation.row_version = p_expected_row_version
+      and operation.state in ('dispatching', 'propagating', 'reconciling', 'unknown')
+      and operation.updated_at <= authority_time.deferred_at
+    returning operation.row_version,
+        authority_time.deferred_at,
+        operation.next_processing_at,
+        operation.processing_deferral_count;
+end
+$$;
+
+revoke all on function control.defer_user_operation(uuid, uuid, bigint, text, text)
+    from public;
+
+-- DB-clock backlog observations make per-tenant starvation visible without
+-- trusting a worker-supplied timestamp or count. Runtime receives only the
+-- refresh capability and a global, metadata-only health projection.
+create table control.user_operation_backlog_observations
+(
+    tenant_id uuid primary key references identity.tenants(id) on delete cascade,
+    last_checked_at timestamptz,
+    oldest_open_created_at timestamptz,
+    refresh_count bigint not null default 0 check (refresh_count >= 0),
+    row_version bigint not null default 0 check (row_version >= 0),
+    check
+    (
+        (
+            refresh_count = 0
+            and row_version = 0
+            and last_checked_at is null
+            and oldest_open_created_at is null
+        )
+        or
+        (
+            refresh_count > 0
+            and row_version = refresh_count
+            and last_checked_at is not null
+            and
+            (
+                oldest_open_created_at is null
+                or oldest_open_created_at <= last_checked_at
+            )
+        )
+    )
+);
+
+create function control.enforce_user_operation_backlog_observation_transition()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+    active_tenant_id uuid := control.current_tenant_id();
+    expected_oldest_open timestamptz;
+begin
+    if session_user <> 'yo4x_worker'
+        or current_user <> 'yo4x_migrator'
+        or active_tenant_id is null
+        or new.tenant_id is distinct from active_tenant_id then
+        raise exception using
+            errcode = '42501',
+            message = 'User-operation backlog evidence is database-owned.';
+    end if;
+
+    if tg_op = 'INSERT' then
+        if new.last_checked_at is not null
+            or new.oldest_open_created_at is not null
+            or new.refresh_count <> 0
+            or new.row_version <> 0 then
+            raise exception using
+                errcode = '22023',
+                message = 'User-operation backlog placeholder is invalid.';
+        end if;
+        return new;
+    end if;
+
+    if tg_op <> 'UPDATE'
+        or new.tenant_id is distinct from old.tenant_id
+        or new.last_checked_at is null
+        or new.last_checked_at < statement_timestamp()
+        or new.last_checked_at > clock_timestamp()
+        or
+        (
+            old.last_checked_at is not null
+            and new.last_checked_at <= old.last_checked_at
+        )
+        or new.refresh_count <> old.refresh_count + 1
+        or new.row_version <> old.row_version + 1 then
+        raise exception using
+            errcode = '22023',
+            message = 'User-operation backlog refresh is not monotonic.';
+    end if;
+
+    select min(operation.created_at)
+    into expected_oldest_open
+    from control.user_operations as operation
+    where operation.tenant_id = active_tenant_id
+      and operation.state in
+          ('accepted', 'dispatching', 'propagating', 'reconciling', 'unknown');
+
+    if new.oldest_open_created_at is distinct from expected_oldest_open then
+        raise exception using
+            errcode = '22023',
+            message = 'User-operation backlog evidence does not match open work.';
+    end if;
+
+    return new;
+end
+$$;
+
+create trigger user_operation_backlog_observation_transition_guard
+before insert or update on control.user_operation_backlog_observations
+for each row execute function
+    control.enforce_user_operation_backlog_observation_transition();
+
+create function control.refresh_user_operation_backlog_observation()
+returns table
+(
+    tenant_id uuid,
+    last_checked_at timestamptz,
+    oldest_open_created_at timestamptz,
+    refresh_count bigint,
+    row_version bigint
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+    active_tenant_id uuid := control.current_tenant_id();
+    checked_at timestamptz;
+    oldest_open timestamptz;
+begin
+    if session_user <> 'yo4x_worker'
+        or current_user <> 'yo4x_migrator'
+        or active_tenant_id is null then
+        raise exception using
+            errcode = '42501',
+            message = 'User-operation backlog refresh requires exact worker tenant authority.';
+    end if;
+
+    -- Every user-operation mutation takes the same tenant U0 lock. Acquiring it
+    -- before the observation snapshot prevents an uncommitted older operation
+    -- from committing immediately after a falsely empty observation.
+    perform control.acquire_u0_authority_lock();
+
+    -- Seed a private zero-version row, then serialize all clocks/snapshots for
+    -- this tenant behind its row lock. A process that arrived earlier but was
+    -- delayed cannot compute an old observation and commit after a newer one.
+    insert into control.user_operation_backlog_observations (tenant_id)
+    values (active_tenant_id)
+    on conflict on constraint user_operation_backlog_observations_pkey do nothing;
+
+    perform 1
+    from control.user_operation_backlog_observations as observation
+    where observation.tenant_id = active_tenant_id
+    for update;
+
+    checked_at := clock_timestamp();
+
+    select min(operation.created_at)
+    into oldest_open
+    from control.user_operations as operation
+    where operation.tenant_id = active_tenant_id
+      and operation.state in
+          ('accepted', 'dispatching', 'propagating', 'reconciling', 'unknown');
+
+    return query
+    update control.user_operation_backlog_observations as observation
+    set last_checked_at = checked_at,
+        oldest_open_created_at = oldest_open,
+        refresh_count = observation.refresh_count + 1,
+        row_version = observation.row_version + 1
+    where observation.tenant_id = active_tenant_id
+    returning observation.tenant_id, observation.last_checked_at,
+        observation.oldest_open_created_at, observation.refresh_count,
+        observation.row_version;
+end
+$$;
+
+revoke all on function control.refresh_user_operation_backlog_observation()
+    from public;
+
+-- A reconciliation challenge never republishes the original mutation. It is
+-- a separately authorized, observation-only bearer bound to one current
+-- runtime assignment after the original result path has irreversibly closed.
+-- The raw bearer exists only in the delivery outbox; this table retains its
+-- digest and immutable routing evidence. Only an expired slot may be retired.
+create table control.user_operation_reconciliation_challenges
+(
+    id uuid primary key,
+    tenant_id uuid not null references identity.tenants(id),
+    operation_id uuid not null,
+    original_dispatch_message_id uuid not null,
+    challenge_message_id uuid not null,
+    audit_event_id uuid not null,
+    result_capability_sha256 text not null
+        check (result_capability_sha256 ~ '^[0-9a-f]{64}$'),
+    route_deployment_id uuid not null,
+    fence_generation bigint not null check (fence_generation > 0),
+    worker_assignment_id uuid not null,
+    worker_instance_id uuid not null,
+    issued_at timestamptz not null,
+    expires_at timestamptz not null,
+    retired_at timestamptz,
+    unique (tenant_id, id),
+    unique (tenant_id, challenge_message_id),
+    unique (tenant_id, audit_event_id),
+    unique
+    (
+        tenant_id, id, operation_id, original_dispatch_message_id,
+        result_capability_sha256, route_deployment_id, fence_generation,
+        worker_assignment_id, worker_instance_id
+    ),
+    foreign key (tenant_id, operation_id, original_dispatch_message_id)
+        references control.user_operations(tenant_id, id, dispatch_message_id),
+    foreign key
+        (tenant_id, worker_assignment_id, route_deployment_id,
+         fence_generation, worker_instance_id)
+        references operations.worker_assignments
+            (tenant_id, id, deployment_id, fence_generation, worker_node_id),
+    check (expires_at > issued_at),
+    check (expires_at <= issued_at + interval '24 hours'),
+    check (retired_at is null or retired_at >= expires_at)
+);
+
+create unique index user_operation_reconciliation_challenges_current_idx
+    on control.user_operation_reconciliation_challenges(tenant_id, operation_id)
+    where retired_at is null;
+
+create function control.guard_user_operation_reconciliation_challenge()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+    if tg_op = 'DELETE' then
+        raise exception using
+            errcode = '55000',
+            message = 'User-operation reconciliation challenges are immutable.';
+    end if;
+
+    if session_user <> 'yo4x_worker'
+        or current_user <> 'yo4x_migrator'
+        or old.retired_at is not null
+        or new.retired_at is null
+        or new.retired_at < old.expires_at
+        or new.retired_at > clock_timestamp()
+        or
+        (
+            old.id, old.tenant_id, old.operation_id,
+            old.original_dispatch_message_id, old.challenge_message_id,
+            old.audit_event_id,
+            old.result_capability_sha256, old.route_deployment_id,
+            old.fence_generation, old.worker_assignment_id,
+            old.worker_instance_id, old.issued_at, old.expires_at
+        ) is distinct from
+        (
+            new.id, new.tenant_id, new.operation_id,
+            new.original_dispatch_message_id, new.challenge_message_id,
+            new.audit_event_id,
+            new.result_capability_sha256, new.route_deployment_id,
+            new.fence_generation, new.worker_assignment_id,
+            new.worker_instance_id, new.issued_at, new.expires_at
+        ) then
+        raise exception using
+            errcode = '55000',
+            message = 'User-operation reconciliation challenge evidence is immutable.';
+    end if;
+
+    return new;
+end
+$$;
+
+create trigger user_operation_reconciliation_challenges_guard
+before update or delete on control.user_operation_reconciliation_challenges
+for each row execute function control.guard_user_operation_reconciliation_challenge();
+
+create table control.user_operation_reconciliation_challenge_consumptions
+(
+    tenant_id uuid not null references identity.tenants(id),
+    challenge_id uuid not null,
+    target_type text not null check (target_type in ('broker_account', 'deployment')),
+    result_record_id uuid not null,
+    result_id uuid not null,
+    request_sha256 text not null check (request_sha256 ~ '^[0-9a-f]{64}$'),
+    accepted_at timestamptz not null,
+    primary key (tenant_id, challenge_id),
+    unique (tenant_id, result_record_id),
+    unique (tenant_id, result_id),
+    foreign key (tenant_id, challenge_id)
+        references control.user_operation_reconciliation_challenges(tenant_id, id)
+);
+
+create function control.reject_user_operation_reconciliation_challenge_consumption_mutation()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+    raise exception using
+        errcode = '55000',
+        message = 'User-operation reconciliation challenge consumption evidence is immutable.';
+end
+$$;
+
+create trigger user_operation_reconciliation_challenge_consumptions_immutable
+before update or delete on control.user_operation_reconciliation_challenge_consumptions
+for each row execute function
+    control.reject_user_operation_reconciliation_challenge_consumption_mutation();
+
+create function control.issue_user_operation_reconciliation_challenge(
+    p_challenge_id uuid,
+    p_challenge_message_id uuid,
+    p_audit_event_id uuid,
+    p_operation_id uuid,
+    p_raw_result_capability text,
+    p_requested_lifetime interval)
+returns table
+(
+    issue_status text,
+    challenge_id uuid,
+    challenge_message_id uuid,
+    issued_at timestamptz,
+    expires_at timestamptz,
+    route_deployment_id uuid,
+    fence_generation bigint,
+    worker_assignment_id uuid,
+    worker_instance_id uuid
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    active_tenant_id uuid := control.current_tenant_id();
+    authority_now timestamptz;
+    capability_sha256 text;
+    locked_operation record;
+    original_assignment record;
+    selected_assignment record;
+    existing_challenge record;
+    current_challenge record;
+    selected_expiry timestamptz;
+    payload_canonical text;
+    payload_document jsonb;
+    payload_sha256 text;
+    audit_payload jsonb;
+    audit_payload_sha256 text;
+    original_outbox_state text;
+begin
+    if session_user <> 'yo4x_worker'
+        or current_user <> 'yo4x_migrator'
+        or active_tenant_id is null then
+        raise exception using
+            errcode = '42501',
+            message = 'Reconciliation challenge issuance requires exact worker tenant authority.';
+    end if;
+
+    if p_challenge_id is null
+        or p_challenge_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_challenge_message_id is null
+        or p_challenge_message_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_audit_event_id is null
+        or p_audit_event_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_challenge_id in (p_challenge_message_id, p_audit_event_id)
+        or p_challenge_message_id = p_audit_event_id
+        or p_operation_id is null
+        or p_operation_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_raw_result_capability is null
+        or p_raw_result_capability !~ '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
+        or p_requested_lifetime is null
+        or p_requested_lifetime <= interval '0 seconds'
+        or p_requested_lifetime > interval '24 hours' then
+        raise exception using
+            errcode = '22023',
+            message = 'Reconciliation challenge evidence is invalid.';
+    end if;
+
+    perform control.acquire_u0_authority_lock();
+    authority_now := clock_timestamp();
+    capability_sha256 := encode(
+        sha256(convert_to(p_raw_result_capability, 'UTF8')),
+        'hex');
+
+    select challenge.*
+    into existing_challenge
+    from control.user_operation_reconciliation_challenges as challenge
+    where challenge.tenant_id = active_tenant_id
+       and (challenge.id = p_challenge_id
+        or challenge.challenge_message_id = p_challenge_message_id
+        or challenge.audit_event_id = p_audit_event_id)
+    order by (challenge.id = p_challenge_id) desc, challenge.id
+    limit 1;
+
+    if existing_challenge.id is not null then
+        if existing_challenge.id = p_challenge_id
+            and existing_challenge.challenge_message_id = p_challenge_message_id
+            and existing_challenge.audit_event_id = p_audit_event_id
+            and existing_challenge.operation_id = p_operation_id
+            and existing_challenge.result_capability_sha256 = capability_sha256 then
+            issue_status := 'duplicate';
+            challenge_id := existing_challenge.id;
+            challenge_message_id := existing_challenge.challenge_message_id;
+            issued_at := existing_challenge.issued_at;
+            expires_at := existing_challenge.expires_at;
+            route_deployment_id := existing_challenge.route_deployment_id;
+            fence_generation := existing_challenge.fence_generation;
+            worker_assignment_id := existing_challenge.worker_assignment_id;
+            worker_instance_id := existing_challenge.worker_instance_id;
+            return next;
+            return;
+        end if;
+
+        raise exception using
+            errcode = '23505',
+            message = 'Reconciliation challenge identity conflicts with immutable evidence.';
+    end if;
+
+    select operation.*
+    into locked_operation
+    from control.user_operations as operation
+    where operation.tenant_id = active_tenant_id
+      and operation.id = p_operation_id
+    for update;
+
+    if locked_operation.id is null
+        or locked_operation.state not in ('propagating', 'reconciling', 'unknown')
+        or locked_operation.dispatch_message_id is null
+        or locked_operation.result_capability_expires_at is null
+        or locked_operation.dispatch_assignment_lease_expires_at is null
+        or locked_operation.dispatch_execution_deadline is null
+        or locked_operation.dispatch_route_deployment_id is null
+        or locked_operation.dispatch_fence_generation is null
+        or locked_operation.dispatch_worker_assignment_id is null
+        or locked_operation.dispatch_worker_instance_id is null then
+        return;
+    end if;
+
+    if capability_sha256 = locked_operation.result_capability_sha256 then
+        raise exception using
+            errcode = '22023',
+            message = 'A reconciliation challenge must use an independent result capability.';
+    end if;
+
+    if exists
+    (
+        select 1
+        from operations.user_operation_results as result
+        where result.tenant_id = active_tenant_id
+          and result.operation_id = p_operation_id
+          and result.dispatch_message_id = locked_operation.dispatch_message_id
+    ) or exists
+    (
+        select 1
+        from operations.deployment_reconciliations as reconciliation
+        where reconciliation.tenant_id = active_tenant_id
+          and reconciliation.operation_id = p_operation_id
+          and reconciliation.dispatch_message_id = locked_operation.dispatch_message_id
+    ) then
+        return;
+    end if;
+
+    select assignment.state, assignment.lease_expires_at,
+        assignment.revoked_at
+    into original_assignment
+    from operations.worker_assignments as assignment
+    where assignment.tenant_id = active_tenant_id
+      and assignment.id = locked_operation.dispatch_worker_assignment_id
+      and assignment.deployment_id = locked_operation.dispatch_route_deployment_id
+      and assignment.fence_generation = locked_operation.dispatch_fence_generation
+      and assignment.worker_node_id = locked_operation.dispatch_worker_instance_id;
+
+    if authority_now < locked_operation.dispatch_execution_deadline
+        and original_assignment.state in
+            ('active', 'reconciliation_only', 'revoking', 'revoked')
+        and authority_now < locked_operation.dispatch_assignment_lease_expires_at
+        and
+        (
+            original_assignment.revoked_at is null
+            or authority_now < original_assignment.revoked_at
+        ) then
+        return;
+    end if;
+
+    select challenge.*
+    into current_challenge
+    from control.user_operation_reconciliation_challenges as challenge
+    where challenge.tenant_id = active_tenant_id
+      and challenge.operation_id = p_operation_id
+      and challenge.retired_at is null
+    for update;
+
+    if current_challenge.id is not null then
+        if current_challenge.expires_at > authority_now then
+            issue_status := 'outstanding';
+            challenge_id := current_challenge.id;
+            challenge_message_id := current_challenge.challenge_message_id;
+            issued_at := current_challenge.issued_at;
+            expires_at := current_challenge.expires_at;
+            route_deployment_id := current_challenge.route_deployment_id;
+            fence_generation := current_challenge.fence_generation;
+            worker_assignment_id := current_challenge.worker_assignment_id;
+            worker_instance_id := current_challenge.worker_instance_id;
+            return next;
+            return;
+        end if;
+
+        update control.user_operation_reconciliation_challenges
+        set retired_at = authority_now
+        where tenant_id = active_tenant_id
+          and id = current_challenge.id;
+    end if;
+
+    select assignment.id, assignment.worker_node_id,
+        assignment.deployment_id, assignment.fence_generation,
+        assignment.lease_expires_at
+    into selected_assignment
+    from operations.deployments as deployment
+    join operations.worker_assignments as assignment
+      on assignment.tenant_id = deployment.tenant_id
+     and assignment.deployment_id = deployment.id
+     and assignment.fence_generation = deployment.fence_generation
+    where deployment.tenant_id = active_tenant_id
+      and deployment.id = locked_operation.dispatch_route_deployment_id
+      and assignment.state in ('active', 'reconciliation_only')
+      and assignment.revoked_at is null
+      and assignment.lease_expires_at > authority_now
+    order by assignment.lease_expires_at desc, assignment.id
+    limit 1;
+
+    if selected_assignment.id is null then
+        return;
+    end if;
+
+    selected_expiry := least(
+        authority_now + p_requested_lifetime,
+        selected_assignment.lease_expires_at);
+    if selected_expiry <= authority_now then
+        return;
+    end if;
+
+    payload_canonical := '{"challengeId":"' || p_challenge_id::text
+        || '","challengeMessageId":"' || p_challenge_message_id::text
+        || '","contractVersion":2,"dispatchPolicySnapshotSha256":"'
+        || locked_operation.dispatch_policy_snapshot_sha256
+        || '","dispatchTargetBindingSha256":"'
+        || locked_operation.dispatch_target_binding_sha256
+        || '","expiresAtUtc":"'
+        || to_char(selected_expiry at time zone 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+        || '","fenceGeneration":' || selected_assignment.fence_generation::text
+        || ',"issuedAtUtc":"'
+        || to_char(authority_now at time zone 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+        || '","operationId":"' || locked_operation.id::text
+        || '","operationType":"' || locked_operation.operation_type
+        || '","originalDispatchMessageId":"'
+        || locked_operation.dispatch_message_id::text
+        || '","reconciliationOnly":true,"requestedTargetState":"'
+        || locked_operation.requested_target_state
+        || '","resultCapability":"' || p_raw_result_capability
+        || '","routeDeploymentId":"' || selected_assignment.deployment_id::text
+        || '","submittedResourceVersion":'
+        || locked_operation.submitted_resource_version::text
+        || ',"targetId":"' || locked_operation.target_id::text
+        || '","targetType":"' || locked_operation.target_type
+        || '","tenantId":"' || active_tenant_id::text
+        || '","workerAssignmentId":"' || selected_assignment.id::text
+        || '","workerInstanceId":"' || selected_assignment.worker_node_id::text
+        || '"}';
+    payload_document := payload_canonical::jsonb;
+    payload_sha256 := encode(
+        sha256(convert_to(payload_canonical, 'UTF8')),
+        'hex');
+
+    audit_payload := jsonb_build_object(
+        'challengeId', p_challenge_id,
+        'challengeMessageId', p_challenge_message_id,
+        'expiresAtUtc', selected_expiry,
+        'fenceGeneration', selected_assignment.fence_generation,
+        'operationId', p_operation_id,
+        'originalDispatchMessageId', locked_operation.dispatch_message_id,
+        'reconciliationOnly', true,
+        'routeDeploymentId', selected_assignment.deployment_id,
+        'workerAssignmentId', selected_assignment.id,
+        'workerInstanceId', selected_assignment.worker_node_id);
+    audit_payload_sha256 := encode(
+        sha256(convert_to(audit_payload::text, 'UTF8')),
+        'hex');
+
+    -- A pending original delivery has not begun broker invocation and can be
+    -- retired once its result authority or assignment observation window is
+    -- closed. A processing delivery is intentionally left untouched: it is
+    -- ambiguous and must never be relabelled as not sent.
+    update messaging.outbox_messages
+    set state = 'dead_letter',
+        last_error = 'original_result_authority_closed_reconciliation_only'
+    where tenant_id = active_tenant_id
+      and id = locked_operation.dispatch_message_id
+      and aggregate_type = 'user_operation'
+      and aggregate_id = locked_operation.id::text
+      and causation_id = locked_operation.id
+      and correlation_id = locked_operation.correlation_id
+      and message_type =
+        'yo4x.' || replace(locked_operation.operation_type, '_', '-') || '.requested.v3'
+      and state = 'pending'
+    returning state into original_outbox_state;
+
+    if original_outbox_state is null then
+        select outbox.state
+        into original_outbox_state
+        from messaging.outbox_messages as outbox
+        where outbox.tenant_id = active_tenant_id
+          and outbox.id = locked_operation.dispatch_message_id
+          and outbox.aggregate_type = 'user_operation'
+          and outbox.aggregate_id = locked_operation.id::text
+          and outbox.causation_id = locked_operation.id
+          and outbox.correlation_id = locked_operation.correlation_id
+          and outbox.message_type =
+            'yo4x.' || replace(locked_operation.operation_type, '_', '-') || '.requested.v3'
+        for update;
+
+        if original_outbox_state = 'processing' then
+            return;
+        end if;
+
+        if original_outbox_state not in ('published', 'dead_letter') then
+            raise exception using
+                errcode = '55000',
+                message = 'The original dispatch delivery state cannot be reconciled safely.';
+        end if;
+    end if;
+
+    insert into audit.audit_events
+    (
+        id, tenant_id, actor_id, category, action, target_type, target_id,
+        outcome, reason, correlation_id, causation_id, payload,
+        payload_sha256, assurance, occurred_at
+    )
+    values
+    (
+        p_audit_event_id, active_tenant_id, control.current_actor_id(),
+        'operations', 'user_operation.reconciliation_challenge_issued',
+        'user_operation', p_operation_id::text, 'accepted',
+        'original_result_authority_closed', control.current_correlation_id(),
+        locked_operation.dispatch_message_id, audit_payload,
+        audit_payload_sha256, 'workload', authority_now
+    );
+
+    insert into messaging.outbox_messages
+    (
+        id, tenant_id, message_type, aggregate_type, aggregate_id,
+        payload, payload_sha256, correlation_id, causation_id,
+        occurred_at, available_at, state, attempts
+    )
+    values
+    (
+        p_challenge_message_id, active_tenant_id,
+        'yo4x.user-operation.reconciliation-requested.v2',
+        'user_operation_reconciliation', p_operation_id::text,
+        payload_document, payload_sha256, locked_operation.correlation_id,
+        locked_operation.dispatch_message_id,
+        authority_now, authority_now, 'pending', 0
+    );
+
+    insert into control.user_operation_reconciliation_challenges
+    (
+        id, tenant_id, operation_id, original_dispatch_message_id,
+        challenge_message_id, audit_event_id, result_capability_sha256,
+        route_deployment_id, fence_generation,
+        worker_assignment_id, worker_instance_id, issued_at, expires_at
+    )
+    values
+    (
+        p_challenge_id, active_tenant_id, p_operation_id,
+        locked_operation.dispatch_message_id, p_challenge_message_id,
+        p_audit_event_id,
+        capability_sha256, selected_assignment.deployment_id,
+        selected_assignment.fence_generation, selected_assignment.id,
+        selected_assignment.worker_node_id, authority_now, selected_expiry
+    );
+
+    issue_status := 'issued';
+    challenge_id := p_challenge_id;
+    challenge_message_id := p_challenge_message_id;
+    issued_at := authority_now;
+    expires_at := selected_expiry;
+    route_deployment_id := selected_assignment.deployment_id;
+    fence_generation := selected_assignment.fence_generation;
+    worker_assignment_id := selected_assignment.id;
+    worker_instance_id := selected_assignment.worker_node_id;
+    return next;
+end
+$$;
+
+revoke all on function control.issue_user_operation_reconciliation_challenge(
+    uuid, uuid, uuid, uuid, text, interval)
+    from public;
+
+alter table operations.deployment_reconciliations
+    add constraint deployment_reconciliations_reconciliation_challenge_fk
+    foreign key (tenant_id, reconciliation_challenge_id)
+    references control.user_operation_reconciliation_challenges(tenant_id, id);
+
+-- Deployment-operation proof is accepted only through this execute-only
+-- possession boundary. The raw result capability is never stored. Exact
+-- result-id and request replays remain idempotent after capability expiry;
+-- conflicting reuse and every incomplete or unbound proof fail closed.
+create function control.record_deployment_user_operation_result(
+    p_reconciliation_id uuid,
+    p_result_id uuid,
+    p_operation_id uuid,
+    p_dispatch_message_id uuid,
+    p_raw_result_capability text,
+    p_deployment_id uuid,
+    p_submitted_resource_version bigint,
+    p_requested_target_state text,
+    p_policy_snapshot_sha256 text,
+    p_dispatch_target_binding_sha256 text,
+    p_outcome text,
+    p_pre_invocation_not_sent_proven boolean,
+    p_gateway_invoked boolean,
+    p_observed_state text,
+    p_observed_digest text,
+    p_runtime_evidence_sha256 text,
+    p_broker_confirmed boolean,
+    p_broker_digest text,
+    p_broker_execution_state text,
+    p_broker_position_state text,
+    p_error_code text,
+    p_request_sha256 text,
+    p_observed_at timestamptz)
+returns table
+(
+    acceptance_status text,
+    reconciliation_id uuid,
+    received_at timestamptz
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    active_tenant_id uuid := control.current_tenant_id();
+    active_actor_id uuid := control.current_actor_id();
+    authority_now timestamptz;
+    computed_capability_sha256 text;
+    persisted_state text;
+    existing_result record;
+    bound_operation record;
+    matched_challenge record;
+    using_challenge boolean := false;
+begin
+    if session_user <> 'yo4x_runtime_evidence'
+        or current_user <> 'yo4x_migrator'
+        or active_tenant_id is null
+        or active_actor_id is null then
+        raise exception using
+            errcode = '42501',
+            message = 'Deployment result recording requires exact runtime-evidence authority.';
+    end if;
+
+    if p_reconciliation_id is null
+        or p_reconciliation_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_result_id is null
+        or p_result_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_operation_id is null
+        or p_operation_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_dispatch_message_id is null
+        or p_dispatch_message_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_raw_result_capability is null
+        or p_raw_result_capability !~ '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
+        or p_deployment_id is null
+        or p_deployment_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_submitted_resource_version is null
+        or p_submitted_resource_version < 0
+        or p_requested_target_state is null
+        or p_requested_target_state not in ('running', 'close_only', 'stopped')
+        or p_policy_snapshot_sha256 is null
+        or p_policy_snapshot_sha256 !~ '^[0-9a-f]{64}$'
+        or p_dispatch_target_binding_sha256 is null
+        or p_dispatch_target_binding_sha256 !~ '^[0-9a-f]{64}$'
+        or p_outcome is null
+        or p_outcome not in ('succeeded', 'diverged')
+        or p_pre_invocation_not_sent_proven is null
+        or p_gateway_invoked is null
+        or p_pre_invocation_not_sent_proven
+        or not p_gateway_invoked
+        or
+        (
+            p_observed_state is not null
+            and p_observed_state not in
+                ('running', 'close_only', 'stopped', 'faulted', 'unknown')
+        )
+        or
+        (
+            p_observed_digest is not null
+            and p_observed_digest !~ '^[0-9a-f]{64}$'
+        )
+        or (p_observed_state is null) <> (p_observed_digest is null)
+        or p_runtime_evidence_sha256 is null
+        or p_runtime_evidence_sha256 !~ '^[0-9a-f]{64}$'
+        or p_broker_confirmed is null
+        or
+        (
+            p_broker_digest is not null
+            and p_broker_digest !~ '^[0-9a-f]{64}$'
+        )
+        or
+        (
+            p_broker_execution_state is not null
+            and p_broker_execution_state not in
+                ('running', 'close_only', 'stopped', 'unknown')
+        )
+        or
+        (
+            p_broker_position_state is not null
+            and p_broker_position_state not in ('open', 'flat', 'unknown')
+        )
+        or
+        (
+            p_broker_confirmed
+            and
+            (
+                p_broker_digest is null
+                or p_broker_execution_state is null
+                or p_broker_position_state is null
+            )
+        )
+        or
+        (
+            not p_broker_confirmed
+            and
+            (
+                p_broker_digest is not null
+                or p_broker_execution_state is not null
+                or p_broker_position_state is not null
+            )
+        )
+        or
+        (
+            p_error_code is not null
+            and
+            (
+                p_error_code <> btrim(p_error_code)
+                or length(p_error_code) not between 1 and 200
+            )
+        )
+        or p_request_sha256 is null
+        or p_request_sha256 !~ '^[0-9a-f]{64}$'
+        or p_observed_at is null then
+        raise exception using
+            errcode = '22023',
+            message = 'Deployment result evidence is invalid.';
+    end if;
+
+    if not coalesce(
+        (p_outcome = 'succeeded'
+            and p_error_code is null
+            and not p_pre_invocation_not_sent_proven
+            and p_gateway_invoked
+            and p_broker_confirmed
+            and p_observed_state = p_requested_target_state
+            and p_observed_digest = p_dispatch_target_binding_sha256
+            and p_broker_execution_state = p_requested_target_state
+            and
+            (
+                p_requested_target_state <> 'stopped'
+                or p_broker_position_state = 'flat'
+            ))
+        or
+        (p_outcome = 'diverged'
+            and p_error_code is not null
+            and not p_pre_invocation_not_sent_proven
+            and p_gateway_invoked
+            and p_broker_confirmed
+            and p_observed_state is not null
+            and p_observed_digest is not null
+            and
+            (
+                p_observed_state <> p_requested_target_state
+                or p_observed_digest <> p_dispatch_target_binding_sha256
+                or p_broker_execution_state <> p_requested_target_state
+                or
+                (
+                    p_requested_target_state = 'stopped'
+                    and p_broker_position_state <> 'flat'
+                )
+            )),
+        false) then
+        raise exception using
+            errcode = '22023',
+            message = 'Deployment result evidence is not conclusive.';
+    end if;
+
+    perform control.acquire_u0_authority_lock();
+    authority_now := clock_timestamp();
+    computed_capability_sha256 := encode(
+        sha256(convert_to(p_raw_result_capability, 'UTF8')),
+        'hex');
+    persisted_state := case p_outcome
+        when 'succeeded' then 'reconciled'
+        when 'diverged' then 'diverged'
+    end;
+
+    select reconciliation.id, reconciliation.result_id,
+        reconciliation.operation_id, reconciliation.dispatch_message_id,
+        reconciliation.deployment_id,
+        reconciliation.submitted_resource_version,
+        reconciliation.requested_target_state,
+        reconciliation.policy_snapshot_sha256,
+        reconciliation.dispatch_target_binding_sha256,
+        reconciliation.result_capability_sha256,
+        reconciliation.reconciliation_challenge_id,
+        challenge.result_capability_sha256 as challenge_capability_sha256,
+        reconciliation.request_sha256, reconciliation.state,
+        reconciliation.observed_state, reconciliation.observed_digest,
+        reconciliation.runtime_evidence_sha256,
+        reconciliation.pre_invocation_not_sent_proven,
+        reconciliation.gateway_invoked,
+        reconciliation.broker_confirmed, reconciliation.broker_digest,
+        reconciliation.broker_execution_state,
+        reconciliation.broker_position_state, reconciliation.error_code,
+        reconciliation.observed_at,
+        reconciliation.received_at as persisted_received_at,
+        coalesce(challenge_assignment.supervisor_identity,
+            assignment.supervisor_identity) as supervisor_identity
+    into existing_result
+    from operations.deployment_reconciliations as reconciliation
+    join operations.worker_assignments as assignment
+      on assignment.tenant_id = reconciliation.tenant_id
+     and assignment.id = reconciliation.worker_assignment_id
+     and assignment.deployment_id = reconciliation.deployment_id
+     and assignment.fence_generation = reconciliation.generation
+     and assignment.worker_node_id = reconciliation.worker_instance_id
+    left join control.user_operation_reconciliation_challenges as challenge
+      on challenge.tenant_id = reconciliation.tenant_id
+     and challenge.id = reconciliation.reconciliation_challenge_id
+    left join operations.worker_assignments as challenge_assignment
+      on challenge_assignment.tenant_id = challenge.tenant_id
+     and challenge_assignment.id = challenge.worker_assignment_id
+     and challenge_assignment.deployment_id = challenge.route_deployment_id
+     and challenge_assignment.fence_generation = challenge.fence_generation
+     and challenge_assignment.worker_node_id = challenge.worker_instance_id
+    where reconciliation.tenant_id = active_tenant_id
+      and
+      (
+          reconciliation.result_id = p_result_id
+          or
+          (
+              reconciliation.operation_id = p_operation_id
+              and reconciliation.dispatch_message_id = p_dispatch_message_id
+          )
+      )
+    order by (reconciliation.result_id = p_result_id) desc, reconciliation.id
+    limit 1;
+
+    if existing_result.id is not null then
+        if existing_result.id = p_reconciliation_id
+            and existing_result.result_id = p_result_id
+            and existing_result.operation_id = p_operation_id
+            and existing_result.dispatch_message_id = p_dispatch_message_id
+            and existing_result.deployment_id = p_deployment_id
+            and existing_result.submitted_resource_version
+                = p_submitted_resource_version
+            and existing_result.requested_target_state
+                = p_requested_target_state
+            and existing_result.policy_snapshot_sha256
+                = p_policy_snapshot_sha256
+            and existing_result.dispatch_target_binding_sha256
+                = p_dispatch_target_binding_sha256
+            and
+            (
+                (existing_result.reconciliation_challenge_id is null
+                    and existing_result.result_capability_sha256
+                        = computed_capability_sha256)
+                or
+                (existing_result.reconciliation_challenge_id is not null
+                    and existing_result.challenge_capability_sha256
+                        = computed_capability_sha256)
+            )
+            and existing_result.request_sha256 = p_request_sha256
+            and existing_result.state = persisted_state
+            and existing_result.observed_state
+                is not distinct from p_observed_state
+            and existing_result.observed_digest
+                is not distinct from p_observed_digest
+            and existing_result.runtime_evidence_sha256
+                = p_runtime_evidence_sha256
+            and existing_result.pre_invocation_not_sent_proven
+                = p_pre_invocation_not_sent_proven
+            and existing_result.gateway_invoked = p_gateway_invoked
+            and existing_result.broker_confirmed = p_broker_confirmed
+            and existing_result.broker_digest
+                is not distinct from p_broker_digest
+            and existing_result.broker_execution_state
+                is not distinct from p_broker_execution_state
+            and existing_result.broker_position_state
+                is not distinct from p_broker_position_state
+            and existing_result.error_code is not distinct from p_error_code
+            and existing_result.observed_at = p_observed_at
+            and existing_result.supervisor_identity = active_actor_id::text then
+            acceptance_status := 'duplicate';
+            reconciliation_id := existing_result.id;
+            received_at := existing_result.persisted_received_at;
+            return next;
+            return;
+        end if;
+
+        raise exception using
+            errcode = '23505',
+            message = 'Deployment result evidence conflicts with an immutable accepted result.';
+    end if;
+
+    select operation.operation_type, operation.state,
+        operation.target_id as deployment_id,
+        operation.submitted_resource_version,
+        operation.requested_target_state,
+        operation.dispatch_policy_snapshot_sha256,
+        operation.dispatch_target_binding_sha256,
+        operation.result_capability_sha256,
+        operation.result_capability_expires_at,
+        operation.dispatch_assignment_lease_expires_at,
+        operation.dispatch_execution_deadline,
+        operation.dispatched_at,
+        operation.dispatch_route_deployment_id,
+        operation.dispatch_fence_generation,
+        operation.dispatch_worker_assignment_id,
+        operation.dispatch_worker_instance_id,
+        assignment.supervisor_identity,
+        assignment.state as assignment_state,
+        assignment.lease_expires_at as assignment_lease_expires_at,
+        assignment.revoked_at as assignment_revoked_at
+    into bound_operation
+    from control.user_operations as operation
+    join messaging.outbox_messages as outbox
+      on outbox.tenant_id = operation.tenant_id
+     and outbox.id = operation.dispatch_message_id
+     and outbox.aggregate_type = 'user_operation'
+     and outbox.aggregate_id = operation.id::text
+     and outbox.causation_id = operation.id
+     and outbox.correlation_id = operation.correlation_id
+     and outbox.message_type =
+        'yo4x.' || replace(operation.operation_type, '_', '-') || '.requested.v3'
+    join operations.worker_assignments as assignment
+      on assignment.tenant_id = operation.tenant_id
+     and assignment.id = operation.dispatch_worker_assignment_id
+     and assignment.deployment_id = operation.dispatch_route_deployment_id
+     and assignment.fence_generation = operation.dispatch_fence_generation
+     and assignment.worker_node_id = operation.dispatch_worker_instance_id
+    where operation.tenant_id = active_tenant_id
+      and operation.id = p_operation_id
+      and operation.dispatch_message_id = p_dispatch_message_id
+      and operation.target_type = 'deployment'
+      and operation.target_id = p_deployment_id
+      and operation.dispatch_route_deployment_id = p_deployment_id
+    for update of operation;
+
+    if bound_operation.operation_type is null
+        or bound_operation.operation_type not in
+            ('deployment.start', 'deployment.close_only',
+             'deployment.stop_after_flat')
+        or bound_operation.state not in ('propagating', 'reconciling', 'unknown')
+        or bound_operation.submitted_resource_version
+            is distinct from p_submitted_resource_version
+        or bound_operation.requested_target_state
+            is distinct from p_requested_target_state
+        or bound_operation.dispatch_policy_snapshot_sha256
+            is distinct from p_policy_snapshot_sha256
+        or bound_operation.dispatch_target_binding_sha256
+            is distinct from p_dispatch_target_binding_sha256
+        or bound_operation.dispatch_assignment_lease_expires_at is null
+        or bound_operation.dispatch_execution_deadline is null
+        or p_observed_at > authority_now + interval '5 minutes' then
+        raise exception using
+            errcode = '42501',
+            message = 'Deployment result evidence does not match an active frozen dispatch capability.';
+    end if;
+
+    select challenge.id, challenge.issued_at, challenge.expires_at,
+        challenge.route_deployment_id, challenge.fence_generation,
+        challenge.worker_assignment_id, challenge.worker_instance_id,
+        assignment.supervisor_identity,
+        assignment.state as assignment_state,
+        assignment.lease_expires_at as assignment_lease_expires_at,
+        assignment.revoked_at as assignment_revoked_at
+    into matched_challenge
+    from control.user_operation_reconciliation_challenges as challenge
+    join operations.worker_assignments as assignment
+      on assignment.tenant_id = challenge.tenant_id
+     and assignment.id = challenge.worker_assignment_id
+     and assignment.deployment_id = challenge.route_deployment_id
+     and assignment.fence_generation = challenge.fence_generation
+     and assignment.worker_node_id = challenge.worker_instance_id
+    where challenge.tenant_id = active_tenant_id
+      and challenge.operation_id = p_operation_id
+      and challenge.original_dispatch_message_id = p_dispatch_message_id
+      and challenge.result_capability_sha256 = computed_capability_sha256
+      and challenge.retired_at is null
+    for update of challenge;
+
+    using_challenge := matched_challenge.id is not null;
+    if using_challenge then
+        if p_outcome not in ('succeeded', 'diverged')
+            or p_pre_invocation_not_sent_proven
+            or not p_gateway_invoked
+            or not p_broker_confirmed
+            or matched_challenge.supervisor_identity <> active_actor_id::text
+            or authority_now >= matched_challenge.expires_at
+            or p_observed_at < matched_challenge.issued_at
+            or p_observed_at >= matched_challenge.expires_at
+            or p_observed_at >= matched_challenge.assignment_lease_expires_at
+            or matched_challenge.assignment_state not in
+                ('reconciliation_only', 'active', 'revoking', 'revoked')
+            or
+            (
+                matched_challenge.assignment_state in ('revoking', 'revoked')
+                and
+                (
+                    matched_challenge.assignment_revoked_at is null
+                    or p_observed_at >= matched_challenge.assignment_revoked_at
+                )
+            ) then
+            raise exception using
+                errcode = '42501',
+                message = 'Deployment result evidence does not match an active reconciliation challenge.';
+        end if;
+    elsif bound_operation.supervisor_identity <> active_actor_id::text
+        or bound_operation.result_capability_sha256
+            is distinct from computed_capability_sha256
+        or bound_operation.result_capability_expires_at is null
+        or authority_now >= bound_operation.result_capability_expires_at
+        or p_observed_at < bound_operation.dispatched_at
+        or p_observed_at >= bound_operation.dispatch_assignment_lease_expires_at
+        or p_observed_at >= bound_operation.dispatch_execution_deadline
+        or bound_operation.assignment_state not in
+            ('reconciliation_only', 'active', 'revoking', 'revoked')
+        or
+        (
+            bound_operation.assignment_state in ('revoking', 'revoked')
+            and
+            (
+                bound_operation.assignment_revoked_at is null
+                or p_observed_at >= bound_operation.assignment_revoked_at
+            )
+        ) then
+        raise exception using
+            errcode = '42501',
+            message = 'Deployment result evidence does not match an active frozen dispatch capability.';
+    end if;
+
+    insert into operations.deployment_reconciliations
+    (
+        id, tenant_id, deployment_id, generation, worker_assignment_id,
+        worker_instance_id, result_id, operation_id, dispatch_message_id,
+        reconciliation_challenge_id,
+        dispatch_target_binding_sha256, submitted_resource_version,
+        requested_target_state, policy_snapshot_sha256,
+        result_capability_sha256, request_sha256, observed_state,
+        runtime_evidence_sha256, desired_digest, observed_digest,
+        pre_invocation_not_sent_proven, gateway_invoked,
+        broker_digest, broker_confirmed, broker_execution_state,
+        broker_position_state, error_code, state, evidence,
+        observed_at, received_at, started_at, completed_at
+    )
+    values
+    (
+        p_reconciliation_id, active_tenant_id, p_deployment_id,
+        bound_operation.dispatch_fence_generation,
+        bound_operation.dispatch_worker_assignment_id,
+        bound_operation.dispatch_worker_instance_id,
+        p_result_id, p_operation_id, p_dispatch_message_id,
+        case when using_challenge then matched_challenge.id end,
+        p_dispatch_target_binding_sha256, p_submitted_resource_version,
+        p_requested_target_state, p_policy_snapshot_sha256,
+        bound_operation.result_capability_sha256, p_request_sha256, p_observed_state,
+        p_runtime_evidence_sha256, p_dispatch_target_binding_sha256,
+        p_observed_digest, p_pre_invocation_not_sent_proven,
+        p_gateway_invoked, p_broker_digest, p_broker_confirmed,
+        p_broker_execution_state, p_broker_position_state, p_error_code,
+        persisted_state,
+        jsonb_strip_nulls(jsonb_build_object(
+            'source', 'deployment_user_operation_result',
+            'resultId', p_result_id,
+            'operationId', p_operation_id,
+            'dispatchMessageId', p_dispatch_message_id,
+            'outcome', p_outcome,
+            'preInvocationNotSentProven', p_pre_invocation_not_sent_proven,
+            'gatewayInvoked', p_gateway_invoked,
+            'errorCode', p_error_code,
+            'observedAt', p_observed_at)),
+        p_observed_at, authority_now, authority_now, authority_now
+    );
+
+    if using_challenge then
+        insert into control.user_operation_reconciliation_challenge_consumptions
+        (
+            tenant_id, challenge_id, target_type, result_record_id,
+            result_id, request_sha256, accepted_at
+        )
+        values
+        (
+            active_tenant_id, matched_challenge.id, 'deployment',
+            p_reconciliation_id, p_result_id, p_request_sha256, authority_now
+        );
+    end if;
+
+    acceptance_status := 'accepted';
+    reconciliation_id := p_reconciliation_id;
+    received_at := authority_now;
+    return next;
+end
+$$;
+
+revoke all on function control.record_deployment_user_operation_result(
+    uuid, uuid, uuid, uuid, text, uuid, bigint, text, text, text,
+    text, boolean, boolean, text, text, text, boolean, text, text, text, text, text,
+    timestamptz)
+    from public;
 
 -- Dedicated, immutable broker-operation proof. Runtime command-target inbox rows
 -- are deliberately not reused: their target identifiers belong to admin command
@@ -2807,6 +5920,11 @@ create table operations.user_operation_results
     result_id uuid not null,
     operation_id uuid not null,
     dispatch_message_id uuid not null,
+    dispatch_target_binding_sha256 text not null
+        check (dispatch_target_binding_sha256 ~ '^[0-9a-f]{64}$'),
+    result_capability_sha256 text not null
+        check (result_capability_sha256 ~ '^[0-9a-f]{64}$'),
+    reconciliation_challenge_id uuid,
     broker_account_id uuid not null,
     route_deployment_id uuid not null,
     generation bigint not null check (generation > 0),
@@ -2818,15 +5936,22 @@ create table operations.user_operation_results
     requested_target_state text not null check (length(btrim(requested_target_state)) between 1 and 200),
     policy_snapshot_sha256 text not null check (policy_snapshot_sha256 ~ '^[0-9a-f]{64}$'),
     proof_kind text not null check
-        (proof_kind in ('connection_verified', 'credential_rotated', 'account_disabled', 'credential_deleted')),
+        (proof_kind in ('connection_verified', 'credential_rotated',
+            'account_disabled', 'credential_deleted',
+            'state_observed_diverged', 'pre_invocation_not_sent')),
     -- Broker result ingress accepts exactly one immutable terminal observation
     -- for a dispatched operation. Non-terminal lifecycle is owned by the
     -- control worker and must never be represented by competing proof rows.
-    outcome text not null check (outcome in ('succeeded', 'failed')),
+    outcome text not null check (outcome in ('succeeded', 'diverged', 'failed')),
+    pre_invocation_not_sent_proven boolean not null,
+    gateway_invoked boolean not null,
     broker_confirmed boolean not null,
-    account_state text not null check (account_state in ('active', 'disabled')),
-    credential_state text not null check
-        (credential_state in ('absent', 'ready', 'disabled', 'rotation_pending', 'deletion_pending', 'deleted')),
+    account_state text check
+        (account_state is null or account_state in ('active', 'disabled')),
+    credential_state text check
+        (credential_state is null or credential_state in
+            ('absent', 'ready', 'disabled', 'rotation_pending',
+             'deletion_pending', 'deleted')),
     evidence_sha256 text not null check (evidence_sha256 ~ '^[0-9a-f]{64}$'),
     error_code text check (error_code is null or length(btrim(error_code)) between 1 and 200),
     request_sha256 text not null check (request_sha256 ~ '^[0-9a-f]{64}$'),
@@ -2835,20 +5960,74 @@ create table operations.user_operation_results
     unique (tenant_id, id),
     unique (tenant_id, result_id),
     unique (tenant_id, operation_id, dispatch_message_id),
+    unique (tenant_id, reconciliation_challenge_id),
     foreign key (tenant_id, operation_id) references control.user_operations(tenant_id, id),
+    foreign key (tenant_id, reconciliation_challenge_id)
+        references control.user_operation_reconciliation_challenges(tenant_id, id),
+    foreign key
+        (tenant_id, operation_id, dispatch_message_id,
+         dispatch_target_binding_sha256, result_capability_sha256)
+        references control.user_operations
+            (tenant_id, id, dispatch_message_id,
+             dispatch_target_binding_sha256, result_capability_sha256),
     foreign key (tenant_id, broker_account_id) references operations.broker_accounts(tenant_id, id),
     foreign key (tenant_id, worker_assignment_id, route_deployment_id, generation, worker_instance_id)
         references operations.worker_assignments(tenant_id, id, deployment_id, fence_generation, worker_node_id),
     check
     (
-        (operation_type = 'broker_account.connection_test' and proof_kind = 'connection_verified')
+        proof_kind = 'pre_invocation_not_sent'
+        or (operation_type = 'broker_account.connection_test' and proof_kind = 'connection_verified')
         or (operation_type = 'broker_account.credential_rotation' and proof_kind = 'credential_rotated')
         or (operation_type = 'broker_account.disable' and proof_kind = 'account_disabled')
         or (operation_type = 'broker_account.delete' and proof_kind = 'credential_deleted')
     ),
-    check (outcome <> 'succeeded' or broker_confirmed),
-    check (outcome <> 'failed' or error_code is not null),
-    check (outcome <> 'succeeded' or requested_target_state = account_state || ':' || credential_state),
+    check
+    (
+        (outcome = 'succeeded'
+            and not pre_invocation_not_sent_proven
+            and gateway_invoked
+            and broker_confirmed
+            and account_state is not null
+            and credential_state is not null
+            and error_code is null)
+        or
+        (outcome = 'diverged'
+            and not pre_invocation_not_sent_proven
+            and gateway_invoked
+            and broker_confirmed
+            and account_state is not null
+            and credential_state is not null
+            and proof_kind = 'state_observed_diverged'
+            and error_code is not null)
+        or
+        (outcome = 'failed'
+            and pre_invocation_not_sent_proven
+            and not gateway_invoked
+            and not broker_confirmed
+            and account_state is null
+            and credential_state is null
+            and proof_kind = 'pre_invocation_not_sent'
+            and error_code is not null)
+    ),
+    check
+    (
+        reconciliation_challenge_id is null
+        or
+        (
+            outcome in ('succeeded', 'diverged')
+            and not pre_invocation_not_sent_proven
+            and gateway_invoked
+            and broker_confirmed
+        )
+    ),
+    check
+    (
+        (outcome = 'succeeded'
+            and requested_target_state = account_state || ':' || credential_state)
+        or (outcome = 'diverged'
+            and requested_target_state <> account_state || ':' || credential_state)
+        or outcome = 'failed'
+    ),
     check (observed_at <= received_at + interval '5 minutes')
 );
 
@@ -2867,6 +6046,467 @@ $$;
 create trigger user_operation_results_immutable
 before update or delete on operations.user_operation_results
 for each row execute function operations.reject_user_operation_result_mutation();
+
+-- Runtime evidence is accepted only through this execute-only possession
+-- boundary. The raw 256-bit result capability is never stored. Its digest is
+-- minted atomically with the frozen dispatch binding, and PostgreSQL's clock
+-- decides whether a new proof may consume it. An exact result-id/request-hash
+-- replay remains idempotent after expiry; every conflicting reuse fails closed.
+create function control.record_broker_user_operation_result(
+    p_result_record_id uuid,
+    p_result_id uuid,
+    p_operation_id uuid,
+    p_dispatch_message_id uuid,
+    p_raw_result_capability text,
+    p_broker_account_id uuid,
+    p_submitted_resource_version bigint,
+    p_requested_target_state text,
+    p_policy_snapshot_sha256 text,
+    p_dispatch_target_binding_sha256 text,
+    p_outcome text,
+    p_pre_invocation_not_sent_proven boolean,
+    p_gateway_invoked boolean,
+    p_broker_confirmed boolean,
+    p_account_state text,
+    p_credential_state text,
+    p_evidence_sha256 text,
+    p_error_code text,
+    p_request_sha256 text,
+    p_observed_at timestamptz)
+returns table
+(
+    acceptance_status text,
+    result_record_id uuid,
+    received_at timestamptz
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    active_tenant_id uuid := control.current_tenant_id();
+    active_actor_id uuid := control.current_actor_id();
+    authority_now timestamptz;
+    computed_capability_sha256 text;
+    expected_proof_kind text;
+    existing_result record;
+    bound_operation record;
+    matched_challenge record;
+    using_challenge boolean := false;
+begin
+    if session_user <> 'yo4x_runtime_evidence'
+        or current_user <> 'yo4x_migrator'
+        or active_tenant_id is null
+        or active_actor_id is null then
+        raise exception using
+            errcode = '42501',
+            message = 'Broker result recording requires exact runtime-evidence authority.';
+    end if;
+
+    if p_result_record_id is null
+        or p_result_record_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_result_id is null
+        or p_result_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_operation_id is null
+        or p_operation_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_dispatch_message_id is null
+        or p_dispatch_message_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_raw_result_capability is null
+        or p_raw_result_capability !~ '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
+        or p_broker_account_id is null
+        or p_broker_account_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or p_submitted_resource_version is null
+        or p_submitted_resource_version < 0
+        or p_requested_target_state is null
+        or p_requested_target_state <> btrim(p_requested_target_state)
+        or length(p_requested_target_state) not between 1 and 200
+        or p_policy_snapshot_sha256 is null
+        or p_policy_snapshot_sha256 !~ '^[0-9a-f]{64}$'
+        or p_dispatch_target_binding_sha256 is null
+        or p_dispatch_target_binding_sha256 !~ '^[0-9a-f]{64}$'
+        or p_outcome is null
+        or p_outcome not in ('succeeded', 'diverged')
+        or p_pre_invocation_not_sent_proven is null
+        or p_gateway_invoked is null
+        or p_pre_invocation_not_sent_proven
+        or not p_gateway_invoked
+        or p_broker_confirmed is null
+        or p_account_state is not null
+            and p_account_state not in ('active', 'disabled')
+        or p_credential_state is not null
+            and p_credential_state not in
+                ('absent', 'ready', 'disabled', 'rotation_pending',
+                 'deletion_pending', 'deleted')
+        or p_evidence_sha256 is null
+        or p_evidence_sha256 !~ '^[0-9a-f]{64}$'
+        or
+        (
+            p_error_code is not null
+            and
+            (
+                p_error_code <> btrim(p_error_code)
+                or length(p_error_code) not between 1 and 200
+            )
+        )
+        or
+        (
+            p_outcome = 'succeeded'
+            and
+            (
+                p_pre_invocation_not_sent_proven
+                or not p_gateway_invoked
+                or not p_broker_confirmed
+                or p_account_state is null
+                or p_credential_state is null
+                or p_error_code is not null
+            )
+        )
+        or
+        (
+            p_outcome = 'diverged'
+            and
+            (
+                p_error_code is null
+                or p_pre_invocation_not_sent_proven
+                or not p_gateway_invoked
+                or not p_broker_confirmed
+                or p_account_state is null
+                or p_credential_state is null
+            )
+        )
+        or p_request_sha256 is null
+        or p_request_sha256 !~ '^[0-9a-f]{64}$'
+        or p_observed_at is null then
+        raise exception using
+            errcode = '22023',
+            message = 'Broker result evidence is invalid.';
+    end if;
+
+    perform control.acquire_u0_authority_lock();
+    authority_now := clock_timestamp();
+    computed_capability_sha256 := encode(
+        sha256(convert_to(p_raw_result_capability, 'UTF8')),
+        'hex');
+
+    select result.id, result.result_id, result.operation_id,
+        result.dispatch_message_id, result.broker_account_id,
+        result.submitted_resource_version, result.requested_target_state,
+        result.policy_snapshot_sha256,
+        result.dispatch_target_binding_sha256,
+        result.result_capability_sha256,
+        result.reconciliation_challenge_id,
+        challenge.result_capability_sha256 as challenge_capability_sha256,
+        result.outcome, result.pre_invocation_not_sent_proven,
+        result.gateway_invoked, result.broker_confirmed,
+        result.account_state, result.credential_state,
+        result.evidence_sha256, result.error_code,
+        result.request_sha256, result.observed_at, result.received_at,
+        coalesce(challenge_assignment.supervisor_identity,
+            assignment.supervisor_identity) as supervisor_identity
+    into existing_result
+    from operations.user_operation_results as result
+    join operations.worker_assignments as assignment
+      on assignment.tenant_id = result.tenant_id
+     and assignment.id = result.worker_assignment_id
+     and assignment.deployment_id = result.route_deployment_id
+     and assignment.fence_generation = result.generation
+     and assignment.worker_node_id = result.worker_instance_id
+    left join control.user_operation_reconciliation_challenges as challenge
+      on challenge.tenant_id = result.tenant_id
+     and challenge.id = result.reconciliation_challenge_id
+    left join operations.worker_assignments as challenge_assignment
+      on challenge_assignment.tenant_id = challenge.tenant_id
+     and challenge_assignment.id = challenge.worker_assignment_id
+     and challenge_assignment.deployment_id = challenge.route_deployment_id
+     and challenge_assignment.fence_generation = challenge.fence_generation
+     and challenge_assignment.worker_node_id = challenge.worker_instance_id
+    where result.tenant_id = active_tenant_id
+      and
+      (
+          result.result_id = p_result_id
+          or
+          (
+              result.operation_id = p_operation_id
+              and result.dispatch_message_id = p_dispatch_message_id
+          )
+      )
+    order by (result.result_id = p_result_id) desc, result.id
+    limit 1;
+
+    if existing_result.id is not null then
+        if existing_result.id = p_result_record_id
+            and existing_result.result_id = p_result_id
+            and existing_result.operation_id = p_operation_id
+            and existing_result.dispatch_message_id = p_dispatch_message_id
+            and existing_result.broker_account_id = p_broker_account_id
+            and existing_result.submitted_resource_version
+                = p_submitted_resource_version
+            and existing_result.requested_target_state
+                = p_requested_target_state
+            and existing_result.policy_snapshot_sha256
+                = p_policy_snapshot_sha256
+            and existing_result.dispatch_target_binding_sha256
+                = p_dispatch_target_binding_sha256
+            and
+            (
+                (existing_result.reconciliation_challenge_id is null
+                    and existing_result.result_capability_sha256
+                        = computed_capability_sha256)
+                or
+                (existing_result.reconciliation_challenge_id is not null
+                    and existing_result.challenge_capability_sha256
+                        = computed_capability_sha256)
+            )
+            and existing_result.outcome = p_outcome
+            and existing_result.pre_invocation_not_sent_proven
+                = p_pre_invocation_not_sent_proven
+            and existing_result.gateway_invoked = p_gateway_invoked
+            and existing_result.broker_confirmed = p_broker_confirmed
+            and existing_result.account_state is not distinct from p_account_state
+            and existing_result.credential_state
+                is not distinct from p_credential_state
+            and existing_result.evidence_sha256 = p_evidence_sha256
+            and existing_result.error_code is not distinct from p_error_code
+            and existing_result.request_sha256 = p_request_sha256
+            and existing_result.observed_at = p_observed_at
+            and existing_result.supervisor_identity = active_actor_id::text then
+            acceptance_status := 'duplicate';
+            result_record_id := existing_result.id;
+            received_at := existing_result.received_at;
+            return next;
+            return;
+        end if;
+
+        raise exception using
+            errcode = '23505',
+            message = 'Broker result evidence conflicts with an immutable accepted result.';
+    end if;
+
+    select operation.operation_type, operation.state,
+        operation.target_id as broker_account_id,
+        operation.submitted_resource_version,
+        operation.requested_target_state,
+        operation.dispatch_policy_snapshot_sha256,
+        operation.dispatch_target_binding_sha256,
+        operation.result_capability_sha256,
+        operation.result_capability_expires_at,
+        operation.dispatch_assignment_lease_expires_at,
+        operation.dispatch_execution_deadline,
+        operation.dispatched_at,
+        operation.dispatch_route_deployment_id,
+        operation.dispatch_fence_generation,
+        operation.dispatch_worker_assignment_id,
+        operation.dispatch_worker_instance_id,
+        assignment.supervisor_identity,
+        assignment.state as assignment_state,
+        assignment.lease_expires_at as assignment_lease_expires_at,
+        assignment.revoked_at as assignment_revoked_at
+    into bound_operation
+    from control.user_operations as operation
+    join messaging.outbox_messages as outbox
+      on outbox.tenant_id = operation.tenant_id
+     and outbox.id = operation.dispatch_message_id
+     and outbox.aggregate_type = 'user_operation'
+     and outbox.aggregate_id = operation.id::text
+     and outbox.causation_id = operation.id
+     and outbox.correlation_id = operation.correlation_id
+     and outbox.message_type =
+        'yo4x.' || replace(operation.operation_type, '_', '-') || '.requested.v3'
+    join operations.worker_assignments as assignment
+      on assignment.tenant_id = operation.tenant_id
+     and assignment.id = operation.dispatch_worker_assignment_id
+     and assignment.deployment_id = operation.dispatch_route_deployment_id
+     and assignment.fence_generation = operation.dispatch_fence_generation
+     and assignment.worker_node_id = operation.dispatch_worker_instance_id
+    where operation.tenant_id = active_tenant_id
+      and operation.id = p_operation_id
+      and operation.dispatch_message_id = p_dispatch_message_id
+      and operation.target_type = 'broker_account'
+      and operation.target_id = p_broker_account_id
+    for update of operation;
+
+    if bound_operation.operation_type is null
+        or bound_operation.operation_type not in
+            ('broker_account.connection_test',
+             'broker_account.credential_rotation',
+             'broker_account.disable',
+             'broker_account.delete')
+        or bound_operation.state not in ('propagating', 'reconciling', 'unknown')
+        or bound_operation.submitted_resource_version
+            is distinct from p_submitted_resource_version
+        or bound_operation.requested_target_state
+            is distinct from p_requested_target_state
+        or bound_operation.dispatch_policy_snapshot_sha256
+            is distinct from p_policy_snapshot_sha256
+        or bound_operation.dispatch_target_binding_sha256
+            is distinct from p_dispatch_target_binding_sha256
+        or bound_operation.dispatch_assignment_lease_expires_at is null
+        or bound_operation.dispatch_execution_deadline is null
+        or p_observed_at > authority_now + interval '5 minutes' then
+        raise exception using
+            errcode = '42501',
+            message = 'Broker result evidence does not match an active frozen dispatch capability.';
+    end if;
+
+    select challenge.id, challenge.issued_at, challenge.expires_at,
+        challenge.route_deployment_id, challenge.fence_generation,
+        challenge.worker_assignment_id, challenge.worker_instance_id,
+        assignment.supervisor_identity,
+        assignment.state as assignment_state,
+        assignment.lease_expires_at as assignment_lease_expires_at,
+        assignment.revoked_at as assignment_revoked_at
+    into matched_challenge
+    from control.user_operation_reconciliation_challenges as challenge
+    join operations.worker_assignments as assignment
+      on assignment.tenant_id = challenge.tenant_id
+     and assignment.id = challenge.worker_assignment_id
+     and assignment.deployment_id = challenge.route_deployment_id
+     and assignment.fence_generation = challenge.fence_generation
+     and assignment.worker_node_id = challenge.worker_instance_id
+    where challenge.tenant_id = active_tenant_id
+      and challenge.operation_id = p_operation_id
+      and challenge.original_dispatch_message_id = p_dispatch_message_id
+      and challenge.result_capability_sha256 = computed_capability_sha256
+      and challenge.retired_at is null
+    for update of challenge;
+
+    using_challenge := matched_challenge.id is not null;
+    if using_challenge then
+        if p_outcome not in ('succeeded', 'diverged')
+            or p_pre_invocation_not_sent_proven
+            or not p_gateway_invoked
+            or not p_broker_confirmed
+            or matched_challenge.supervisor_identity <> active_actor_id::text
+            or authority_now >= matched_challenge.expires_at
+            or p_observed_at < matched_challenge.issued_at
+            or p_observed_at >= matched_challenge.expires_at
+            or p_observed_at >= matched_challenge.assignment_lease_expires_at
+            or matched_challenge.assignment_state not in
+                ('reconciliation_only', 'active', 'revoking', 'revoked')
+            or
+            (
+                matched_challenge.assignment_state in ('revoking', 'revoked')
+                and
+                (
+                    matched_challenge.assignment_revoked_at is null
+                    or p_observed_at >= matched_challenge.assignment_revoked_at
+                )
+            ) then
+            raise exception using
+                errcode = '42501',
+                message = 'Broker result evidence does not match an active reconciliation challenge.';
+        end if;
+    elsif bound_operation.supervisor_identity <> active_actor_id::text
+        or bound_operation.result_capability_sha256
+            is distinct from computed_capability_sha256
+        or bound_operation.result_capability_expires_at is null
+        or authority_now >= bound_operation.result_capability_expires_at
+        or p_observed_at < bound_operation.dispatched_at
+        or p_observed_at >= bound_operation.dispatch_assignment_lease_expires_at
+        or p_observed_at >= bound_operation.dispatch_execution_deadline
+        or bound_operation.assignment_state not in
+            ('reconciliation_only', 'active', 'revoking', 'revoked')
+        or
+        (
+            bound_operation.assignment_state in ('revoking', 'revoked')
+            and
+            (
+                bound_operation.assignment_revoked_at is null
+                or p_observed_at >= bound_operation.assignment_revoked_at
+            )
+        ) then
+        raise exception using
+            errcode = '42501',
+            message = 'Broker result evidence does not match an active frozen dispatch capability.';
+    end if;
+
+    expected_proof_kind := case
+        when p_outcome = 'diverged' then 'state_observed_diverged'
+        when bound_operation.operation_type = 'broker_account.connection_test'
+            then 'connection_verified'
+        when bound_operation.operation_type = 'broker_account.credential_rotation'
+            then 'credential_rotated'
+        when bound_operation.operation_type = 'broker_account.disable'
+            then 'account_disabled'
+        when bound_operation.operation_type = 'broker_account.delete'
+            then 'credential_deleted'
+    end;
+
+    if p_outcome = 'succeeded'
+        and p_requested_target_state
+            is distinct from p_account_state || ':' || p_credential_state then
+        raise exception using
+            errcode = '22023',
+            message = 'Successful broker evidence does not prove the requested state.';
+    end if;
+
+    if p_outcome = 'diverged'
+        and p_requested_target_state
+            is not distinct from p_account_state || ':' || p_credential_state then
+        raise exception using
+            errcode = '22023',
+            message = 'Diverged broker evidence must prove a different observed state.';
+    end if;
+
+    insert into operations.user_operation_results
+    (
+        id, tenant_id, result_id, operation_id, dispatch_message_id,
+        dispatch_target_binding_sha256, result_capability_sha256,
+        reconciliation_challenge_id,
+        broker_account_id, route_deployment_id, generation,
+        worker_assignment_id, worker_instance_id, operation_type,
+        submitted_resource_version, requested_target_state,
+        policy_snapshot_sha256, proof_kind, outcome,
+        pre_invocation_not_sent_proven, gateway_invoked, broker_confirmed,
+        account_state, credential_state, evidence_sha256, error_code,
+        request_sha256, observed_at, received_at
+    )
+    values
+    (
+        p_result_record_id, active_tenant_id, p_result_id, p_operation_id,
+        p_dispatch_message_id, p_dispatch_target_binding_sha256,
+        bound_operation.result_capability_sha256,
+        case when using_challenge then matched_challenge.id end,
+        p_broker_account_id,
+        bound_operation.dispatch_route_deployment_id,
+        bound_operation.dispatch_fence_generation,
+        bound_operation.dispatch_worker_assignment_id,
+        bound_operation.dispatch_worker_instance_id,
+        bound_operation.operation_type, p_submitted_resource_version,
+        p_requested_target_state, p_policy_snapshot_sha256,
+        expected_proof_kind, p_outcome, p_pre_invocation_not_sent_proven,
+        p_gateway_invoked, p_broker_confirmed,
+        p_account_state, p_credential_state, p_evidence_sha256,
+        p_error_code, p_request_sha256, p_observed_at, authority_now
+    );
+
+    if using_challenge then
+        insert into control.user_operation_reconciliation_challenge_consumptions
+        (
+            tenant_id, challenge_id, target_type, result_record_id,
+            result_id, request_sha256, accepted_at
+        )
+        values
+        (
+            active_tenant_id, matched_challenge.id, 'broker_account',
+            p_result_record_id, p_result_id, p_request_sha256, authority_now
+        );
+    end if;
+
+    acceptance_status := 'accepted';
+    result_record_id := p_result_record_id;
+    received_at := authority_now;
+    return next;
+end
+$$;
+
+revoke all on function control.record_broker_user_operation_result(
+    uuid, uuid, uuid, uuid, text, uuid, bigint, text, text, text,
+    text, boolean, boolean, boolean, text, text, text, text, text,
+    timestamptz)
+    from public;
 
 -- This capability can only project an exact, already-authenticated successful
 -- result. It never returns or accepts credential material, and it is the only
@@ -3479,6 +7119,16 @@ as $$
 declare
     legal_transition boolean :=
         (old.state = 'pending' and new.state = 'processing')
+        or
+        (
+            old.state = 'pending'
+            and new.state = 'dead_letter'
+            and session_user = 'yo4x_worker'
+            and current_user = 'yo4x_migrator'
+            and old.aggregate_type = 'user_operation'
+            and new.last_error =
+                'original_result_authority_closed_reconciliation_only'
+        )
         or (old.state = 'processing' and new.state in ('processing', 'pending', 'published', 'dead_letter'));
 begin
     if old.state in ('published', 'dead_letter') then
@@ -3525,10 +7175,1715 @@ create trigger outbox_messages_transition_guard
 before update on messaging.outbox_messages
 for each row execute function messaging.enforce_outbox_transition();
 
+alter table operations.strategy_requested_actions
+    add constraint strategy_requested_action_outbox_fk
+    foreign key (tenant_id, outbox_message_id)
+    references messaging.outbox_messages(tenant_id, id)
+    deferrable initially deferred;
+
+alter table governance.strategy_conversion_classifications
+    add constraint strategy_conversion_classification_audit_fk
+    foreign key (tenant_id, audit_event_id)
+    references audit.audit_events(tenant_id, id)
+    deferrable initially deferred;
+
+alter table control.user_operation_reconciliation_challenges
+    add constraint user_operation_reconciliation_challenge_original_outbox_fk
+    foreign key (tenant_id, original_dispatch_message_id)
+    references messaging.outbox_messages(tenant_id, id);
+
+alter table control.user_operation_reconciliation_challenges
+    add constraint user_operation_reconciliation_challenge_message_outbox_fk
+    foreign key (tenant_id, challenge_message_id)
+    references messaging.outbox_messages(tenant_id, id);
+
+alter table control.user_operation_reconciliation_challenges
+    add constraint user_operation_reconciliation_challenge_audit_fk
+    foreign key (tenant_id, audit_event_id)
+    references audit.audit_events(tenant_id, id);
+
+alter table governance.strategy_conversion_classifications
+    add constraint strategy_conversion_classification_outbox_fk
+    foreign key (tenant_id, outbox_message_id)
+    references messaging.outbox_messages(tenant_id, id)
+    deferrable initially deferred;
+
+alter table operations.strategy_event_journal
+    add constraint strategy_event_commit_audit_fk
+    foreign key (tenant_id, commit_id)
+    references audit.audit_events(tenant_id, id)
+    deferrable initially deferred;
+
+-- Internal authority resolver for the supervisor capabilities below. The
+-- caller supplies no trusted timestamps or assignment/lease identifiers: the
+-- current rows are locked and resolved under U0 using the database clock.
+create function control.lock_active_strategy_supervisor_authority(
+    target_deployment_id uuid,
+    target_worker_instance_id uuid,
+    target_generation bigint)
+returns table
+(
+    authority_now_utc timestamptz,
+    authority_valid_until_utc timestamptz,
+    resolved_worker_assignment_id uuid,
+    resolved_execution_lease_id uuid,
+    resolved_supervisor_workload_id uuid,
+    resolved_strategy_host_workload_id uuid
+)
+language plpgsql
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    locked_deployment operations.deployments%rowtype;
+    locked_account operations.broker_accounts%rowtype;
+    locked_strategy governance.strategy_versions%rowtype;
+    locked_binding governance.strategy_version_source_bindings%rowtype;
+    locked_assignment operations.worker_assignments%rowtype;
+    locked_lease operations.execution_leases%rowtype;
+begin
+    if session_user is distinct from 'yo4x_supervisor_runtime'
+        or control.current_tenant_id() is null
+        or control.current_tenant_id() = '00000000-0000-0000-0000-000000000000'::uuid
+        or control.current_actor_id() is null
+        or control.current_actor_id() = '00000000-0000-0000-0000-000000000000'::uuid
+        or control.current_correlation_id() is null
+        or control.current_correlation_id() = '00000000-0000-0000-0000-000000000000'::uuid then
+        raise exception using
+            errcode = '42501',
+            message = 'An authenticated supervisor tenant context is required.';
+    end if;
+
+    if target_deployment_id is null
+        or target_deployment_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_worker_instance_id is null
+        or target_worker_instance_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_generation is null
+        or target_generation <= 0 then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy supervisor authority identifiers are invalid.';
+    end if;
+
+    perform control.acquire_u0_authority_lock();
+    authority_now_utc := clock_timestamp();
+
+    select deployment.* into locked_deployment
+    from operations.deployments as deployment
+    where deployment.tenant_id = control.current_tenant_id()
+      and deployment.id = target_deployment_id
+    for update;
+
+    if locked_deployment.id is not null then
+        select account.* into locked_account
+        from operations.broker_accounts as account
+        where account.tenant_id = locked_deployment.tenant_id
+          and account.id = locked_deployment.broker_account_id
+        for share;
+
+        select strategy.* into locked_strategy
+        from governance.strategy_versions as strategy
+        where strategy.tenant_id = locked_deployment.tenant_id
+          and strategy.id = locked_deployment.strategy_version_id
+        for share;
+
+        select binding.* into locked_binding
+        from governance.strategy_version_source_bindings as binding
+        where binding.tenant_id = locked_deployment.tenant_id
+          and binding.id = locked_deployment.strategy_source_binding_id;
+    end if;
+
+    select assignment.* into locked_assignment
+    from operations.worker_assignments as assignment
+    where assignment.tenant_id = control.current_tenant_id()
+      and assignment.deployment_id = target_deployment_id
+      and assignment.fence_generation = target_generation
+      and assignment.worker_node_id = target_worker_instance_id
+    for update;
+
+    select lease.* into locked_lease
+    from operations.execution_leases as lease
+    where lease.tenant_id = control.current_tenant_id()
+      and lease.deployment_id = target_deployment_id
+      and lease.generation = target_generation
+      and lease.worker_instance_id = target_worker_instance_id
+      and lease.state in ('issued', 'active', 'renew_restricted', 'revoking')
+    for update;
+
+    if locked_deployment.id is null
+        or locked_account.id is null
+        or locked_strategy.id is null
+        or locked_binding.id is null
+        or locked_assignment.id is null
+        or locked_lease.id is null
+        or locked_deployment.environment is distinct from 'demo'
+        or locked_deployment.deployment_mode is distinct from 'cloud_demo'
+        or locked_deployment.desired_state is distinct from 'running'
+        or locked_deployment.observed_state is distinct from 'running'
+        or locked_deployment.fence_generation is distinct from target_generation
+        or locked_account.environment is distinct from 'demo'
+        or locked_account.account_mode is distinct from 'hedging'
+        or locked_account.dedicated_cloud_use is not true
+        or locked_account.manual_or_external_trading_detected is not false
+        or locked_account.trading_allowed is not true
+        or locked_account.broker_hosted_stop_loss is not true
+        or locked_account.broker_hosted_take_profit is not true
+        or locked_account.supports_position_query is not true
+        or locked_account.supports_order_query is not true
+        or locked_account.supports_deal_history is not true
+        or locked_account.credential_state is distinct from 'ready'
+        or locked_account.state is distinct from 'active'
+        or locked_account.capability_valid_until is null
+        or locked_account.capability_valid_until <= authority_now_utc
+        or locked_strategy.state is null
+        or locked_strategy.state not in ('demo_approved', 'published')
+        or locked_deployment.strategy_source_binding_id
+            is distinct from locked_binding.id
+        or locked_deployment.strategy_version_id
+            is distinct from locked_binding.strategy_version_id
+        or locked_deployment.strategy_package_digest
+            is distinct from locked_binding.strategy_package_sha256
+        or locked_deployment.strategy_verification_evidence_sha256
+            is distinct from locked_binding.verification_evidence_sha256
+        or locked_deployment.strategy_verification_signature_sha256
+            is distinct from locked_binding.verification_signature_sha256
+        or locked_deployment.strategy_verification_signing_key_id
+            is distinct from locked_binding.verification_signing_key_id
+        or locked_binding.strategy_version_id is distinct from locked_strategy.id
+        or locked_binding.strategy_package_sha256
+            is distinct from locked_strategy.package_sha256
+        or locked_binding.signature_cryptographically_verified is not true
+        or locked_binding.verification_signature_algorithm
+            is distinct from 'ECDSA_P256_SHA256_DER'
+        or locked_binding.parsed_and_type_checked is not true
+        or locked_binding.metaeditor_compile_proven is not true
+        or locked_binding.semantic_conversion_proven is not true
+        or locked_binding.reference_parity_proven is not true
+        or locked_binding.demo_runtime_proven is not true
+        or locked_assignment.id is distinct from locked_lease.worker_assignment_id
+        or locked_assignment.worker_node_id
+            is distinct from locked_lease.worker_instance_id
+        or locked_assignment.state is distinct from 'active'
+        or locked_assignment.lease_expires_at <= authority_now_utc
+        or locked_assignment.runtime_digest
+            is distinct from locked_deployment.runtime_digest
+        or locked_assignment.gateway_artifact_id
+            is distinct from locked_deployment.gateway_artifact_id
+        or locked_lease.execution_mode is distinct from 'cloud_demo'
+        or locked_lease.state is null
+        or locked_lease.state not in ('issued', 'active')
+        or locked_lease.not_before > authority_now_utc
+        or locked_lease.expires_at <= authority_now_utc
+        or locked_lease.signed_envelope_content is null
+        or locked_lease.lease_payload_sha256 is null
+        or locked_lease.lease_signature_sha256 is null
+        or locked_lease.lease_token_sha256 is distinct from
+            encode(pg_catalog.sha256(locked_lease.signed_envelope_content), 'hex')
+        or locked_lease.strategy_version_id
+            is distinct from locked_binding.strategy_version_id
+        or locked_lease.strategy_package_sha256
+            is distinct from locked_binding.strategy_package_sha256
+        or locked_lease.supervisor_workload_id
+            is distinct from control.current_actor_id()
+        or exists
+        (
+            select 1
+            from control.execution_safety_policies as policy
+            where policy.tenant_id = locked_deployment.tenant_id
+              and policy.state in
+              (
+                  'active', 'expiry_review_required', 'safe_to_release',
+                  'deactivating', 'reconciling', 'partial'
+              )
+              and policy.allow_strategy_signals is not true
+              and
+              (
+                  (policy.scope_type = 'global' and policy.scope_id is null)
+                  or (policy.scope_type = 'environment'
+                      and lower(policy.scope_id) = lower(locked_deployment.environment))
+                  or (policy.scope_type = 'region'
+                      and lower(policy.scope_id) = lower(locked_deployment.region))
+                  or (policy.scope_type = 'broker'
+                      and lower(policy.scope_id) = lower(locked_account.broker_id::text))
+                  or (policy.scope_type = 'gateway'
+                      and lower(policy.scope_id) = lower(locked_deployment.gateway_artifact_id::text))
+                  or (policy.scope_type = 'runtime'
+                      and lower(policy.scope_id) = lower(locked_deployment.runtime_digest))
+                  or (policy.scope_type = 'strategy'
+                      and lower(policy.scope_id) = lower(locked_strategy.strategy_id::text))
+                  or (policy.scope_type = 'strategy_version'
+                      and lower(policy.scope_id) = lower(locked_strategy.id::text))
+                  or (policy.scope_type = 'user'
+                      and lower(policy.scope_id) = lower(locked_deployment.user_id::text))
+                  or (policy.scope_type = 'account'
+                      and lower(policy.scope_id) = lower(locked_account.id::text))
+                  or (policy.scope_type = 'deployment'
+                      and lower(policy.scope_id) = lower(locked_deployment.id::text))
+              )
+        ) then
+        raise exception using
+            errcode = '42501',
+            message = 'Strategy supervisor authority is inactive, stale, or fenced.';
+    end if;
+
+    resolved_worker_assignment_id := locked_assignment.id;
+    resolved_execution_lease_id := locked_lease.id;
+    resolved_supervisor_workload_id := locked_lease.supervisor_workload_id;
+    resolved_strategy_host_workload_id := locked_lease.strategy_host_workload_id;
+    authority_valid_until_utc := least(
+        locked_assignment.lease_expires_at,
+        locked_lease.expires_at,
+        locked_account.capability_valid_until);
+    return next;
+end
+$$;
+
+revoke all on function control.lock_active_strategy_supervisor_authority(
+    uuid, uuid, bigint) from public;
+
+create function control.persist_strategy_event(
+    target_deployment_id uuid,
+    target_worker_instance_id uuid,
+    target_generation bigint,
+    target_sequence bigint,
+    target_event_id uuid,
+    target_event_kind integer,
+    target_event_contract_version integer,
+    target_event_sha256 text,
+    target_snapshot_sequence bigint,
+    target_snapshot_contract_version integer,
+    target_snapshot_sha256 text,
+    target_event_content bytea,
+    target_snapshot_content bytea)
+returns table
+(
+    persisted_at_utc timestamptz,
+    replayed boolean
+)
+language plpgsql
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    authority record;
+    locked_head operations.strategy_deployment_heads%rowtype;
+    existing_event operations.strategy_event_journal%rowtype;
+    event_text text;
+    snapshot_text text;
+    event_raw_document json;
+    snapshot_raw_document json;
+    event_document jsonb;
+    snapshot_document jsonb;
+    envelope_received_at_value timestamptz;
+    broker_timestamp_value timestamptz;
+    initial_state_content bytea := convert_to('{}', 'UTF8');
+    initial_state_sha256 text :=
+        encode(pg_catalog.sha256(convert_to('{}', 'UTF8')), 'hex');
+begin
+    if target_deployment_id is null
+        or target_deployment_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_worker_instance_id is null
+        or target_worker_instance_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_generation is null or target_generation <= 0
+        or target_sequence is null or target_sequence <= 0
+        or target_event_id is null
+        or target_event_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_event_kind is null or target_event_kind not between 0 and 6
+        or target_event_contract_version is distinct from 1
+        or target_event_sha256 is null
+        or target_event_sha256 !~ '^[0-9a-f]{64}$'
+        or target_snapshot_sequence is null or target_snapshot_sequence <= 0
+        or target_snapshot_contract_version is distinct from 1
+        or target_snapshot_sha256 is null
+        or target_snapshot_sha256 !~ '^[0-9a-f]{64}$'
+        or target_event_content is null
+        or octet_length(target_event_content) not between 2 and 1048576
+        or target_snapshot_content is null
+        or octet_length(target_snapshot_content) not between 2 and 4194304
+        or target_event_sha256 is distinct from
+            encode(pg_catalog.sha256(target_event_content), 'hex')
+        or target_snapshot_sha256 is distinct from
+            encode(pg_catalog.sha256(target_snapshot_content), 'hex') then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy-event intake evidence is invalid.';
+    end if;
+
+    begin
+        event_text := convert_from(target_event_content, 'UTF8');
+        snapshot_text := convert_from(target_snapshot_content, 'UTF8');
+        event_raw_document := event_text::json;
+        snapshot_raw_document := snapshot_text::json;
+        if control.json_has_duplicate_object_keys(event_raw_document)
+            or control.json_has_duplicate_object_keys(snapshot_raw_document)
+            or event_text is distinct from
+                control.dotnet_canonical_json(event_raw_document)
+            or snapshot_text is distinct from
+                control.dotnet_canonical_json(snapshot_raw_document)
+            or control.strategy_event_input_has_typed_shape(
+                event_raw_document, snapshot_raw_document) is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Strategy-event intake content is not canonical JSON.';
+        end if;
+        event_document := event_raw_document::jsonb;
+        snapshot_document := snapshot_raw_document::jsonb;
+        envelope_received_at_value := (event_document ->> 'receivedAtUtc')::timestamptz;
+        broker_timestamp_value := (event_document ->> 'brokerTimestampUtc')::timestamptz;
+    exception when others then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy-event intake content is not valid UTF-8 JSON.';
+    end;
+
+    begin
+        if jsonb_typeof(event_document) is distinct from 'object'
+            or jsonb_typeof(snapshot_document) is distinct from 'object'
+            or (select count(*) from jsonb_object_keys(event_document))
+                is distinct from 9::bigint
+            or (select count(*) from jsonb_object_keys(snapshot_document))
+                is distinct from 8::bigint
+            or not (event_document ?& array[
+                'contractVersion', 'deploymentId', 'workerInstanceId',
+                'generation', 'sequence', 'eventId', 'receivedAtUtc',
+                'brokerTimestampUtc', 'payload']::text[])
+            or not (snapshot_document ?& array[
+                'contractVersion', 'sequence', 'asOfUtc',
+                'deterministicNowUtc', 'account', 'quotes',
+                'positions', 'pendingOrders']::text[])
+            or (event_document ->> 'contractVersion')::integer is distinct from 1
+            or (event_document ->> 'deploymentId')::uuid
+                is distinct from target_deployment_id
+            or (event_document ->> 'workerInstanceId')::uuid
+                is distinct from target_worker_instance_id
+            or (event_document ->> 'generation')::bigint
+                is distinct from target_generation
+            or (event_document ->> 'sequence')::bigint
+                is distinct from target_sequence
+            or (event_document ->> 'eventId')::uuid
+                is distinct from target_event_id
+            or jsonb_typeof(event_document -> 'payload') is distinct from 'object'
+            or not (event_document -> 'payload' ?& array[
+                'contractVersion', 'kind', 'occurredAtUtc']::text[])
+            or (event_document -> 'payload' ->> 'kind')::integer
+                is distinct from target_event_kind
+            or (event_document -> 'payload' ->> 'contractVersion')::integer
+                is distinct from target_event_contract_version
+            or (snapshot_document ->> 'sequence')::bigint
+                is distinct from target_snapshot_sequence
+            or (snapshot_document ->> 'contractVersion')::integer
+                is distinct from target_snapshot_contract_version
+            or envelope_received_at_value is null
+            or (event_document -> 'payload' ->> 'occurredAtUtc')::timestamptz is null
+            or (snapshot_document ->> 'asOfUtc')::timestamptz is null
+            or (snapshot_document ->> 'deterministicNowUtc')::timestamptz is null
+            or (snapshot_document ->> 'deterministicNowUtc')::timestamptz >
+                clock_timestamp() + interval '1 second' then
+            raise exception using
+                errcode = '22023',
+                message = 'Strategy-event intake bindings do not match the canonical content.';
+        end if;
+    exception when others then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy-event intake bindings do not match the canonical content.';
+    end;
+
+    select * into strict authority
+    from control.lock_active_strategy_supervisor_authority(
+        target_deployment_id, target_worker_instance_id, target_generation);
+
+    select head.* into locked_head
+    from operations.strategy_deployment_heads as head
+    where head.tenant_id = control.current_tenant_id()
+      and head.deployment_id = target_deployment_id
+      and head.generation = target_generation
+    for update;
+
+    if locked_head.deployment_id is null then
+        if target_sequence is distinct from 1 then
+            raise exception using
+                errcode = '22023',
+                message = 'The first strategy event in a generation must have sequence one.';
+        end if;
+
+        insert into operations.strategy_deployment_heads
+        (
+            tenant_id, deployment_id, generation, worker_assignment_id,
+            worker_instance_id, execution_lease_id, supervisor_workload_id,
+            strategy_host_workload_id, current_state_sha256,
+            initialized_at, updated_at
+        )
+        values
+        (
+            control.current_tenant_id(), target_deployment_id, target_generation,
+            authority.resolved_worker_assignment_id, target_worker_instance_id,
+            authority.resolved_execution_lease_id,
+            authority.resolved_supervisor_workload_id,
+            authority.resolved_strategy_host_workload_id,
+            initial_state_sha256, authority.authority_now_utc,
+            authority.authority_now_utc
+        );
+
+        insert into operations.strategy_state_revisions
+        (
+            tenant_id, deployment_id, generation, state_version,
+            state_document, state_content, state_sha256, committed_at
+        )
+        values
+        (
+            control.current_tenant_id(), target_deployment_id, target_generation, 0,
+            '{}'::jsonb, initial_state_content, initial_state_sha256,
+            authority.authority_now_utc
+        );
+
+        select head.* into strict locked_head
+        from operations.strategy_deployment_heads as head
+        where head.tenant_id = control.current_tenant_id()
+          and head.deployment_id = target_deployment_id
+          and head.generation = target_generation
+        for update;
+    end if;
+
+    if locked_head.worker_assignment_id
+            is distinct from authority.resolved_worker_assignment_id
+        or locked_head.worker_instance_id is distinct from target_worker_instance_id
+        or locked_head.execution_lease_id
+            is distinct from authority.resolved_execution_lease_id
+        or locked_head.supervisor_workload_id
+            is distinct from authority.resolved_supervisor_workload_id
+        or locked_head.strategy_host_workload_id
+            is distinct from authority.resolved_strategy_host_workload_id then
+        raise exception using
+            errcode = '42501',
+            message = 'The strategy generation head is bound to different authority.';
+    end if;
+
+    select journal.* into existing_event
+    from operations.strategy_event_journal as journal
+    where journal.tenant_id = control.current_tenant_id()
+      and journal.deployment_id = target_deployment_id
+      and journal.generation = target_generation
+      and journal.event_id = target_event_id
+    for update;
+
+    if existing_event.event_id is null then
+        select journal.* into existing_event
+        from operations.strategy_event_journal as journal
+        where journal.tenant_id = control.current_tenant_id()
+          and journal.deployment_id = target_deployment_id
+          and journal.generation = target_generation
+          and journal.sequence = target_sequence
+        for update;
+    end if;
+
+    if existing_event.event_id is not null then
+        if existing_event.event_id is distinct from target_event_id
+            or existing_event.sequence is distinct from target_sequence
+            or existing_event.worker_instance_id is distinct from target_worker_instance_id
+            or existing_event.event_kind is distinct from target_event_kind
+            or existing_event.event_contract_version
+                is distinct from target_event_contract_version
+            or existing_event.event_sha256 is distinct from target_event_sha256
+            or existing_event.snapshot_sequence is distinct from target_snapshot_sequence
+            or existing_event.snapshot_contract_version is distinct from
+                target_snapshot_contract_version
+            or existing_event.snapshot_sha256 is distinct from target_snapshot_sha256
+            or existing_event.event_content is distinct from target_event_content
+            or existing_event.snapshot_content is distinct from target_snapshot_content then
+            raise exception using
+                errcode = '22023',
+                message = 'A strategy event identifier or sequence was reused with different evidence.';
+        end if;
+
+        persisted_at_utc := existing_event.persisted_at;
+        replayed := true;
+        return next;
+        return;
+    end if;
+
+    if target_sequence is distinct from locked_head.last_enqueued_sequence + 1 then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy-event intake must be strictly sequential per generation.';
+    end if;
+
+    insert into operations.strategy_event_journal
+    (
+        tenant_id, deployment_id, generation, sequence, event_id,
+        worker_assignment_id, worker_instance_id, execution_lease_id,
+        event_kind, event_contract_version, event_document, event_content,
+        event_sha256, snapshot_sequence, snapshot_contract_version,
+        snapshot_document, snapshot_content, snapshot_sha256,
+        envelope_received_at, broker_timestamp, persisted_at
+    )
+    values
+    (
+        control.current_tenant_id(), target_deployment_id, target_generation,
+        target_sequence, target_event_id, authority.resolved_worker_assignment_id,
+        target_worker_instance_id, authority.resolved_execution_lease_id,
+        target_event_kind, target_event_contract_version, event_document,
+        target_event_content, target_event_sha256, target_snapshot_sequence,
+        target_snapshot_contract_version, snapshot_document,
+        target_snapshot_content, target_snapshot_sha256,
+        envelope_received_at_value, broker_timestamp_value,
+        authority.authority_now_utc
+    );
+
+    update operations.strategy_deployment_heads
+    set last_enqueued_sequence = last_enqueued_sequence + 1,
+        row_version = row_version + 1,
+        updated_at = authority.authority_now_utc
+    where tenant_id = control.current_tenant_id()
+      and deployment_id = target_deployment_id
+      and generation = target_generation;
+
+    persisted_at_utc := authority.authority_now_utc;
+    replayed := false;
+    return next;
+end
+$$;
+
+revoke all on function control.persist_strategy_event(
+    uuid, uuid, bigint, bigint, uuid, integer, integer, text,
+    bigint, integer, text, bytea, bytea) from public;
+
+create function control.claim_strategy_event(
+    target_deployment_id uuid,
+    target_worker_instance_id uuid,
+    target_generation bigint,
+    target_sequence bigint,
+    target_event_id uuid,
+    target_event_kind integer,
+    target_event_contract_version integer,
+    target_event_sha256 text,
+    target_snapshot_sequence bigint,
+    target_snapshot_contract_version integer,
+    target_snapshot_sha256 text,
+    target_claim_token uuid,
+    target_claim_seconds integer)
+returns table
+(
+    claim_disposition text,
+    claim_code text,
+    authority_now_utc timestamptz,
+    claim_expires_at_utc timestamptz,
+    event_content bytea,
+    snapshot_content bytea,
+    prior_state_version bigint,
+    prior_state_content bytea,
+    prior_state_sha256 text,
+    commit_evidence_content bytea,
+    commit_evidence_sha256 text,
+    committed_at_utc timestamptz,
+    replayed boolean
+)
+language plpgsql
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    authority record;
+    locked_head operations.strategy_deployment_heads%rowtype;
+    locked_event operations.strategy_event_journal%rowtype;
+    locked_state operations.strategy_state_revisions%rowtype;
+    calculated_claim_expiry timestamptz;
+begin
+    if target_deployment_id is null
+        or target_deployment_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_worker_instance_id is null
+        or target_worker_instance_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_generation is null or target_generation <= 0
+        or target_sequence is null or target_sequence <= 0
+        or target_event_id is null
+        or target_event_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_event_kind is null or target_event_kind not between 0 and 6
+        or target_event_contract_version is distinct from 1
+        or target_event_sha256 is null
+        or target_event_sha256 !~ '^[0-9a-f]{64}$'
+        or target_snapshot_sequence is null or target_snapshot_sequence <= 0
+        or target_snapshot_contract_version is distinct from 1
+        or target_snapshot_sha256 is null
+        or target_snapshot_sha256 !~ '^[0-9a-f]{64}$'
+        or target_claim_token is null
+        or target_claim_token = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_claim_seconds is null
+        or target_claim_seconds not between 1 and 300 then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy-event claim arguments are invalid.';
+    end if;
+
+    select * into strict authority
+    from control.lock_active_strategy_supervisor_authority(
+        target_deployment_id, target_worker_instance_id, target_generation);
+
+    select head.* into locked_head
+    from operations.strategy_deployment_heads as head
+    where head.tenant_id = control.current_tenant_id()
+      and head.deployment_id = target_deployment_id
+      and head.generation = target_generation
+    for update;
+
+    if locked_head.deployment_id is null then
+        claim_disposition := 'no_work';
+        claim_code := 'strategy_event_no_generation_head';
+        replayed := false;
+        return next;
+        return;
+    end if;
+
+    if locked_head.worker_assignment_id
+            is distinct from authority.resolved_worker_assignment_id
+        or locked_head.worker_instance_id is distinct from target_worker_instance_id
+        or locked_head.execution_lease_id
+            is distinct from authority.resolved_execution_lease_id
+        or locked_head.supervisor_workload_id
+            is distinct from authority.resolved_supervisor_workload_id
+        or locked_head.strategy_host_workload_id
+            is distinct from authority.resolved_strategy_host_workload_id then
+        raise exception using
+            errcode = '42501',
+            message = 'The strategy generation head is bound to different authority.';
+    end if;
+
+    select journal.* into locked_event
+    from operations.strategy_event_journal as journal
+    where journal.tenant_id = control.current_tenant_id()
+      and journal.deployment_id = target_deployment_id
+      and journal.generation = target_generation
+      and journal.event_id = target_event_id
+    for update;
+
+    if locked_event.event_id is null then
+        claim_disposition := 'no_work';
+        claim_code := 'strategy_event_not_persisted';
+        replayed := false;
+        return next;
+        return;
+    end if;
+
+    if locked_event.sequence is distinct from target_sequence
+        or locked_event.worker_instance_id is distinct from target_worker_instance_id
+        or locked_event.event_kind is distinct from target_event_kind
+        or locked_event.event_contract_version
+            is distinct from target_event_contract_version
+        or locked_event.event_sha256 is distinct from target_event_sha256
+        or locked_event.snapshot_sequence is distinct from target_snapshot_sequence
+        or locked_event.snapshot_contract_version
+            is distinct from target_snapshot_contract_version
+        or locked_event.snapshot_sha256 is distinct from target_snapshot_sha256 then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy-event claim reference does not match durable evidence.';
+    end if;
+
+    if locked_event.processing_state = 'committed' then
+        claim_disposition := 'already_committed';
+        claim_code := 'strategy_event_already_committed';
+        commit_evidence_content := locked_event.commit_evidence_content;
+        commit_evidence_sha256 := locked_event.commit_evidence_sha256;
+        committed_at_utc := locked_event.committed_at;
+        replayed := true;
+        return next;
+        return;
+    end if;
+
+    if target_sequence is distinct from locked_head.last_committed_sequence + 1 then
+        claim_disposition := 'no_work';
+        claim_code := 'strategy_event_waiting_for_prior_sequence';
+        replayed := false;
+        return next;
+        return;
+    end if;
+
+    select revision.* into strict locked_state
+    from operations.strategy_state_revisions as revision
+    where revision.tenant_id = control.current_tenant_id()
+      and revision.deployment_id = target_deployment_id
+      and revision.generation = target_generation
+      and revision.state_version = locked_head.current_state_version
+      and revision.state_sha256 = locked_head.current_state_sha256;
+
+    if locked_event.processing_state = 'claimed'
+        and locked_event.claim_expires_at > authority.authority_now_utc then
+        if locked_event.claim_token is distinct from target_claim_token
+            or locked_event.claimed_by is distinct from control.current_actor_id() then
+            claim_disposition := 'no_work';
+            claim_code := 'strategy_event_claim_held';
+            replayed := false;
+            return next;
+            return;
+        end if;
+
+        claim_disposition := 'claimed';
+        claim_code := 'strategy_event_claim_replayed';
+        authority_now_utc := locked_event.claim_authority_now;
+        claim_expires_at_utc := locked_event.claim_expires_at;
+        event_content := locked_event.event_content;
+        snapshot_content := locked_event.snapshot_content;
+        prior_state_version := locked_state.state_version;
+        prior_state_content := locked_state.state_content;
+        prior_state_sha256 := locked_state.state_sha256;
+        replayed := true;
+        return next;
+        return;
+    end if;
+
+    calculated_claim_expiry := least(
+        authority.authority_now_utc + make_interval(secs => target_claim_seconds),
+        authority.authority_valid_until_utc);
+
+    if calculated_claim_expiry <= authority.authority_now_utc then
+        raise exception using
+            errcode = '42501',
+            message = 'No positive strategy-event claim authority window remains.';
+    end if;
+
+    update operations.strategy_event_journal
+    set processing_state = 'claimed',
+        claim_token = target_claim_token,
+        claimed_by = control.current_actor_id(),
+        claim_authority_now = authority.authority_now_utc,
+        claim_expires_at = calculated_claim_expiry,
+        claim_attempts = claim_attempts + 1,
+        pinned_state_version = locked_state.state_version,
+        pinned_state_sha256 = locked_state.state_sha256,
+        row_version = row_version + 1
+    where tenant_id = control.current_tenant_id()
+      and deployment_id = target_deployment_id
+      and generation = target_generation
+      and event_id = target_event_id;
+
+    claim_disposition := 'claimed';
+    claim_code := case
+        when locked_event.processing_state = 'claimed'
+            then 'strategy_event_expired_claim_recovered'
+        else 'strategy_event_claimed'
+    end;
+    authority_now_utc := authority.authority_now_utc;
+    claim_expires_at_utc := calculated_claim_expiry;
+    event_content := locked_event.event_content;
+    snapshot_content := locked_event.snapshot_content;
+    prior_state_version := locked_state.state_version;
+    prior_state_content := locked_state.state_content;
+    prior_state_sha256 := locked_state.state_sha256;
+    replayed := false;
+    return next;
+end
+$$;
+
+revoke all on function control.claim_strategy_event(
+    uuid, uuid, bigint, bigint, uuid, integer, integer, text,
+    bigint, integer, text, uuid, integer) from public;
+
+create function control.recover_expired_strategy_event_claim(
+    target_deployment_id uuid,
+    target_worker_instance_id uuid,
+    target_generation bigint,
+    target_sequence bigint,
+    target_event_id uuid,
+    target_expired_claim_token uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    authority record;
+    locked_head operations.strategy_deployment_heads%rowtype;
+    locked_event operations.strategy_event_journal%rowtype;
+begin
+    if target_deployment_id is null
+        or target_deployment_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_worker_instance_id is null
+        or target_worker_instance_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_generation is null or target_generation <= 0
+        or target_sequence is null or target_sequence <= 0
+        or target_event_id is null
+        or target_event_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_expired_claim_token is null
+        or target_expired_claim_token = '00000000-0000-0000-0000-000000000000'::uuid then
+        raise exception using
+            errcode = '22023',
+            message = 'Expired strategy-event claim recovery arguments are invalid.';
+    end if;
+
+    select * into strict authority
+    from control.lock_active_strategy_supervisor_authority(
+        target_deployment_id, target_worker_instance_id, target_generation);
+
+    select head.* into locked_head
+    from operations.strategy_deployment_heads as head
+    where head.tenant_id = control.current_tenant_id()
+      and head.deployment_id = target_deployment_id
+      and head.generation = target_generation
+    for update;
+
+    select journal.* into locked_event
+    from operations.strategy_event_journal as journal
+    where journal.tenant_id = control.current_tenant_id()
+      and journal.deployment_id = target_deployment_id
+      and journal.generation = target_generation
+      and journal.event_id = target_event_id
+    for update;
+
+    if locked_head.deployment_id is null or locked_event.event_id is null then
+        return false;
+    end if;
+
+    if locked_head.worker_assignment_id
+            is distinct from authority.resolved_worker_assignment_id
+        or locked_head.execution_lease_id
+            is distinct from authority.resolved_execution_lease_id
+        or locked_event.worker_instance_id is distinct from target_worker_instance_id
+        or locked_event.sequence is distinct from target_sequence then
+        raise exception using
+            errcode = '42501',
+            message = 'Expired strategy-event claim authority does not match.';
+    end if;
+
+    if locked_event.processing_state is distinct from 'claimed' then
+        return false;
+    end if;
+
+    if locked_event.claim_token is distinct from target_expired_claim_token
+        or locked_event.claimed_by is distinct from control.current_actor_id() then
+        raise exception using
+            errcode = '42501',
+            message = 'The expired strategy-event claim token does not match.';
+    end if;
+
+    if locked_event.claim_expires_at > authority.authority_now_utc then
+        return false;
+    end if;
+
+    if target_sequence is distinct from locked_head.last_committed_sequence + 1 then
+        raise exception using
+            errcode = '55000',
+            message = 'Only the next strategy-event claim may be recovered.';
+    end if;
+
+    update operations.strategy_event_journal
+    set processing_state = 'pending',
+        claim_token = null,
+        claimed_by = null,
+        claim_authority_now = null,
+        claim_expires_at = null,
+        pinned_state_version = null,
+        pinned_state_sha256 = null,
+        row_version = row_version + 1
+    where tenant_id = control.current_tenant_id()
+      and deployment_id = target_deployment_id
+      and generation = target_generation
+      and event_id = target_event_id;
+
+    return true;
+end
+$$;
+
+revoke all on function control.recover_expired_strategy_event_claim(
+    uuid, uuid, bigint, bigint, uuid, uuid) from public;
+
+create function control.commit_strategy_event(
+    target_deployment_id uuid,
+    target_worker_instance_id uuid,
+    target_generation bigint,
+    target_sequence bigint,
+    target_event_id uuid,
+    target_claim_token uuid,
+    target_commit_evidence_content bytea,
+    target_commit_evidence_sha256 text)
+returns table
+(
+    persisted_commit_evidence_content bytea,
+    persisted_commit_evidence_sha256 text,
+    recorded_at_utc timestamptz,
+    replayed boolean
+)
+language plpgsql
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    authority record;
+    locked_head operations.strategy_deployment_heads%rowtype;
+    locked_event operations.strategy_event_journal%rowtype;
+    locked_prior_state operations.strategy_state_revisions%rowtype;
+    commit_text text;
+    commit_raw_document json;
+    commit_document jsonb;
+    result_document jsonb;
+    next_state_document jsonb;
+    audit_payload jsonb;
+    action_value jsonb;
+    action_document jsonb;
+    outbox_payload_document jsonb;
+    action_content bytea;
+    outbox_payload_content bytea;
+    next_state_content bytea;
+    result_content bytea;
+    document_commit_id uuid;
+    document_claim_token uuid;
+    document_tenant_id uuid;
+    document_deployment_id uuid;
+    document_worker_instance_id uuid;
+    document_generation bigint;
+    document_event_sequence bigint;
+    document_event_id uuid;
+    document_event_kind integer;
+    document_event_contract_version integer;
+    document_event_content bytea;
+    document_event_sha256 text;
+    document_snapshot_sequence bigint;
+    document_snapshot_contract_version integer;
+    document_snapshot_content bytea;
+    document_snapshot_sha256 text;
+    document_prior_state_version bigint;
+    document_prior_state_content bytea;
+    document_prior_state_sha256 text;
+    document_next_state_version bigint;
+    document_next_state_sha256 text;
+    document_result_sha256 text;
+    document_state_bytes integer;
+    document_combined_action_bytes integer;
+    document_claim_authority_now timestamptz;
+    document_claim_expires_at timestamptz;
+    document_prepared_at timestamptz;
+    action_count integer;
+    action_index integer;
+    document_action_ordinal integer;
+    calculated_combined_action_bytes integer := 2;
+    action_id uuid;
+    action_idempotency_key text;
+    action_kind integer;
+    action_exposure_hint integer;
+    action_symbol text;
+    action_market_data_sequence bigint;
+    action_sha256 text;
+    outbox_message_id uuid;
+    outbox_topic text;
+    outbox_payload_sha256 text;
+begin
+    if target_deployment_id is null
+        or target_deployment_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_worker_instance_id is null
+        or target_worker_instance_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_generation is null or target_generation <= 0
+        or target_sequence is null or target_sequence <= 0
+        or target_event_id is null
+        or target_event_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_claim_token is null
+        or target_claim_token = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_commit_evidence_content is null
+        or octet_length(target_commit_evidence_content) not between 2 and 8388608
+        or target_commit_evidence_sha256 is null
+        or target_commit_evidence_sha256 !~ '^[0-9a-f]{64}$'
+        or target_commit_evidence_sha256 is distinct from
+            encode(pg_catalog.sha256(target_commit_evidence_content), 'hex') then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy-event commit evidence is invalid.';
+    end if;
+
+    begin
+        commit_text := convert_from(target_commit_evidence_content, 'UTF8');
+        commit_raw_document := commit_text::json;
+        if control.json_has_duplicate_object_keys(commit_raw_document)
+            or commit_text is distinct from
+                control.dotnet_canonical_json(commit_raw_document)
+            or control.strategy_commit_has_typed_shape(commit_raw_document)
+                is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Strategy-event commit evidence is not canonical JSON.';
+        end if;
+        commit_document := commit_raw_document::jsonb;
+        document_commit_id := (commit_document ->> 'commitId')::uuid;
+        document_claim_token := (commit_document ->> 'claimToken')::uuid;
+        document_tenant_id := (commit_document ->> 'tenantId')::uuid;
+        document_deployment_id := (commit_document ->> 'deploymentId')::uuid;
+        document_worker_instance_id := (commit_document ->> 'workerInstanceId')::uuid;
+        document_generation := (commit_document ->> 'generation')::bigint;
+        document_event_sequence := (commit_document ->> 'eventSequence')::bigint;
+        document_event_id := (commit_document ->> 'eventId')::uuid;
+        document_event_kind := (commit_document ->> 'eventKind')::integer;
+        document_event_contract_version :=
+            (commit_document ->> 'eventContractVersion')::integer;
+        document_event_content := convert_to(commit_document ->> 'eventJson', 'UTF8');
+        document_event_sha256 := commit_document ->> 'eventSha256';
+        document_snapshot_sequence :=
+            (commit_document ->> 'snapshotSequence')::bigint;
+        document_snapshot_contract_version :=
+            (commit_document ->> 'snapshotContractVersion')::integer;
+        document_snapshot_content := convert_to(commit_document ->> 'snapshotJson', 'UTF8');
+        document_snapshot_sha256 := commit_document ->> 'snapshotSha256';
+        document_prior_state_version :=
+            (commit_document ->> 'priorStateVersion')::bigint;
+        document_prior_state_content :=
+            convert_to(commit_document ->> 'priorStateJson', 'UTF8');
+        document_prior_state_sha256 := commit_document ->> 'priorStateSha256';
+        document_next_state_version :=
+            (commit_document ->> 'nextStateVersion')::bigint;
+        next_state_content := convert_to(commit_document ->> 'nextStateJson', 'UTF8');
+        document_next_state_sha256 := commit_document ->> 'nextStateSha256';
+        result_content := convert_to(commit_document ->> 'resultJson', 'UTF8');
+        document_result_sha256 := commit_document ->> 'resultSha256';
+        document_state_bytes := (commit_document ->> 'stateBytes')::integer;
+        document_combined_action_bytes :=
+            (commit_document ->> 'combinedActionBytes')::integer;
+        document_claim_authority_now :=
+            (commit_document ->> 'claimAuthorityNowUtc')::timestamptz;
+        document_claim_expires_at :=
+            (commit_document ->> 'claimExpiresAtUtc')::timestamptz;
+        document_prepared_at := (commit_document ->> 'preparedAtUtc')::timestamptz;
+        if control.is_dotnet_canonical_json(
+                convert_from(document_event_content, 'UTF8')) is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(document_snapshot_content, 'UTF8')) is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(document_prior_state_content, 'UTF8')) is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(next_state_content, 'UTF8')) is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(result_content, 'UTF8')) is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Embedded strategy-event commit content is not canonical JSON.';
+        end if;
+        next_state_document := convert_from(next_state_content, 'UTF8')::jsonb;
+        result_document := convert_from(result_content, 'UTF8')::jsonb;
+        action_count := jsonb_array_length(commit_document -> 'actions');
+    exception when others then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy-event commit evidence is not valid canonical JSON.';
+    end;
+
+    begin
+        if jsonb_typeof(commit_document) is distinct from 'object'
+            or (select count(*) from jsonb_object_keys(commit_document))
+                is distinct from 31::bigint
+            or not (commit_document ?& array[
+                'contractVersion', 'commitId', 'claimToken', 'tenantId',
+                'deploymentId', 'workerInstanceId', 'generation',
+                'eventSequence', 'eventId', 'eventKind', 'eventContractVersion',
+                'eventJson', 'eventSha256', 'snapshotSequence',
+                'snapshotContractVersion', 'snapshotJson', 'snapshotSha256',
+                'priorStateVersion', 'priorStateJson', 'priorStateSha256',
+                'nextStateVersion', 'nextStateJson', 'nextStateSha256',
+                'resultJson', 'resultSha256', 'stateBytes',
+                'combinedActionBytes', 'actions', 'claimAuthorityNowUtc',
+                'claimExpiresAtUtc', 'preparedAtUtc']::text[])
+            or (commit_document ->> 'contractVersion')::integer is distinct from 1
+            or document_commit_id is null
+            or document_commit_id = '00000000-0000-0000-0000-000000000000'::uuid
+            or document_claim_token is distinct from target_claim_token
+            or document_tenant_id is distinct from control.current_tenant_id()
+            or document_deployment_id is distinct from target_deployment_id
+            or document_worker_instance_id is distinct from target_worker_instance_id
+            or document_generation is distinct from target_generation
+            or document_event_sequence is distinct from target_sequence
+            or document_event_id is distinct from target_event_id
+            or document_event_kind is null or document_event_kind not between 0 and 6
+            or document_event_contract_version is distinct from 1
+            or document_event_sha256 is null
+            or document_event_sha256 !~ '^[0-9a-f]{64}$'
+            or document_event_sha256 is distinct from
+                encode(pg_catalog.sha256(document_event_content), 'hex')
+            or document_snapshot_sequence is null or document_snapshot_sequence <= 0
+            or document_snapshot_contract_version is distinct from 1
+            or document_snapshot_sha256 is null
+            or document_snapshot_sha256 !~ '^[0-9a-f]{64}$'
+            or document_snapshot_sha256 is distinct from
+                encode(pg_catalog.sha256(document_snapshot_content), 'hex')
+            or document_prior_state_version is null or document_prior_state_version < 0
+            or document_prior_state_sha256 is null
+            or document_prior_state_sha256 !~ '^[0-9a-f]{64}$'
+            or document_prior_state_sha256 is distinct from
+                encode(pg_catalog.sha256(document_prior_state_content), 'hex')
+            or document_next_state_version is distinct from
+                document_prior_state_version + 1
+            or document_next_state_sha256 is null
+            or document_next_state_sha256 !~ '^[0-9a-f]{64}$'
+            or document_next_state_sha256 is distinct from
+                encode(pg_catalog.sha256(next_state_content), 'hex')
+            or document_result_sha256 is null
+            or document_result_sha256 !~ '^[0-9a-f]{64}$'
+            or document_result_sha256 is distinct from
+                encode(pg_catalog.sha256(result_content), 'hex')
+            or document_state_bytes is distinct from octet_length(next_state_content)
+            or document_state_bytes not between 1 and 1048576
+            or document_combined_action_bytes is null
+            or document_combined_action_bytes < 2
+            or document_combined_action_bytes > 4194304
+            or jsonb_typeof(commit_document -> 'actions') is distinct from 'array'
+            or action_count is null or action_count > 256
+            or document_claim_authority_now is null
+            or document_claim_expires_at is null
+            or document_prepared_at is null
+            or document_claim_authority_now >= document_claim_expires_at
+            or document_prepared_at < document_claim_authority_now
+            or document_prepared_at >= document_claim_expires_at
+            or jsonb_typeof(result_document) is distinct from 'object'
+            or (select count(*) from jsonb_object_keys(result_document))
+                is distinct from 3::bigint
+            or not (result_document ?& array[
+                'contractVersion', 'state', 'actions']::text[])
+            or (result_document ->> 'contractVersion')::integer is distinct from 1
+            or jsonb_typeof(result_document -> 'state') is distinct from 'object'
+            or (select count(*)
+                from jsonb_object_keys(result_document -> 'state'))
+                is distinct from 3::bigint
+            or not (result_document -> 'state' ?& array[
+                'version', 'payloadJson', 'contentHash']::text[])
+            or (result_document -> 'state' ->> 'version')::bigint
+                is distinct from document_next_state_version
+            or result_document -> 'state' ->> 'payloadJson'
+                is distinct from convert_from(next_state_content, 'UTF8')
+            or result_document -> 'state' ->> 'contentHash'
+                is distinct from document_next_state_sha256
+            or jsonb_typeof(result_document -> 'actions') is distinct from 'array'
+            or jsonb_array_length(result_document -> 'actions')
+                is distinct from action_count then
+            raise exception using
+                errcode = '22023',
+                message = 'Strategy-event commit document bindings are invalid.';
+        end if;
+    exception when others then
+        raise exception using
+            errcode = '22023',
+            message = 'Strategy-event commit document bindings are invalid.';
+    end;
+
+    select * into strict authority
+    from control.lock_active_strategy_supervisor_authority(
+        target_deployment_id, target_worker_instance_id, target_generation);
+
+    select head.* into locked_head
+    from operations.strategy_deployment_heads as head
+    where head.tenant_id = control.current_tenant_id()
+      and head.deployment_id = target_deployment_id
+      and head.generation = target_generation
+    for update;
+
+    select journal.* into locked_event
+    from operations.strategy_event_journal as journal
+    where journal.tenant_id = control.current_tenant_id()
+      and journal.deployment_id = target_deployment_id
+      and journal.generation = target_generation
+      and journal.event_id = target_event_id
+    for update;
+
+    if locked_head.deployment_id is null or locked_event.event_id is null then
+        raise exception using
+            errcode = '55000',
+            message = 'The claimed strategy event is no longer available.';
+    end if;
+
+    if locked_head.worker_assignment_id
+            is distinct from authority.resolved_worker_assignment_id
+        or locked_head.worker_instance_id is distinct from target_worker_instance_id
+        or locked_head.execution_lease_id
+            is distinct from authority.resolved_execution_lease_id
+        or locked_head.supervisor_workload_id
+            is distinct from authority.resolved_supervisor_workload_id
+        or locked_event.worker_assignment_id
+            is distinct from authority.resolved_worker_assignment_id
+        or locked_event.execution_lease_id
+            is distinct from authority.resolved_execution_lease_id
+        or locked_event.sequence is distinct from target_sequence
+        or locked_event.event_kind is distinct from document_event_kind
+        or locked_event.event_contract_version
+            is distinct from document_event_contract_version
+        or locked_event.event_sha256 is distinct from document_event_sha256
+        or locked_event.snapshot_sequence is distinct from document_snapshot_sequence
+        or locked_event.snapshot_contract_version
+            is distinct from document_snapshot_contract_version
+        or locked_event.snapshot_sha256 is distinct from document_snapshot_sha256
+        or locked_event.event_content is distinct from document_event_content
+        or locked_event.snapshot_content is distinct from document_snapshot_content then
+        raise exception using
+            errcode = '42501',
+            message = 'Strategy-event commit authority or input evidence does not match.';
+    end if;
+
+    if locked_event.processing_state = 'committed' then
+        if locked_event.commit_id is distinct from document_commit_id
+            or locked_event.claim_token is distinct from target_claim_token
+            or locked_event.commit_evidence_sha256
+                is distinct from target_commit_evidence_sha256
+            or locked_event.commit_evidence_content
+                is distinct from target_commit_evidence_content then
+            raise exception using
+                errcode = '22023',
+                message = 'A committed strategy event was retried with different evidence.';
+        end if;
+
+        persisted_commit_evidence_content := locked_event.commit_evidence_content;
+        persisted_commit_evidence_sha256 := locked_event.commit_evidence_sha256;
+        recorded_at_utc := locked_event.committed_at;
+        replayed := true;
+        return next;
+        return;
+    end if;
+
+    if locked_event.processing_state is distinct from 'claimed'
+        or locked_event.claim_token is distinct from target_claim_token
+        or locked_event.claimed_by is distinct from control.current_actor_id()
+        or locked_event.claim_authority_now is distinct from document_claim_authority_now
+        or locked_event.claim_expires_at is distinct from document_claim_expires_at
+        or locked_event.claim_expires_at <= authority.authority_now_utc
+        or document_prepared_at > authority.authority_now_utc + interval '1 second'
+        or locked_event.pinned_state_version is distinct from document_prior_state_version
+        or locked_event.pinned_state_sha256 is distinct from document_prior_state_sha256
+        or locked_head.last_committed_sequence + 1 is distinct from target_sequence
+        or locked_head.current_state_version is distinct from document_prior_state_version
+        or locked_head.current_state_sha256 is distinct from document_prior_state_sha256 then
+        raise exception using
+            errcode = '42501',
+            message = 'The strategy-event claim is stale, expired, or fenced.';
+    end if;
+
+    select revision.* into strict locked_prior_state
+    from operations.strategy_state_revisions as revision
+    where revision.tenant_id = control.current_tenant_id()
+      and revision.deployment_id = target_deployment_id
+      and revision.generation = target_generation
+      and revision.state_version = document_prior_state_version
+      and revision.state_sha256 = document_prior_state_sha256;
+
+    if locked_prior_state.state_content is distinct from document_prior_state_content then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy-event prior state content does not match its pinned revision.';
+    end if;
+
+    -- Validate every action and its one-to-one risk-evaluation outbox document
+    -- before writing. Constraint failures still roll the entire function call
+    -- back, including state, event, outbox, action, and audit evidence.
+    for action_value, action_index in
+        select value, (ordinality - 1)::integer
+        from jsonb_array_elements(commit_document -> 'actions')
+            with ordinality as committed_action(value, ordinality)
+        order by ordinality
+    loop
+        begin
+            document_action_ordinal := (action_value ->> 'ordinal')::integer;
+            action_id := (action_value ->> 'actionId')::uuid;
+            action_idempotency_key := action_value ->> 'idempotencyKey';
+            action_kind := (action_value ->> 'kind')::integer;
+            action_exposure_hint := (action_value ->> 'exposureHint')::integer;
+            action_symbol := action_value ->> 'symbol';
+            action_market_data_sequence :=
+                (action_value ->> 'marketDataSequence')::bigint;
+            action_content := convert_to(action_value ->> 'actionJson', 'UTF8');
+            action_sha256 := action_value ->> 'actionSha256';
+            outbox_message_id := (action_value ->> 'outboxMessageId')::uuid;
+            outbox_topic := action_value ->> 'outboxTopic';
+            outbox_payload_content :=
+                convert_to(action_value ->> 'outboxPayloadJson', 'UTF8');
+            outbox_payload_sha256 := action_value ->> 'outboxPayloadSha256';
+            if control.is_dotnet_canonical_json(
+                    convert_from(action_content, 'UTF8')) is distinct from true
+                or control.is_dotnet_canonical_json(
+                    convert_from(outbox_payload_content, 'UTF8'))
+                    is distinct from true then
+                raise exception using
+                    errcode = '22023',
+                    message = 'Committed strategy action content is not canonical JSON.';
+            end if;
+            action_document := convert_from(action_content, 'UTF8')::jsonb;
+            outbox_payload_document :=
+                convert_from(outbox_payload_content, 'UTF8')::jsonb;
+        exception when others then
+            raise exception using
+                errcode = '22023',
+                message = 'A committed strategy action is malformed.';
+        end;
+
+        begin
+            if jsonb_typeof(action_value) is distinct from 'object'
+                or (select count(*) from jsonb_object_keys(action_value))
+                    is distinct from 13::bigint
+                or not (action_value ?& array[
+                    'ordinal', 'actionId', 'idempotencyKey', 'kind',
+                    'exposureHint', 'symbol', 'marketDataSequence',
+                    'actionJson', 'actionSha256', 'outboxMessageId',
+                    'outboxTopic', 'outboxPayloadJson',
+                    'outboxPayloadSha256']::text[])
+                or document_action_ordinal is distinct from action_index
+                or action_id is null
+                or action_id = '00000000-0000-0000-0000-000000000000'::uuid
+                or action_idempotency_key is null
+                or length(btrim(action_idempotency_key)) not between 1 and 500
+                or action_kind is null or action_kind not between 0 and 3
+                or action_exposure_hint is null
+                or action_exposure_hint not between 0 and 4
+                or action_symbol is null
+                or length(btrim(action_symbol)) not between 1 and 100
+                or action_market_data_sequence is null
+                or action_market_data_sequence <= 0
+                or action_sha256 is null or action_sha256 !~ '^[0-9a-f]{64}$'
+                or octet_length(action_content) not between 2 and 1048576
+                or action_sha256 is distinct from
+                    encode(pg_catalog.sha256(action_content), 'hex')
+                or outbox_message_id is null
+                or outbox_message_id = '00000000-0000-0000-0000-000000000000'::uuid
+                or outbox_topic is distinct from
+                    'strategy.action.risk-evaluation-requested.v1'
+                or outbox_payload_sha256 is null
+                or outbox_payload_sha256 !~ '^[0-9a-f]{64}$'
+                or octet_length(outbox_payload_content) not between 2 and 1048576
+                or outbox_payload_sha256 is distinct from
+                    encode(pg_catalog.sha256(outbox_payload_content), 'hex')
+                or jsonb_typeof(action_document) is distinct from 'object'
+                or not (action_document ?& array[
+                    'actionId', 'idempotencyKey', 'kind', 'exposureHint',
+                    'symbol', 'marketDataSequence']::text[])
+                or action_document is distinct from
+                    result_document -> 'actions' -> action_index
+                or action_document ->> 'actionId' is distinct from action_id::text
+                or action_document ->> 'idempotencyKey'
+                    is distinct from action_idempotency_key
+                or (action_document ->> 'kind')::integer
+                    is distinct from action_kind
+                or (action_document ->> 'exposureHint')::integer
+                    is distinct from action_exposure_hint
+                or action_document ->> 'symbol' is distinct from action_symbol
+                or (action_document ->> 'marketDataSequence')::bigint
+                    is distinct from action_market_data_sequence
+                or jsonb_typeof(outbox_payload_document) is distinct from 'object'
+                or (select count(*)
+                    from jsonb_object_keys(outbox_payload_document))
+                    is distinct from 14::bigint
+                or not (outbox_payload_document ?& array[
+                    'contractVersion', 'tenantId', 'deploymentId',
+                    'workerInstanceId', 'generation', 'eventSequence',
+                    'eventId', 'stateVersion', 'actionOrdinal', 'actionId',
+                    'idempotencyKey', 'actionKind', 'exposureHint',
+                    'actionSha256']::text[])
+                or (outbox_payload_document ->> 'contractVersion')::integer
+                    is distinct from 1
+                or (outbox_payload_document ->> 'tenantId')::uuid
+                    is distinct from control.current_tenant_id()
+                or (outbox_payload_document ->> 'deploymentId')::uuid
+                    is distinct from target_deployment_id
+                or (outbox_payload_document ->> 'workerInstanceId')::uuid
+                    is distinct from target_worker_instance_id
+                or (outbox_payload_document ->> 'generation')::bigint
+                    is distinct from target_generation
+                or (outbox_payload_document ->> 'eventSequence')::bigint
+                    is distinct from target_sequence
+                or (outbox_payload_document ->> 'eventId')::uuid
+                    is distinct from target_event_id
+                or (outbox_payload_document ->> 'stateVersion')::bigint
+                    is distinct from document_next_state_version
+                or (outbox_payload_document ->> 'actionOrdinal')::integer
+                    is distinct from action_index
+                or (outbox_payload_document ->> 'actionId')::uuid
+                    is distinct from action_id
+                or outbox_payload_document ->> 'idempotencyKey'
+                    is distinct from action_idempotency_key
+                or (outbox_payload_document ->> 'actionKind')::integer
+                    is distinct from action_kind
+                or (outbox_payload_document ->> 'exposureHint')::integer
+                    is distinct from action_exposure_hint
+                or outbox_payload_document ->> 'actionSha256'
+                    is distinct from action_sha256 then
+                raise exception using
+                    errcode = '22023',
+                    message = 'A committed strategy action or outbox binding is invalid.';
+            end if;
+        exception when others then
+            raise exception using
+                errcode = '22023',
+                message = 'A committed strategy action or outbox binding is invalid.';
+        end;
+
+        calculated_combined_action_bytes := calculated_combined_action_bytes
+            + octet_length(action_content)
+            + case when action_index = 0 then 0 else 1 end;
+    end loop;
+
+    if document_combined_action_bytes is distinct from
+        calculated_combined_action_bytes then
+        raise exception using
+            errcode = '22023',
+            message = 'The combined strategy-action byte count is invalid.';
+    end if;
+
+    insert into operations.strategy_state_revisions
+    (
+        tenant_id, deployment_id, generation, state_version,
+        state_document, state_content, state_sha256, produced_by_event_id,
+        result_sha256, commit_evidence_sha256, committed_at
+    )
+    values
+    (
+        control.current_tenant_id(), target_deployment_id, target_generation,
+        document_next_state_version, next_state_document, next_state_content,
+        document_next_state_sha256, target_event_id, document_result_sha256,
+        target_commit_evidence_sha256, authority.authority_now_utc
+    );
+
+    for action_value, action_index in
+        select value, (ordinality - 1)::integer
+        from jsonb_array_elements(commit_document -> 'actions')
+            with ordinality as committed_action(value, ordinality)
+        order by ordinality
+    loop
+        action_id := (action_value ->> 'actionId')::uuid;
+        action_idempotency_key := action_value ->> 'idempotencyKey';
+        action_kind := (action_value ->> 'kind')::integer;
+        action_exposure_hint := (action_value ->> 'exposureHint')::integer;
+        action_symbol := action_value ->> 'symbol';
+        action_market_data_sequence :=
+            (action_value ->> 'marketDataSequence')::bigint;
+        action_content := convert_to(action_value ->> 'actionJson', 'UTF8');
+        action_sha256 := action_value ->> 'actionSha256';
+        action_document := convert_from(action_content, 'UTF8')::jsonb;
+        outbox_message_id := (action_value ->> 'outboxMessageId')::uuid;
+        outbox_topic := action_value ->> 'outboxTopic';
+        outbox_payload_content :=
+            convert_to(action_value ->> 'outboxPayloadJson', 'UTF8');
+        outbox_payload_sha256 := action_value ->> 'outboxPayloadSha256';
+        outbox_payload_document :=
+            convert_from(outbox_payload_content, 'UTF8')::jsonb;
+
+        insert into messaging.outbox_messages
+        (
+            id, tenant_id, message_type, aggregate_type, aggregate_id,
+            payload, payload_sha256, correlation_id, causation_id,
+            occurred_at, available_at
+        )
+        values
+        (
+            outbox_message_id, control.current_tenant_id(), outbox_topic,
+            'strategy_requested_action', action_id::text,
+            outbox_payload_document, outbox_payload_sha256,
+            control.current_correlation_id(), target_event_id,
+            authority.authority_now_utc, authority.authority_now_utc
+        );
+
+        insert into operations.strategy_requested_actions
+        (
+            id, tenant_id, deployment_id, generation, event_id,
+            event_sequence, state_version, action_ordinal, idempotency_key,
+            action_kind, exposure_hint, symbol, market_data_sequence,
+            action_document, action_content, action_sha256,
+            outbox_message_id, outbox_topic, outbox_payload_document,
+            outbox_payload_content, outbox_payload_sha256, created_at
+        )
+        values
+        (
+            action_id, control.current_tenant_id(), target_deployment_id,
+            target_generation, target_event_id, target_sequence,
+            document_next_state_version, action_index, action_idempotency_key,
+            action_kind, action_exposure_hint, action_symbol,
+            action_market_data_sequence, action_document, action_content,
+            action_sha256, outbox_message_id, outbox_topic,
+            outbox_payload_document, outbox_payload_content,
+            outbox_payload_sha256, authority.authority_now_utc
+        );
+    end loop;
+
+    audit_payload := jsonb_build_object(
+        'contractVersion', 1,
+        'commitId', document_commit_id,
+        'deploymentId', target_deployment_id,
+        'workerInstanceId', target_worker_instance_id,
+        'generation', target_generation,
+        'eventSequence', target_sequence,
+        'eventId', target_event_id,
+        'eventSha256', document_event_sha256,
+        'snapshotSha256', document_snapshot_sha256,
+        'priorStateVersion', document_prior_state_version,
+        'priorStateSha256', document_prior_state_sha256,
+        'nextStateVersion', document_next_state_version,
+        'nextStateSha256', document_next_state_sha256,
+        'resultSha256', document_result_sha256,
+        'actionCount', action_count,
+        'commitEvidenceSha256', target_commit_evidence_sha256);
+
+    insert into audit.audit_events
+    (
+        id, tenant_id, actor_id, category, action, target_type, target_id,
+        outcome, correlation_id, causation_id, payload, payload_sha256,
+        assurance, resource_version_before, resource_version_after, occurred_at
+    )
+    values
+    (
+        document_commit_id, control.current_tenant_id(), control.current_actor_id(),
+        'operations', 'strategy_event_committed', 'strategy_event',
+        target_event_id::text, 'succeeded', control.current_correlation_id(),
+        target_event_id, audit_payload,
+        encode(pg_catalog.sha256(convert_to(audit_payload::text, 'UTF8')), 'hex'),
+        'workload', document_prior_state_version,
+        document_next_state_version, authority.authority_now_utc
+    );
+
+    update operations.strategy_event_journal
+    set processing_state = 'committed',
+        commit_id = document_commit_id,
+        result_sha256 = document_result_sha256,
+        committed_state_version = document_next_state_version,
+        committed_state_sha256 = document_next_state_sha256,
+        committed_action_count = action_count,
+        commit_evidence_document = commit_document,
+        commit_evidence_content = target_commit_evidence_content,
+        commit_evidence_sha256 = target_commit_evidence_sha256,
+        committed_at = authority.authority_now_utc,
+        row_version = row_version + 1
+    where tenant_id = control.current_tenant_id()
+      and deployment_id = target_deployment_id
+      and generation = target_generation
+      and event_id = target_event_id;
+
+    update operations.strategy_deployment_heads
+    set last_committed_sequence = last_committed_sequence + 1,
+        current_state_version = document_next_state_version,
+        current_state_sha256 = document_next_state_sha256,
+        row_version = row_version + 1,
+        updated_at = authority.authority_now_utc
+    where tenant_id = control.current_tenant_id()
+      and deployment_id = target_deployment_id
+      and generation = target_generation;
+
+    persisted_commit_evidence_content := target_commit_evidence_content;
+    persisted_commit_evidence_sha256 := target_commit_evidence_sha256;
+    recorded_at_utc := authority.authority_now_utc;
+    replayed := false;
+    return next;
+end
+$$;
+
+revoke all on function control.commit_strategy_event(
+    uuid, uuid, bigint, bigint, uuid, uuid, bytea, text) from public;
+
+create function control.read_strategy_event_commit(
+    target_deployment_id uuid,
+    target_worker_instance_id uuid,
+    target_generation bigint,
+    target_sequence bigint,
+    target_event_id uuid)
+returns table
+(
+    persisted_commit_evidence_content bytea,
+    persisted_commit_evidence_sha256 text,
+    recorded_at_utc timestamptz
+)
+language plpgsql
+security definer
+stable
+set search_path = ''
+set row_security = on
+as $$
+declare
+    bound_head operations.strategy_deployment_heads%rowtype;
+    committed_event operations.strategy_event_journal%rowtype;
+begin
+    if session_user is distinct from 'yo4x_supervisor_runtime'
+        or control.current_tenant_id() is null
+        or control.current_tenant_id() = '00000000-0000-0000-0000-000000000000'::uuid
+        or control.current_actor_id() is null
+        or control.current_actor_id() = '00000000-0000-0000-0000-000000000000'::uuid
+        or control.current_correlation_id() is null
+        or control.current_correlation_id() = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_deployment_id is null
+        or target_deployment_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_worker_instance_id is null
+        or target_worker_instance_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_generation is null or target_generation <= 0
+        or target_sequence is null or target_sequence <= 0
+        or target_event_id is null
+        or target_event_id = '00000000-0000-0000-0000-000000000000'::uuid then
+        raise exception using
+            errcode = '42501',
+            message = 'An authenticated supervisor commit-evidence context is required.';
+    end if;
+
+    select head.* into bound_head
+    from operations.strategy_deployment_heads as head
+    where head.tenant_id = control.current_tenant_id()
+      and head.deployment_id = target_deployment_id
+      and head.generation = target_generation
+      and head.worker_instance_id = target_worker_instance_id
+      and head.supervisor_workload_id = control.current_actor_id();
+
+    if bound_head.deployment_id is null then
+        return;
+    end if;
+
+    select journal.* into committed_event
+    from operations.strategy_event_journal as journal
+    where journal.tenant_id = control.current_tenant_id()
+      and journal.deployment_id = target_deployment_id
+      and journal.generation = target_generation
+      and journal.sequence = target_sequence
+      and journal.event_id = target_event_id
+      and journal.worker_instance_id = target_worker_instance_id
+      and journal.processing_state = 'committed';
+
+    if committed_event.event_id is null then
+        return;
+    end if;
+
+    persisted_commit_evidence_content := committed_event.commit_evidence_content;
+    persisted_commit_evidence_sha256 := committed_event.commit_evidence_sha256;
+    recorded_at_utc := committed_event.committed_at;
+    return next;
+end
+$$;
+
+revoke all on function control.read_strategy_event_commit(
+    uuid, uuid, bigint, bigint, uuid) from public;
+
 alter table control.user_operations
     add constraint user_operations_dispatch_message_fk
     foreign key (tenant_id, dispatch_message_id)
     references messaging.outbox_messages(tenant_id, id);
+
+alter table operations.deployment_reconciliations
+    add constraint deployment_reconciliations_dispatch_binding_fk
+    foreign key
+    (
+        tenant_id, dispatch_message_id, dispatch_target_binding_sha256,
+        submitted_resource_version, requested_target_state, generation,
+        worker_assignment_id, worker_instance_id, policy_snapshot_sha256,
+        deployment_id
+    )
+    references control.user_operations
+    (
+        tenant_id, dispatch_message_id, dispatch_target_binding_sha256,
+        submitted_resource_version, requested_target_state,
+        dispatch_fence_generation, dispatch_worker_assignment_id,
+        dispatch_worker_instance_id, dispatch_policy_snapshot_sha256,
+        dispatch_route_deployment_id
+    );
+
+alter table operations.deployment_reconciliations
+    add constraint deployment_reconciliations_operation_fk
+    foreign key (tenant_id, operation_id)
+    references control.user_operations(tenant_id, id);
+
+alter table operations.deployment_reconciliations
+    add constraint deployment_reconciliations_result_capability_fk
+    foreign key
+    (
+        tenant_id, operation_id, dispatch_message_id,
+        dispatch_target_binding_sha256, result_capability_sha256
+    )
+    references control.user_operations
+    (
+        tenant_id, id, dispatch_message_id,
+        dispatch_target_binding_sha256, result_capability_sha256
+    );
 
 alter table operations.deployment_reconciliations
     add constraint deployment_reconciliations_dispatch_message_fk
@@ -3589,13 +8944,21 @@ create function control.acquire_u0_tenant_authority_lock(target_tenant_id uuid)
 returns void
 language plpgsql
 volatile
+security definer
 set search_path = ''
 as $$
+declare
+    active_tenant_id uuid := control.current_tenant_id();
 begin
-    if target_tenant_id is null then
+    if target_tenant_id is null
+        or
+        (
+            session_user <> 'yo4x_conversion_worker'
+            and target_tenant_id is distinct from active_tenant_id
+        ) then
         raise exception using
             errcode = '42501',
-            message = 'A tenant identifier is required for U0 authority locking.';
+            message = 'A tenant-bound U0 authority lock is required.';
     end if;
 
     -- Every tenant authority writer/read-boundary first holds the shared global
@@ -3612,6 +8975,7 @@ create function control.acquire_u0_authority_lock()
 returns void
 language plpgsql
 volatile
+security definer
 set search_path = ''
 as $$
 declare
@@ -3825,6 +9189,8 @@ set search_path = ''
 set row_security = on
 as $$
 declare
+    envelope_text text;
+    envelope_raw json;
     envelope jsonb;
     binding jsonb;
     action_policy jsonb;
@@ -3876,7 +9242,20 @@ begin
     end if;
 
     begin
-        envelope := convert_from(target_signed_envelope_content, 'UTF8')::jsonb;
+        envelope_text := convert_from(target_signed_envelope_content, 'UTF8');
+        if control.is_dotnet_canonical_json(envelope_text) is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Signed execution-lease envelope is not canonical JSON.';
+        end if;
+        envelope_raw := envelope_text::json;
+        if control.signed_execution_lease_has_typed_shape(envelope_raw)
+                is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Signed execution-lease envelope does not match its typed contract.';
+        end if;
+        envelope := envelope_text::jsonb;
         binding := envelope #> '{claims,binding}';
         action_policy := envelope #> '{claims,actionPolicy}';
         target_lease_id := (envelope #>> '{claims,leaseId}')::uuid;
@@ -3999,9 +9378,9 @@ begin
             binding ->> 'safetyPolicySha256'
         or locked_strategy.state not in ('demo_approved', 'published')
         or locked_binding.signature_cryptographically_verified is not true
-        or locked_assignment.supervisor_workload_id <> target_supervisor_workload_id
-        or locked_assignment.strategy_host_workload_id <> target_strategy_host_workload_id
-        or locked_assignment.gateway_host_workload_id <> target_gateway_host_workload_id
+        or locked_assignment.supervisor_identity <> target_supervisor_workload_id::text
+        or locked_assignment.strategy_host_identity <> target_strategy_host_workload_id::text
+        or locked_assignment.gateway_host_identity <> target_gateway_host_workload_id::text
         or locked_assignment.state not in ('assigned', 'starting', 'active')
         or locked_assignment.lease_expires_at <= target_expires_at
         or locked_policy.state <> 'active' then
@@ -4164,6 +9543,8 @@ declare
     locked_strategy governance.strategy_versions%rowtype;
     locked_corpus governance.strategy_source_corpora%rowtype;
     existing_binding governance.strategy_version_source_bindings%rowtype;
+    evidence_text text;
+    evidence_raw json;
     evidence jsonb;
     evidence_sha256 text;
     signature_sha256 text;
@@ -4201,7 +9582,37 @@ begin
     end if;
 
     begin
-        evidence := convert_from(target_verification_evidence_content, 'UTF8')::jsonb;
+        evidence_text := convert_from(target_verification_evidence_content, 'UTF8');
+        if control.is_dotnet_canonical_json(evidence_text) is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Strategy verification evidence is not canonical JSON.';
+        end if;
+        evidence_raw := evidence_text::json;
+        if control.json_object_has_exact_keys(
+                evidence_raw,
+                array[
+                    'contractVersion', 'strategyVersionId',
+                    'strategyPackageSha256', 'sourceCorpusId',
+                    'sourceCorpusSha256', 'sourceManifestSha256',
+                    'sourceReportSha256', 'compiledArtifactSha256',
+                    'compilerArtifactSha256', 'parseTypecheckProofSha256',
+                    'compileProofSha256', 'semanticConversionProofSha256',
+                    'referenceParityProofSha256', 'demoRuntimeProofSha256',
+                    'verifiedByWorkloadId', 'verificationSignatureAlgorithm',
+                    'verificationSigningKeyId',
+                    'signatureCryptographicallyVerified',
+                    'parsedAndTypeChecked', 'metaEditorCompileProven',
+                    'semanticConversionProven', 'referenceParityProven',
+                    'demoRuntimeProven']::text[])
+                is distinct from true
+            or control.json_token_is_integer(evidence_raw -> 'contractVersion')
+                is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Strategy verification evidence does not match its typed contract.';
+        end if;
+        evidence := evidence_text::jsonb;
     exception when others then
         raise exception using
             errcode = '22023',
@@ -4526,8 +9937,8 @@ revoke all on function control.promote_strategy_version_to_demo_approved(
 
 -- A frozen deployment cannot enter an executable state after its strategy is
 -- suspended or if any part of the signed source binding no longer matches.
--- Callers acquire the U0 advisory lock before their row locks; this trigger
--- repeats the lock and authoritative check as a database-owned last boundary.
+-- The matching BEFORE STATEMENT trigger acquires U0 before PostgreSQL can lock
+-- any deployment tuple; this row trigger performs only the authoritative proof.
 create function control.enforce_deployment_execution_provenance()
 returns trigger
 language plpgsql
@@ -4542,8 +9953,6 @@ begin
     if new.desired_state not in ('starting', 'running') then
         return new;
     end if;
-
-    perform control.acquire_u0_authority_lock();
 
     select strategy.state, binding.id
     into current_strategy_state, matching_binding_id
@@ -4660,6 +10069,12 @@ declare
     locked_policy governance.risk_policy_versions%rowtype;
     resolved_overlay record;
     existing_command operations.broker_commands%rowtype;
+    normalized_command_raw json;
+    exposure_snapshot_raw json;
+    risk_input_raw json;
+    risk_decision_raw json;
+    reconciliation_document_raw json;
+    authorization_document_raw json;
     normalized_command jsonb;
     exposure_snapshot jsonb;
     risk_input jsonb;
@@ -4701,25 +10116,36 @@ begin
         or target_exposure_snapshot_id is null
         or target_risk_decision_id is null
         or target_execution_lease_id is null
+        or target_execution_lease_token_sha256 is null
         or target_execution_lease_token_sha256 !~ '^[0-9a-f]{64}$'
+        or target_execution_lease_payload_sha256 is null
         or target_execution_lease_payload_sha256 !~ '^[0-9a-f]{64}$'
+        or target_execution_lease_signature_sha256 is null
         or target_execution_lease_signature_sha256 !~ '^[0-9a-f]{64}$'
-        or target_execution_lease_signature_algorithm <> 'ECDSA_P256_SHA256_DER'
+        or target_execution_lease_signature_algorithm is distinct from
+            'ECDSA_P256_SHA256_DER'
+        or target_execution_lease_signing_key_id is null
         or length(btrim(target_execution_lease_signing_key_id)) not between 1 and 500
+        or target_execution_lease_trusted_verification_key_sha256 is null
         or target_execution_lease_trusted_verification_key_sha256 !~ '^[0-9a-f]{64}$'
+        or target_idempotency_key is null
         or length(btrim(target_idempotency_key)) not between 1 and 200
+        or target_action_class is null
         or target_action_class not in
         (
             'exposure_increase', 'exposure_reduction', 'protection',
             'pending_order_cancellation', 'emergency_close'
         )
+        or target_execution_safety_overlay_sha256 is null
         or target_execution_safety_overlay_sha256 !~ '^[0-9a-f]{64}$'
         or target_execution_safety_policy_version_watermark is null
         or target_execution_safety_policy_version_watermark < 0
-        or target_exposure_source_kind <> 'gateway_reconciliation'
+        or target_exposure_source_kind is distinct from 'gateway_reconciliation'
         or target_exposure_source_sequence is null
         or target_exposure_source_sequence <= 0
+        or target_exposure_source_evidence_sha256 is null
         or target_exposure_source_evidence_sha256 !~ '^[0-9a-f]{64}$'
+        or target_reconciliation_scope_sha256 is null
         or target_reconciliation_scope_sha256 !~ '^[0-9a-f]{64}$'
         or target_audit_event_id is null
         or target_normalized_command_content is null
@@ -4745,12 +10171,54 @@ begin
     end if;
 
     begin
-        normalized_command := convert_from(target_normalized_command_content, 'UTF8')::jsonb;
-        exposure_snapshot := convert_from(target_exposure_content, 'UTF8')::jsonb;
-        risk_input := convert_from(target_risk_input_content, 'UTF8')::jsonb;
-        risk_decision := convert_from(target_risk_decision_content, 'UTF8')::jsonb;
-        reconciliation_document := convert_from(target_reconciliation_content, 'UTF8')::jsonb;
-        authorization_document := convert_from(target_authorization_content, 'UTF8')::jsonb;
+        if control.is_dotnet_canonical_json(
+                convert_from(target_normalized_command_content, 'UTF8'))
+                is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(target_exposure_content, 'UTF8'))
+                is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(target_risk_input_content, 'UTF8'))
+                is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(target_risk_decision_content, 'UTF8'))
+                is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(target_reconciliation_content, 'UTF8'))
+                is distinct from true
+            or control.is_dotnet_canonical_json(
+                convert_from(target_authorization_content, 'UTF8'))
+                is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Broker-command evidence is not canonical JSON.';
+        end if;
+        normalized_command_raw :=
+            convert_from(target_normalized_command_content, 'UTF8')::json;
+        exposure_snapshot_raw := convert_from(target_exposure_content, 'UTF8')::json;
+        risk_input_raw := convert_from(target_risk_input_content, 'UTF8')::json;
+        risk_decision_raw := convert_from(target_risk_decision_content, 'UTF8')::json;
+        reconciliation_document_raw :=
+            convert_from(target_reconciliation_content, 'UTF8')::json;
+        authorization_document_raw :=
+            convert_from(target_authorization_content, 'UTF8')::json;
+        if control.broker_authorization_evidence_has_typed_shape(
+                normalized_command_raw,
+                exposure_snapshot_raw,
+                risk_input_raw,
+                risk_decision_raw,
+                reconciliation_document_raw,
+                authorization_document_raw) is distinct from true then
+            raise exception using
+                errcode = '22023',
+                message = 'Broker-command evidence does not match its typed contracts.';
+        end if;
+        normalized_command := normalized_command_raw::jsonb;
+        exposure_snapshot := exposure_snapshot_raw::jsonb;
+        risk_input := risk_input_raw::jsonb;
+        risk_decision := risk_decision_raw::jsonb;
+        reconciliation_document := reconciliation_document_raw::jsonb;
+        authorization_document := authorization_document_raw::jsonb;
     exception when others then
         raise exception using
             errcode = '22023',
@@ -5207,17 +10675,20 @@ begin
         or locked_lease.state not in ('issued', 'active')
         or locked_lease.not_before > authority_now
         or locked_lease.expires_at <= authority_now
-        or locked_lease.lease_token_sha256 <> target_execution_lease_token_sha256
+        or locked_lease.lease_token_sha256 is distinct from
+            target_execution_lease_token_sha256
         or locked_lease.lease_payload_sha256 is distinct from
             target_execution_lease_payload_sha256
         or locked_lease.lease_signature_sha256 is distinct from
             target_execution_lease_signature_sha256
         or locked_lease.signed_envelope_content is null
-        or encode(pg_catalog.sha256(locked_lease.signed_envelope_content), 'hex') <>
+        or encode(pg_catalog.sha256(locked_lease.signed_envelope_content), 'hex')
+            is distinct from
             target_execution_lease_token_sha256
-        or locked_lease.signature_algorithm <>
+        or locked_lease.signature_algorithm is distinct from
             target_execution_lease_signature_algorithm
-        or locked_lease.signing_key_id <> target_execution_lease_signing_key_id
+        or locked_lease.signing_key_id is distinct from
+            target_execution_lease_signing_key_id
         or locked_lease.strategy_version_id <> locked_binding.strategy_version_id
         or locked_lease.strategy_package_sha256 <> locked_binding.strategy_package_sha256
         or locked_lease.risk_policy_version_id <> locked_policy.id
@@ -5591,7 +11062,9 @@ begin
         or control.current_actor_id() is null
         or control.current_correlation_id() is distinct from target_command_id
         or target_command_id is null
+        or target_authorization_sha256 is null
         or target_authorization_sha256 !~ '^[0-9a-f]{64}$'
+        or target_execution_lease_token_sha256 is null
         or target_execution_lease_token_sha256 !~ '^[0-9a-f]{64}$'
         or target_claim_token is null
         or target_claim_token = '00000000-0000-0000-0000-000000000000'::uuid
@@ -5736,10 +11209,11 @@ begin
         or locked_policy.id is null
         or locked_exposure.id is null
         or locked_risk.id is null
-        or locked_command.authorization_sha256 <> target_authorization_sha256
-        or locked_command.execution_lease_token_sha256 <>
+        or locked_command.authorization_sha256 is distinct from target_authorization_sha256
+        or locked_command.execution_lease_token_sha256 is distinct from
             target_execution_lease_token_sha256
-        or locked_lease.lease_token_sha256 <> target_execution_lease_token_sha256
+        or locked_lease.lease_token_sha256 is distinct from
+            target_execution_lease_token_sha256
         or locked_lease.lease_payload_sha256 is distinct from
             locked_command.execution_lease_payload_sha256
         or locked_lease.lease_signature_sha256 is distinct from
@@ -5932,6 +11406,7 @@ create function control.record_broker_command_submission(
     target_authorization_sha256 text,
     target_claim_token uuid,
     target_disposition text,
+    target_pre_invocation_not_sent_proven boolean,
     target_result_code text,
     target_broker_request_id text,
     target_broker_order_id text,
@@ -5961,6 +11436,8 @@ declare
     locked_lease operations.execution_leases%rowtype;
     locked_gateway governance.gateway_artifacts%rowtype;
     locked_command operations.broker_commands%rowtype;
+    result_text text;
+    result_raw_document json;
     result_document jsonb;
     calculated_result_sha256 text;
     next_state text;
@@ -5974,12 +11451,36 @@ begin
         or control.current_actor_id() is null
         or control.current_correlation_id() is distinct from target_command_id
         or target_command_id is null
+        or target_authorization_sha256 is null
         or target_authorization_sha256 !~ '^[0-9a-f]{64}$'
         or target_claim_token is null
         or target_claim_token = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_disposition is null
         or target_disposition not in
-            ('accepted', 'rejected', 'unknown', 'submission_disabled')
-        or length(btrim(target_result_code)) not between 1 and 200
+            ('accepted', 'unknown', 'submission_disabled')
+        or target_pre_invocation_not_sent_proven is null
+        or target_result_code is null
+        or control.json_token_is_bounded_canonical_text(
+            pg_catalog.to_json(target_result_code), 200) is distinct from true
+        or target_result_code !~ '^[A-Za-z0-9_.:-]+$'
+        or target_broker_request_id is distinct from
+            nullif(btrim(target_broker_request_id), '')
+        or (target_broker_request_id is not null
+            and control.json_token_is_bounded_canonical_text(
+                pg_catalog.to_json(target_broker_request_id), 200)
+                is distinct from true)
+        or target_broker_order_id is distinct from
+            nullif(btrim(target_broker_order_id), '')
+        or (target_broker_order_id is not null
+            and control.json_token_is_bounded_canonical_text(
+                pg_catalog.to_json(target_broker_order_id), 200)
+                is distinct from true)
+        or target_broker_deal_id is distinct from
+            nullif(btrim(target_broker_deal_id), '')
+        or (target_broker_deal_id is not null
+            and control.json_token_is_bounded_canonical_text(
+                pg_catalog.to_json(target_broker_deal_id), 200)
+                is distinct from true)
         or target_result_content is null
         or octet_length(target_result_content) not between 2 and 262144
         or target_observed_at is null
@@ -5988,19 +11489,65 @@ begin
     end if;
 
     begin
-        result_document := convert_from(target_result_content, 'UTF8')::jsonb;
+        result_text := convert_from(target_result_content, 'UTF8');
+        result_raw_document := result_text::json;
+        if control.json_has_duplicate_object_keys(result_raw_document)
+            or result_text is distinct from
+                control.dotnet_canonical_json(result_raw_document)
+            or not control.json_object_has_exact_keys(result_raw_document, array[
+                'brokerRequestId', 'code', 'dealId', 'disposition',
+                'observedAtUtc', 'orderId',
+                'preInvocationNotSentProven']::text[])
+            or control.json_token_is_string_or_null(
+                result_raw_document -> 'brokerRequestId') is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                result_raw_document -> 'code', 200) is distinct from true
+            or (result_raw_document ->> 'code') !~ '^[A-Za-z0-9_.:-]+$'
+            or control.json_token_is_string_or_null(
+                result_raw_document -> 'dealId') is distinct from true
+            or (pg_catalog.json_typeof(result_raw_document -> 'dealId') = 'string'
+                and control.json_token_is_bounded_canonical_text(
+                    result_raw_document -> 'dealId', 200) is distinct from true)
+            or pg_catalog.json_typeof(result_raw_document -> 'disposition')
+                is distinct from 'string'
+            or control.json_token_is_utc_timestamp(
+                result_raw_document -> 'observedAtUtc') is distinct from true
+            or control.json_token_is_string_or_null(
+                result_raw_document -> 'orderId') is distinct from true
+            or (pg_catalog.json_typeof(result_raw_document -> 'orderId') = 'string'
+                and control.json_token_is_bounded_canonical_text(
+                    result_raw_document -> 'orderId', 200) is distinct from true)
+            or (pg_catalog.json_typeof(result_raw_document -> 'brokerRequestId') = 'string'
+                and control.json_token_is_bounded_canonical_text(
+                    result_raw_document -> 'brokerRequestId', 200)
+                    is distinct from true)
+            or pg_catalog.json_typeof(
+                result_raw_document -> 'preInvocationNotSentProven')
+                is distinct from 'boolean' then
+            raise exception using
+                errcode = '22023',
+                message = 'Broker submission result is not canonical JSON.';
+        end if;
+        result_document := result_raw_document::jsonb;
     exception when others then
         raise exception using
             errcode = '22023',
-            message = 'Broker submission result is not valid UTF-8 JSON.';
+            message = 'Broker submission result is not valid canonical UTF-8 JSON.';
     end;
 
     calculated_result_sha256 := encode(
         pg_catalog.sha256(target_result_content), 'hex');
     if jsonb_typeof(result_document) <> 'object'
-        or result_document ->> 'disposition' <> target_disposition
-        or result_document ->> 'code' <> target_result_code
-        or (result_document ->> 'observedAtUtc')::timestamptz <> target_observed_at
+        or (select count(*) from jsonb_object_keys(result_document)) <> 7
+        or not (result_document ?& array[
+            'disposition', 'code', 'brokerRequestId', 'orderId', 'dealId',
+            'observedAtUtc', 'preInvocationNotSentProven'])
+        or result_document ->> 'disposition' is distinct from target_disposition
+        or (result_document ->> 'preInvocationNotSentProven')::boolean is distinct from
+            target_pre_invocation_not_sent_proven
+        or result_document ->> 'code' is distinct from target_result_code
+        or (result_document ->> 'observedAtUtc')::timestamptz is distinct from
+            target_observed_at
         or (result_document ->> 'brokerRequestId') is distinct from target_broker_request_id
         or (result_document ->> 'orderId') is distinct from target_broker_order_id
         or (result_document ->> 'dealId') is distinct from target_broker_deal_id then
@@ -6009,14 +11556,18 @@ begin
             message = 'Broker submission result bindings are inconsistent.';
     end if;
 
-    if (target_disposition = 'accepted'
+    if (target_pre_invocation_not_sent_proven
+            and (target_disposition <> 'submission_disabled'
+                or nullif(btrim(target_broker_request_id), '') is not null
+                or nullif(btrim(target_broker_order_id), '') is not null
+                or nullif(btrim(target_broker_deal_id), '') is not null))
+        or (not target_pre_invocation_not_sent_proven
+            and target_disposition not in ('accepted', 'unknown'))
+        or (target_disposition = 'accepted'
             and nullif(btrim(target_broker_request_id), '') is null
             and nullif(btrim(target_broker_order_id), '') is null
             and nullif(btrim(target_broker_deal_id), '') is null)
-        or (target_disposition = 'submission_disabled'
-            and (nullif(btrim(target_broker_request_id), '') is not null
-                or nullif(btrim(target_broker_order_id), '') is not null
-                or nullif(btrim(target_broker_deal_id), '') is not null)) then
+        then
         raise exception using
             errcode = '22023',
             message = 'Broker submission identifiers do not match the disposition.';
@@ -6079,16 +11630,20 @@ begin
         or locked_assignment.id is null
         or locked_lease.id is null
         or locked_gateway.id is null
-        or locked_command.authorization_sha256 <> target_authorization_sha256
+        or locked_command.authorization_sha256 is distinct from target_authorization_sha256
         or locked_command.dispatch_claim_token is distinct from target_claim_token
         or locked_command.dispatch_claimed_by is distinct from control.current_actor_id()
         or control.current_actor_id() is distinct from locked_lease.gateway_host_workload_id then
         return;
     end if;
 
-    if locked_command.state in ('acknowledged', 'rejected', 'unknown')
+    if locked_command.state in
+            ('acknowledged', 'rejected', 'submission_disabled', 'unknown')
         and locked_command.send_result_sha256 = calculated_result_sha256
-        and locked_command.send_disposition = target_disposition then
+        and locked_command.send_disposition = target_disposition
+        and locked_command.send_completed_at is not null
+        and locked_command.dispatch_claim_expires_at is not null
+        and locked_command.send_completed_at < locked_command.dispatch_claim_expires_at then
         command_id := locked_command.id;
         command_state := locked_command.state;
         result_sha256 := locked_command.send_result_sha256;
@@ -6105,14 +11660,16 @@ begin
     end if;
 
     authority_now := clock_timestamp();
-    if target_observed_at > authority_now + interval '5 seconds'
+    if locked_command.dispatch_claim_expires_at is null
+        or authority_now >= locked_command.dispatch_claim_expires_at
+        or target_observed_at > authority_now + interval '5 seconds'
         or target_observed_at < locked_command.send_started_at - interval '5 seconds' then
         return;
     end if;
     next_state := case target_disposition
         when 'accepted' then 'acknowledged'
-        when 'unknown' then 'unknown'
-        else 'rejected'
+        when 'submission_disabled' then 'submission_disabled'
+        else 'unknown'
     end;
 
     update operations.broker_commands as broker_command
@@ -6170,7 +11727,8 @@ end
 $$;
 
 revoke all on function control.record_broker_command_submission(
-    uuid, text, uuid, text, text, text, text, text, bytea, timestamptz, uuid)
+    uuid, text, uuid, text, boolean, text, text, text, text, bytea,
+    timestamptz, uuid)
     from public;
 
 -- Crash recovery is deliberately one-way. An expired dispatch claim is
@@ -6213,6 +11771,7 @@ begin
         or control.current_actor_id() is null
         or control.current_correlation_id() is distinct from target_command_id
         or target_command_id is null
+        or target_authorization_sha256 is null
         or target_authorization_sha256 !~ '^[0-9a-f]{64}$'
         or target_audit_event_id is null then
         return;
@@ -6263,7 +11822,7 @@ begin
         or locked_assignment.id is null
         or locked_lease.id is null
         or locked_command.id is null
-        or locked_command.authorization_sha256 <> target_authorization_sha256
+        or locked_command.authorization_sha256 is distinct from target_authorization_sha256
         or control.current_actor_id() is distinct from
             locked_lease.gateway_host_workload_id then
         return;
@@ -6427,6 +11986,7 @@ begin
         or control.current_actor_id() is null
         or control.current_correlation_id() is distinct from target_command_id
         or target_command_id is null
+        or target_authorization_sha256 is null
         or target_authorization_sha256 !~ '^[0-9a-f]{64}$'
         or target_reconciliation_claim_token is null
         or target_reconciliation_claim_token =
@@ -6518,7 +12078,7 @@ begin
         or locked_gateway.provenance = '{}'::jsonb
         or locked_gateway.licence_evidence = '{}'::jsonb
         or locked_gateway.network_evidence = '{}'::jsonb
-        or locked_command.authorization_sha256 <> target_authorization_sha256
+        or locked_command.authorization_sha256 is distinct from target_authorization_sha256
         or locked_command.send_started_at is null
         or control.current_actor_id() is distinct from locked_lease.gateway_host_workload_id
         or locked_account.supports_position_query is not true
@@ -6705,15 +12265,13 @@ declare
     locked_gateway governance.gateway_artifacts%rowtype;
     locked_command operations.broker_commands%rowtype;
     existing_reconciliation operations.broker_command_reconciliations%rowtype;
+    result_text text;
+    result_raw_document json;
     result_document jsonb;
     result_digest text;
     next_state text;
     next_attempt integer;
     last_source_sequence bigint;
-    matching_orders integer;
-    matching_deals integer;
-    matching_command_results integer;
-    reconciled_volume numeric;
     authority_now timestamptz;
     safe_payload jsonb;
     safe_payload_canonical text;
@@ -6724,15 +12282,32 @@ begin
         or control.current_actor_id() is null
         or control.current_correlation_id() is distinct from target_command_id
         or target_command_id is null
+        or target_authorization_sha256 is null
         or target_authorization_sha256 !~ '^[0-9a-f]{64}$'
         or target_reconciliation_claim_token is null
         or target_reconciliation_id is null
+        or target_match is null
         or target_match not in
         (
             'inconclusive', 'acknowledged', 'partially_filled', 'filled',
             'cancelled', 'rejected', 'not_sent'
         )
-        or length(btrim(target_reason_code)) not between 1 and 200
+        or target_reason_code is null
+        or control.json_token_is_bounded_canonical_text(
+            pg_catalog.to_json(target_reason_code), 200) is distinct from true
+        or target_broker_order_id is distinct from
+            nullif(btrim(target_broker_order_id), '')
+        or (target_broker_order_id is not null
+            and control.json_token_is_bounded_canonical_text(
+                pg_catalog.to_json(target_broker_order_id), 200)
+                is distinct from true)
+        or target_broker_deal_id is distinct from
+            nullif(btrim(target_broker_deal_id), '')
+        or (target_broker_deal_id is not null
+            and control.json_token_is_bounded_canonical_text(
+                pg_catalog.to_json(target_broker_deal_id), 200)
+                is distinct from true)
+        or target_source_evidence_sha256 is null
         or target_source_evidence_sha256 !~ '^[0-9a-f]{64}$'
         or target_result_content is null
         or octet_length(target_result_content) not between 2 and 1048576
@@ -6742,29 +12317,97 @@ begin
     end if;
 
     begin
-        result_document := convert_from(target_result_content, 'UTF8')::jsonb;
+        result_text := convert_from(target_result_content, 'UTF8');
+        result_raw_document := result_text::json;
+        if control.json_has_duplicate_object_keys(result_raw_document)
+            or result_text is distinct from
+                control.dotnet_canonical_json(result_raw_document)
+            or not control.json_object_has_exact_keys(result_raw_document, array[
+                'authorizationSha256', 'brokerAccountId', 'commandId', 'dealId',
+                'deploymentId', 'generation', 'match', 'observedAtUtc',
+                'orderId', 'ownershipTag', 'reasonCode', 'scopeSha256',
+                'snapshot', 'sourceEvidenceSha256', 'sourceSequence',
+                'targetBrokerId', 'targetKind', 'windowEndUtc',
+                'windowStartUtc']::text[])
+            or control.json_token_is_uuid_string(
+                result_raw_document -> 'commandId') is distinct from true
+            or pg_catalog.json_typeof(result_raw_document -> 'authorizationSha256')
+                is distinct from 'string'
+            or pg_catalog.json_typeof(result_raw_document -> 'scopeSha256')
+                is distinct from 'string'
+            or control.json_token_is_uuid_string(
+                result_raw_document -> 'brokerAccountId') is distinct from true
+            or control.json_token_is_uuid_string(
+                result_raw_document -> 'deploymentId') is distinct from true
+            or control.json_token_is_integer(result_raw_document -> 'generation')
+                is distinct from true
+            or control.json_token_is_integer_or_null(
+                result_raw_document -> 'targetKind') is distinct from true
+            or control.json_token_is_string_or_null(
+                result_raw_document -> 'targetBrokerId') is distinct from true
+            or pg_catalog.json_typeof(result_raw_document -> 'ownershipTag')
+                is distinct from 'string'
+            or control.json_token_is_integer_or_null(
+                result_raw_document -> 'sourceSequence') is distinct from true
+            or control.json_token_is_utc_timestamp(
+                result_raw_document -> 'windowStartUtc') is distinct from true
+            or control.json_token_is_utc_timestamp(
+                result_raw_document -> 'windowEndUtc') is distinct from true
+            or pg_catalog.json_typeof(result_raw_document -> 'match')
+                is distinct from 'string'
+            or control.json_token_is_bounded_canonical_text(
+                result_raw_document -> 'reasonCode', 200) is distinct from true
+            or pg_catalog.json_typeof(result_raw_document -> 'sourceEvidenceSha256')
+                is distinct from 'string'
+            or control.json_token_is_string_or_null(
+                result_raw_document -> 'orderId') is distinct from true
+            or (pg_catalog.json_typeof(result_raw_document -> 'orderId') = 'string'
+                and control.json_token_is_bounded_canonical_text(
+                    result_raw_document -> 'orderId', 200) is distinct from true)
+            or control.json_token_is_string_or_null(
+                result_raw_document -> 'dealId') is distinct from true
+            or (pg_catalog.json_typeof(result_raw_document -> 'dealId') = 'string'
+                and control.json_token_is_bounded_canonical_text(
+                    result_raw_document -> 'dealId', 200) is distinct from true)
+            or control.json_token_is_utc_timestamp(
+                result_raw_document -> 'observedAtUtc') is distinct from true
+            or pg_catalog.json_typeof(result_raw_document -> 'snapshot')
+                not in ('object', 'null') then
+            raise exception using
+                errcode = '22023',
+                message = 'Broker reconciliation result is not canonical JSON.';
+        end if;
+        result_document := result_raw_document::jsonb;
     exception when others then
         raise exception using
             errcode = '22023',
-            message = 'Broker reconciliation result is not valid UTF-8 JSON.';
+            message = 'Broker reconciliation result is not valid canonical UTF-8 JSON.';
     end;
     result_digest := encode(pg_catalog.sha256(target_result_content), 'hex');
     if jsonb_typeof(result_document) <> 'object'
         or (select count(*) from jsonb_object_keys(result_document)) <> 19
-        or result_document ->> 'commandId' <> target_command_id::text
-        or result_document ->> 'authorizationSha256' <>
+        or not (result_document ?& array[
+            'commandId', 'authorizationSha256', 'scopeSha256',
+            'brokerAccountId', 'deploymentId', 'generation', 'targetKind',
+            'targetBrokerId', 'ownershipTag', 'sourceSequence',
+            'windowStartUtc', 'windowEndUtc', 'match', 'reasonCode',
+            'sourceEvidenceSha256', 'orderId', 'dealId', 'observedAtUtc',
+            'snapshot'])
+        or result_document ->> 'commandId' is distinct from target_command_id::text
+        or result_document ->> 'authorizationSha256' is distinct from
             target_authorization_sha256
-        or result_document ->> 'match' <> target_match
-        or result_document ->> 'reasonCode' <> target_reason_code
-        or result_document ->> 'sourceEvidenceSha256' <>
+        or result_document ->> 'match' is distinct from target_match
+        or result_document ->> 'reasonCode' is distinct from target_reason_code
+        or result_document ->> 'sourceEvidenceSha256' is distinct from
             target_source_evidence_sha256
         or (target_match <> 'inconclusive' and
             coalesce((result_document ->> 'sourceSequence')::bigint, 0) <= 0)
         or (result_document ->> 'windowStartUtc')::timestamptz >
             (result_document ->> 'windowEndUtc')::timestamptz
-        or (result_document ->> 'windowEndUtc')::timestamptz <>
+        or (result_document ->> 'windowEndUtc')::timestamptz is distinct from
             target_observed_at
-        or (result_document ->> 'observedAtUtc')::timestamptz <> target_observed_at
+        or (result_document ->> 'observedAtUtc')::timestamptz is distinct from
+            target_observed_at
         or (result_document ->> 'orderId') is distinct from target_broker_order_id
         or (result_document ->> 'dealId') is distinct from target_broker_deal_id then
         raise exception using
@@ -6843,7 +12486,7 @@ begin
         or locked_gateway.licence_evidence = '{}'::jsonb
         or locked_gateway.network_evidence = '{}'::jsonb
         or locked_command.send_started_at is null
-        or locked_command.authorization_sha256 <> target_authorization_sha256
+        or locked_command.authorization_sha256 is distinct from target_authorization_sha256
         or locked_command.reconciliation_claim_token is distinct from
             target_reconciliation_claim_token
         or locked_command.reconciliation_claimed_by is distinct from
@@ -6860,8 +12503,10 @@ begin
     if existing_reconciliation.id is not null then
         if existing_reconciliation.command_id = locked_command.id
             and existing_reconciliation.result_sha256 = result_digest
+            and existing_reconciliation.match = 'inconclusive'
+            and target_match = 'inconclusive'
             and locked_command.reconciliation_result_sha256 = result_digest
-            and locked_command.state in ('unknown', 'reconciled') then
+            and locked_command.state = 'unknown' then
             command_id := locked_command.id;
             command_state := locked_command.state;
             reconciliation_result_sha256 := result_digest;
@@ -6889,22 +12534,31 @@ begin
     end if;
     select greatest(
         locked_exposure.source_sequence,
-        coalesce(max((reconciliation.result ->> 'sourceSequence')::bigint), 0))
+        coalesce(max(
+            case
+                when pg_catalog.pg_input_is_valid(
+                        reconciliation.result ->> 'sourceSequence',
+                        'bigint') then
+                    (reconciliation.result ->> 'sourceSequence')::bigint
+                else 0
+            end), 0))
     into last_source_sequence
     from operations.broker_command_reconciliations as reconciliation
     where reconciliation.tenant_id = locked_command.tenant_id
       and reconciliation.command_id = locked_command.id;
-    if result_document ->> 'scopeSha256' <>
+    if result_document ->> 'scopeSha256' is distinct from
             locked_command.reconciliation_scope_sha256
-        or result_document ->> 'brokerAccountId' <>
+        or result_document ->> 'brokerAccountId' is distinct from
             locked_command.broker_account_id::text
-        or result_document ->> 'deploymentId' <> locked_command.deployment_id::text
-        or (result_document ->> 'generation')::bigint <> locked_command.generation
-        or result_document ->> 'ownershipTag' <>
+        or result_document ->> 'deploymentId' is distinct from
+            locked_command.deployment_id::text
+        or (result_document ->> 'generation')::bigint is distinct from
+            locked_command.generation
+        or result_document ->> 'ownershipTag' is distinct from
             locked_command.normalized_command ->> 'ownershipTag'
         or (target_match <> 'inconclusive' and
             (result_document ->> 'sourceSequence')::bigint <= last_source_sequence)
-        or (result_document ->> 'windowStartUtc')::timestamptz <>
+        or (result_document ->> 'windowStartUtc')::timestamptz is distinct from
             locked_command.send_started_at
         or (result_document ->> 'windowEndUtc')::timestamptz >
             locked_command.reconciliation_claim_expires_at + interval '5 seconds'
@@ -6920,142 +12574,23 @@ begin
     end if;
 
     if target_match = 'inconclusive' then
-        if result_document -> 'snapshot' <> 'null'::jsonb
+        if result_document -> 'sourceSequence' is distinct from 'null'::jsonb
+            or result_document -> 'snapshot' is distinct from 'null'::jsonb
             or target_broker_order_id is not null
             or target_broker_deal_id is not null then
             raise exception using
                 errcode = '22023',
                 message = 'Inconclusive reconciliation cannot assert broker mutation evidence.';
         end if;
-    elsif (locked_command.normalized_command ->> 'action')::integer <> 0
-        or target_match not in ('acknowledged', 'partially_filled', 'filled') then
+    else
+        -- Gateway-observed snapshots are not yet authenticated broker evidence.
+        -- The SECURITY DEFINER boundary therefore records only retryable
+        -- inconclusive observations; no caller role can promote a mutation to a
+        -- terminal fact until a separately verified observation capability is
+        -- introduced.
         raise exception using
             errcode = '22023',
-            message = 'The current reconciliation evidence model cannot prove this terminal assertion.';
-    else
-        if jsonb_typeof(result_document -> 'snapshot') <> 'object'
-            or (result_document #>> '{snapshot,contractVersion}')::integer <> 1
-            or (result_document #>> '{snapshot,sourceSequence}')::bigint <>
-                (result_document ->> 'sourceSequence')::bigint
-            or result_document #>> '{snapshot,brokerAccountId}' <>
-                locked_command.broker_account_id::text
-            or result_document #>> '{snapshot,deploymentId}' <>
-                locked_command.deployment_id::text
-            or (result_document #>> '{snapshot,generation}')::bigint <>
-                locked_command.generation
-            or result_document #>> '{snapshot,gatewayArtifactId}' <>
-                locked_command.authorization_document ->> 'gatewayArtifactId'
-            or result_document #>> '{snapshot,gatewayArtifactSha256}' <>
-                locked_command.authorization_document ->> 'gatewayArtifactSha256'
-            or (result_document #>> '{snapshot,queryWindowStartUtc}')::timestamptz <>
-                (result_document ->> 'windowStartUtc')::timestamptz
-            or (result_document #>> '{snapshot,queryWindowEndUtc}')::timestamptz <>
-                (result_document ->> 'windowEndUtc')::timestamptz
-            or (result_document #>> '{snapshot,isAtomicCut}')::boolean is not true
-            or (result_document #>> '{snapshot,isComplete}')::boolean is not true
-            or jsonb_typeof(result_document #> '{snapshot,account}') <> 'object'
-            or jsonb_typeof(result_document #> '{snapshot,positions}') <> 'array'
-            or jsonb_typeof(result_document #> '{snapshot,orders}') <> 'array'
-            or jsonb_typeof(result_document #> '{snapshot,deals}') <> 'array'
-            or jsonb_typeof(result_document #> '{snapshot,commandResults}') <> 'array'
-            or (result_document #>> '{snapshot,completedAtUtc}')::timestamptz <>
-                target_observed_at
-            or (result_document #>> '{snapshot,account,sequence}')::bigint <>
-                (result_document ->> 'sourceSequence')::bigint
-            or (result_document #>> '{snapshot,account,observedAtUtc}')::timestamptz >
-                target_observed_at
-            or target_broker_order_id is null
-            or length(btrim(target_broker_order_id)) not between 1 and 200
-            or (locked_command.broker_order_id is not null
-                and locked_command.broker_order_id <> target_broker_order_id) then
-            raise exception using
-                errcode = '22023',
-                message = 'Terminal reconciliation lacks a complete atomic broker snapshot.';
-        end if;
-
-        select count(*)::integer
-        into matching_orders
-        from jsonb_array_elements(result_document #> '{snapshot,orders}') as item
-        where item ->> 'orderId' = target_broker_order_id
-          and item ->> 'symbol' = locked_command.normalized_command ->> 'symbol'
-          and (item ->> 'side')::integer =
-              (locked_command.normalized_command ->> 'side')::integer
-          and item ->> 'ownershipTag' =
-              locked_command.normalized_command ->> 'ownershipTag'
-          and (item ->> 'requestedVolume')::numeric =
-              (locked_command.normalized_command ->> 'volume')::numeric
-          and (item ->> 'observedAtUtc')::timestamptz <= target_observed_at;
-        select count(*)::integer
-        into matching_command_results
-        from jsonb_array_elements(result_document #> '{snapshot,commandResults}') as item
-        where item ->> 'commandId' = locked_command.id::text
-          and (item ->> 'match')::integer = case target_match
-              when 'acknowledged' then 1
-              when 'partially_filled' then 2
-              when 'filled' then 3
-          end
-          and item ->> 'orderId' = target_broker_order_id
-          and (item ->> 'dealId') is not distinct from target_broker_deal_id
-          and (item ->> 'reconciledAtUtc')::timestamptz <= target_observed_at;
-        if matching_orders <> 1 or matching_command_results <> 1 then
-            raise exception using
-                errcode = '22023',
-                message = 'Terminal reconciliation is ambiguous or not command-correlated.';
-        end if;
-
-        if target_match = 'acknowledged' then
-            if target_broker_deal_id is not null then
-                raise exception using
-                    errcode = '22023',
-                    message = 'Acknowledgement cannot assert a fill deal.';
-            end if;
-        else
-            if target_broker_deal_id is null
-                or length(btrim(target_broker_deal_id)) not between 1 and 200
-                or (locked_command.broker_deal_id is not null
-                    and locked_command.broker_deal_id <> target_broker_deal_id) then
-                raise exception using
-                    errcode = '22023',
-                    message = 'Fill reconciliation requires the exact broker deal identity.';
-            end if;
-            select count(*)::integer, coalesce(sum((item ->> 'volume')::numeric), 0)
-            into matching_deals, reconciled_volume
-            from jsonb_array_elements(result_document #> '{snapshot,deals}') as item
-            where item ->> 'orderId' = target_broker_order_id
-              and item ->> 'symbol' = locked_command.normalized_command ->> 'symbol'
-              and (item ->> 'side')::integer =
-                  (locked_command.normalized_command ->> 'side')::integer
-              and (item ->> 'brokerTimestampUtc')::timestamptz between
-                  (result_document ->> 'windowStartUtc')::timestamptz
-                  and (result_document ->> 'windowEndUtc')::timestamptz;
-            if matching_deals < 1
-                or not exists
-                (
-                    select 1
-                    from jsonb_array_elements(result_document #> '{snapshot,deals}') as item
-                    where item ->> 'dealId' = target_broker_deal_id
-                      and item ->> 'orderId' = target_broker_order_id
-                )
-                or (target_match = 'filled' and (
-                    (select (item ->> 'remainingVolume')::numeric
-                     from jsonb_array_elements(result_document #> '{snapshot,orders}') as item
-                     where item ->> 'orderId' = target_broker_order_id) <> 0
-                    or reconciled_volume <>
-                        (locked_command.normalized_command ->> 'volume')::numeric))
-                or (target_match = 'partially_filled' and (
-                    (select (item ->> 'remainingVolume')::numeric
-                     from jsonb_array_elements(result_document #> '{snapshot,orders}') as item
-                     where item ->> 'orderId' = target_broker_order_id)
-                        not between 0.00000001 and
-                            (locked_command.normalized_command ->> 'volume')::numeric
-                    or reconciled_volume <= 0
-                    or reconciled_volume >=
-                        (locked_command.normalized_command ->> 'volume')::numeric)) then
-                raise exception using
-                    errcode = '22023',
-                    message = 'Fill reconciliation volume evidence is inconsistent.';
-            end if;
-        end if;
+            message = 'Terminal broker reconciliation requires authenticated broker observation evidence.';
     end if;
     select count(*)::integer + 1
     into next_attempt
@@ -7181,7 +12716,9 @@ begin
     select job.tenant_id
     into target_tenant_id
     from control.strategy_import_jobs as job
-    where job.id = target_job_id;
+    where job.id = target_job_id
+      and job.capability_sha256 = pg_catalog.sha256(supplied_capability)
+      and job.state not in ('expired', 'revoked');
 
     if target_tenant_id is null then
         raise exception using
@@ -7215,10 +12752,6 @@ begin
             message = 'The strategy import job is bound to a different reservation.';
     end if;
 
-    perform set_config('yo4x.tenant_id', locked_job.tenant_id::text, true);
-    perform set_config('yo4x.actor_id', locked_job.user_id::text, true);
-    perform set_config('yo4x.correlation_id', locked_job.correlation_id::text, true);
-
     if locked_job.expires_at <= authorization_now then
         if locked_job.state = 'consumed' then
             raise exception using
@@ -7236,6 +12769,17 @@ begin
           and tenant_id = locked_job.tenant_id
         returning * into locked_job;
     else
+        -- The capability and immutable job binding have now been verified and
+        -- locked. Activate the derived, transaction-bound tenant context
+        -- before consulting FORCE-RLS identity relations. Any subsequent
+        -- rejection rolls this binding back with the reservation transaction.
+        perform control.bind_verified_strategy_import_tenant_context(
+            supplied_capability,
+            locked_job.id,
+            locked_job.tenant_id,
+            locked_job.user_id,
+            locked_job.correlation_id);
+
         if not exists
         (
             select 1
@@ -7301,6 +12845,7 @@ create function control.acquire_strategy_import_persistence_lock(target_job_id u
 returns void
 language plpgsql
 volatile
+security definer
 set search_path = ''
 as $$
 declare
@@ -7481,6 +13026,3061 @@ begin
 end
 $$;
 
+-- jsonb intentionally collapses duplicate object keys, which would make an
+-- earlier attacker-controlled value invisible to ordinary exact-key checks.
+-- Inspect the raw json tree first and reject duplicate-effective fields at any
+-- depth before converting retained evidence to jsonb.
+create function control.json_has_duplicate_object_keys(target_document json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    nested_document json;
+begin
+    if pg_catalog.json_typeof(target_document) = 'object' then
+        if exists
+        (
+            select 1
+            from
+            (
+                select object_member.key
+                from pg_catalog.json_each(target_document) as object_member
+                group by object_member.key
+                having count(*) > 1
+            ) as duplicate_key
+        ) then
+            return true;
+        end if;
+
+        for nested_document in
+            select object_member.value
+            from pg_catalog.json_each(target_document) as object_member
+        loop
+            if control.json_has_duplicate_object_keys(nested_document) then
+                return true;
+            end if;
+        end loop;
+    elsif pg_catalog.json_typeof(target_document) = 'array' then
+        for nested_document in
+            select array_member.value
+            from pg_catalog.json_array_elements(target_document) as array_member
+        loop
+            if control.json_has_duplicate_object_keys(nested_document) then
+                return true;
+            end if;
+        end loop;
+    end if;
+
+    return false;
+end
+$$;
+
+revoke all on function control.json_has_duplicate_object_keys(json) from public;
+
+-- CanonicalJson orders object keys by .NET ordinal UTF-16 code units. A bytea
+-- sort key preserves that ordering even for supplementary-plane key text,
+-- where Unicode scalar and UTF-16 ordering can differ.
+create function control.dotnet_utf16_sort_key(target_value text)
+returns bytea
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    character_value text;
+    code_point integer;
+    adjusted_code_point integer;
+    high_surrogate integer;
+    low_surrogate integer;
+    result bytea := ''::bytea;
+begin
+    for character_value in
+        select split_value
+        from pg_catalog.regexp_split_to_table(target_value, '') as split_value
+    loop
+        code_point := pg_catalog.ascii(character_value);
+        if code_point <= 65535 then
+            result := result || pg_catalog.decode(
+                pg_catalog.lpad(pg_catalog.to_hex(code_point), 4, '0'),
+                'hex');
+        else
+            adjusted_code_point := code_point - 65536;
+            high_surrogate := 55296 + (adjusted_code_point / 1024);
+            low_surrogate := 56320 + (adjusted_code_point % 1024);
+            result := result || pg_catalog.decode(
+                pg_catalog.lpad(pg_catalog.to_hex(high_surrogate), 4, '0')
+                || pg_catalog.lpad(pg_catalog.to_hex(low_surrogate), 4, '0'),
+                'hex');
+        end if;
+    end loop;
+
+    return result;
+end
+$$;
+
+revoke all on function control.dotnet_utf16_sort_key(text) from public;
+
+-- Match System.Text.Json's default Web encoder used by CanonicalJson:
+-- Basic Latin remains literal except its global/HTML-sensitive block list,
+-- named control escapes are retained, and every non-ASCII UTF-16 code unit is
+-- emitted as uppercase \uXXXX (including surrogate pairs).
+create function control.dotnet_canonical_json_string(target_value text)
+returns text
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    character_value text;
+    code_point integer;
+    adjusted_code_point integer;
+    high_surrogate integer;
+    low_surrogate integer;
+    result text := '"';
+    slash text := pg_catalog.chr(92);
+begin
+    for character_value in
+        select split_value
+        from pg_catalog.regexp_split_to_table(target_value, '') as split_value
+    loop
+        code_point := pg_catalog.ascii(character_value);
+        if code_point = 8 then
+            result := result || slash || 'b';
+        elsif code_point = 9 then
+            result := result || slash || 't';
+        elsif code_point = 10 then
+            result := result || slash || 'n';
+        elsif code_point = 12 then
+            result := result || slash || 'f';
+        elsif code_point = 13 then
+            result := result || slash || 'r';
+        elsif code_point = 92 then
+            result := result || slash || slash;
+        elsif code_point < 32
+            or code_point in (34, 38, 39, 43, 60, 62, 96) then
+            result := result || slash || 'u'
+                || pg_catalog.upper(pg_catalog.lpad(
+                    pg_catalog.to_hex(code_point), 4, '0'));
+        elsif code_point between 32 and 126 then
+            result := result || character_value;
+        elsif code_point <= 65535 then
+            result := result || slash || 'u'
+                || pg_catalog.upper(pg_catalog.lpad(
+                    pg_catalog.to_hex(code_point), 4, '0'));
+        else
+            adjusted_code_point := code_point - 65536;
+            high_surrogate := 55296 + (adjusted_code_point / 1024);
+            low_surrogate := 56320 + (adjusted_code_point % 1024);
+            result := result || slash || 'u'
+                || pg_catalog.upper(pg_catalog.lpad(
+                    pg_catalog.to_hex(high_surrogate), 4, '0'))
+                || slash || 'u'
+                || pg_catalog.upper(pg_catalog.lpad(
+                    pg_catalog.to_hex(low_surrogate), 4, '0'));
+        end if;
+    end loop;
+
+    return result || '"';
+end
+$$;
+
+revoke all on function control.dotnet_canonical_json_string(text) from public;
+
+-- Reconstruct the exact CanonicalJson byte representation from PostgreSQL's
+-- duplicate-preserving json tree. Numeric lexemes are deliberately retained:
+-- CanonicalJson preserves JsonNode numeric scale/representation, while typed
+-- schema checks below constrain all authority and sequence fields.
+create function control.dotnet_canonical_json(target_document json)
+returns text
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    document_kind text := pg_catalog.json_typeof(target_document);
+    canonical_value text;
+begin
+    if document_kind = 'object' then
+        select '{' || coalesce(pg_catalog.string_agg(
+            control.dotnet_canonical_json_string(object_member.key)
+                || ':' || control.dotnet_canonical_json(object_member.value),
+            ',' order by control.dotnet_utf16_sort_key(object_member.key)), '') || '}'
+        into canonical_value
+        from pg_catalog.json_each(target_document) as object_member;
+        return canonical_value;
+    elsif document_kind = 'array' then
+        select '[' || coalesce(pg_catalog.string_agg(
+            control.dotnet_canonical_json(array_member.value),
+            ',' order by array_member.ordinal), '') || ']'
+        into canonical_value
+        from pg_catalog.json_array_elements(target_document)
+            with ordinality as array_member(value, ordinal);
+        return canonical_value;
+    elsif document_kind = 'string' then
+        return control.dotnet_canonical_json_string(target_document #>> '{}');
+    elsif document_kind = 'number' then
+        return pg_catalog.btrim(target_document::text);
+    elsif document_kind = 'boolean' then
+        return case when target_document::text = 'true'
+            then 'true' else 'false' end;
+    elsif document_kind = 'null' then
+        return 'null';
+    end if;
+
+    return null;
+end
+$$;
+
+revoke all on function control.dotnet_canonical_json(json) from public;
+
+create function control.is_dotnet_canonical_json(target_value text)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    raw_document json;
+begin
+    raw_document := target_value::json;
+    if control.json_has_duplicate_object_keys(raw_document) then
+        return false;
+    end if;
+
+    return target_value = control.dotnet_canonical_json(raw_document);
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.is_dotnet_canonical_json(text) from public;
+
+-- jsonb intentionally normalizes numbers and makes scalar text extraction
+-- type-agnostic. Durable typed evidence must therefore validate the original
+-- duplicate-preserving json token before any jsonb cast. In particular, an
+-- exponent-form integer (1e0) or a JSON number substituted for a string must
+-- not be accepted merely because PostgreSQL can cast/extract it.
+create function control.json_token_is_integer(target_value json)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select pg_catalog.json_typeof(target_value) = 'number'
+       and pg_catalog.length(pg_catalog.btrim(target_value::text)) <= 20
+       and pg_catalog.btrim(target_value::text)
+            ~ '^(0|[1-9][0-9]*|-[1-9][0-9]*)$'
+$$;
+
+revoke all on function control.json_token_is_integer(json) from public;
+
+create function control.json_token_is_decimal(target_value json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    numeric_text text;
+    unsigned_text text;
+    fractional_text text;
+    unscaled_text text;
+begin
+    if pg_catalog.json_typeof(target_value) is distinct from 'number' then
+        return false;
+    end if;
+    numeric_text := pg_catalog.btrim(target_value::text);
+    if pg_catalog.length(numeric_text) > 31 then
+        return false;
+    end if;
+    if numeric_text !~ '^-?(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        or (numeric_text like '-%' and numeric_text::numeric = 0) then
+        return false;
+    end if;
+    unsigned_text := pg_catalog.ltrim(numeric_text, '-');
+    fractional_text := case when pg_catalog.strpos(unsigned_text, '.') = 0
+        then '' else pg_catalog.split_part(unsigned_text, '.', 2) end;
+    if pg_catalog.length(fractional_text) > 28 then
+        return false;
+    end if;
+    unscaled_text := pg_catalog.replace(unsigned_text, '.', '');
+    return unscaled_text::numeric <=
+        79228162514264337593543950335::numeric;
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.json_token_is_decimal(json) from public;
+
+create function control.json_token_is_string_or_null(target_value json)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select pg_catalog.json_typeof(target_value) in ('string', 'null')
+$$;
+
+revoke all on function control.json_token_is_string_or_null(json) from public;
+
+create function control.json_token_is_boolean_or_null(target_value json)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select pg_catalog.json_typeof(target_value) in ('boolean', 'null')
+$$;
+
+revoke all on function control.json_token_is_boolean_or_null(json) from public;
+
+create function control.json_token_is_integer_or_null(target_value json)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select pg_catalog.json_typeof(target_value) = 'null'
+        or control.json_token_is_integer(target_value)
+$$;
+
+revoke all on function control.json_token_is_integer_or_null(json) from public;
+
+create function control.json_token_is_decimal_or_null(target_value json)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select pg_catalog.json_typeof(target_value) = 'null'
+        or control.json_token_is_decimal(target_value)
+$$;
+
+revoke all on function control.json_token_is_decimal_or_null(json) from public;
+
+create function control.json_token_is_uuid_string(target_value json)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select pg_catalog.json_typeof(target_value) = 'string'
+       and (target_value #>> '{}')
+            ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+$$;
+
+revoke all on function control.json_token_is_uuid_string(json) from public;
+
+create function control.json_token_is_utc_timestamp(target_value json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    timestamp_text text;
+    parsed_timestamp timestamptz;
+begin
+    if pg_catalog.json_typeof(target_value) is distinct from 'string' then
+        return false;
+    end if;
+    timestamp_text := target_value #>> '{}';
+    if timestamp_text !~
+        '^[0-9]{4}-[0-9]{2}-[0-9]{2}T([0-1][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{0,5}[1-9])?\+00:00$' then
+        return false;
+    end if;
+    parsed_timestamp := timestamp_text::timestamptz;
+    return parsed_timestamp is not null;
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.json_token_is_utc_timestamp(json) from public;
+
+create function control.json_token_is_utc_timestamp_or_null(target_value json)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select pg_catalog.json_typeof(target_value) = 'null'
+        or control.json_token_is_utc_timestamp(target_value)
+$$;
+
+revoke all on function control.json_token_is_utc_timestamp_or_null(json) from public;
+
+create function control.json_token_is_positive_timespan(target_value json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    timespan_text text;
+    parts text[];
+    day_count numeric;
+    hour_count numeric;
+    minute_count numeric;
+    second_count numeric;
+    fractional_ticks numeric;
+    total_ticks numeric;
+begin
+    if pg_catalog.json_typeof(target_value) is distinct from 'string' then
+        return false;
+    end if;
+    timespan_text := target_value #>> '{}';
+    parts := pg_catalog.regexp_match(
+        timespan_text,
+        '^(([1-9][0-9]{0,7})\.)?([0-1][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])(\.([0-9]{7}))?$');
+    if parts is null then
+        return false;
+    end if;
+    day_count := coalesce(parts[2], '0')::numeric;
+    hour_count := parts[3]::numeric;
+    minute_count := parts[4]::numeric;
+    second_count := parts[5]::numeric;
+    fractional_ticks := coalesce(parts[7], '0')::numeric;
+    if parts[7] is not null and fractional_ticks = 0 then
+        return false;
+    end if;
+    total_ticks := day_count * 864000000000::numeric
+        + hour_count * 36000000000::numeric
+        + minute_count * 600000000::numeric
+        + second_count * 10000000::numeric
+        + fractional_ticks;
+    return total_ticks between 1 and 9223372036854775807::numeric;
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.json_token_is_positive_timespan(json) from public;
+
+-- Mirror StrategyCanonicalText for direct database capability callers. PostgreSQL
+-- text is already valid Unicode scalar data; the explicit code-point checks
+-- reject .NET Control/Format categories and the exact Char.IsWhiteSpace boundary
+-- set. StrategyCanonicalText budgets Unicode scalar values (Runes), matching
+-- PostgreSQL character_length rather than UTF-16 code-unit length.
+create function control.json_token_is_bounded_canonical_text(
+    target_value json,
+    maximum_characters integer)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    decoded_value text;
+    character_value text;
+    code_point integer;
+    character_index integer := 0;
+    character_count integer;
+begin
+    if maximum_characters <= 0
+        or pg_catalog.json_typeof(target_value) is distinct from 'string' then
+        return false;
+    end if;
+    decoded_value := target_value #>> '{}';
+    character_count := pg_catalog.character_length(decoded_value);
+    if character_count not between 1 and maximum_characters then
+        return false;
+    end if;
+
+    for character_value in
+        select split_value
+        from pg_catalog.regexp_split_to_table(decoded_value, '') as split_value
+    loop
+        character_index := character_index + 1;
+        code_point := pg_catalog.ascii(character_value);
+        if code_point between 0 and 31
+            or code_point between 127 and 159
+            or code_point in (173, 1564, 1757, 1807, 6158, 65279, 65529, 65530, 65531)
+            or code_point between 1536 and 1541
+            or code_point between 2192 and 2193
+            or code_point = 2274
+            or code_point between 8203 and 8207
+            or code_point between 8234 and 8238
+            or code_point between 8288 and 8292
+            or code_point between 8294 and 8303
+            or code_point = 69821
+            or code_point = 69837
+            or code_point between 78896 and 78933
+            or code_point between 113824 and 113827
+            or code_point between 119155 and 119162
+            or code_point = 917505
+            or code_point between 917536 and 917631 then
+            return false;
+        end if;
+        if character_index in (1, character_count)
+            and
+            (
+                code_point between 9 and 13
+                or code_point in (32, 133, 160, 5760, 8232, 8233, 8239, 8287, 12288)
+                or code_point between 8192 and 8202
+            ) then
+            return false;
+        end if;
+    end loop;
+    return true;
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.json_token_is_bounded_canonical_text(json, integer)
+    from public;
+
+create function control.json_token_is_bounded_canonical_text_or_null(
+    target_value json,
+    maximum_characters integer)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select pg_catalog.json_typeof(target_value) = 'null'
+        or control.json_token_is_bounded_canonical_text(
+            target_value, maximum_characters)
+$$;
+
+revoke all on function control.json_token_is_bounded_canonical_text_or_null(
+    json, integer) from public;
+
+create function control.json_object_has_exact_keys(
+    target_value json,
+    target_keys text[])
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    key_count bigint;
+    matching_key_count bigint;
+begin
+    if pg_catalog.json_typeof(target_value) is distinct from 'object'
+        or control.json_has_duplicate_object_keys(target_value) then
+        return false;
+    end if;
+
+    select count(*), count(*) filter (where object_key = any(target_keys))
+    into key_count, matching_key_count
+    from pg_catalog.json_object_keys(target_value) as object_key;
+    return key_count = pg_catalog.cardinality(target_keys)
+        and matching_key_count = key_count;
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.json_object_has_exact_keys(json, text[]) from public;
+
+-- The signed envelope is later deserialized into exact CLR records and its
+-- payload hash is verified over ExecutionLeaseCanonicalizer's declaration-order
+-- byte format. Validate both the JSON token types and that independent payload
+-- digest before jsonb can erase numeric lexemes or member order.
+create function control.signed_execution_lease_has_typed_shape(
+    target_envelope json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    claims json;
+    binding json;
+    action_policy json;
+    payload_text text;
+    issued_at_text text;
+    not_before_text text;
+    expires_at_text text;
+    grace_expires_at_text text;
+begin
+    claims := target_envelope -> 'claims';
+    binding := claims -> 'binding';
+    action_policy := claims -> 'actionPolicy';
+
+    if control.json_object_has_exact_keys(
+            target_envelope,
+            array[
+                'claims', 'payloadSha256', 'signatureAlgorithm',
+                'signatureBase64Url', 'signingKeyId']::text[])
+            is distinct from true
+        or control.json_object_has_exact_keys(
+            claims,
+            array[
+                'actionPolicy', 'binding', 'contractVersion', 'expiresAtUtc',
+                'graceExpiresAtUtc', 'issuedAtUtc', 'leaseId',
+                'notBeforeUtc']::text[])
+            is distinct from true
+        or control.json_object_has_exact_keys(
+            binding,
+            array[
+                'brokerAccountBindingSha256', 'brokerAccountId', 'deploymentId',
+                'entitlementId', 'executionMode', 'gatewayHostWorkloadId',
+                'generation', 'region', 'safetyPolicySha256',
+                'safetyPolicyVersionId', 'strategyHostWorkloadId', 'strategyId',
+                'strategyPackageSha256', 'strategyVersion', 'strategyVersionId',
+                'supervisorWorkloadId', 'tenantId', 'userId',
+                'workerAssignmentId', 'workerInstanceId']::text[])
+            is distinct from true
+        or control.json_object_has_exact_keys(
+            action_policy,
+            array['active', 'expired', 'grace', 'revoked']::text[])
+            is distinct from true
+        or control.json_token_is_integer(claims -> 'contractVersion')
+            is distinct from true
+        or (claims ->> 'contractVersion') is distinct from '1'
+        or control.json_token_is_uuid_string(claims -> 'leaseId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'tenantId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'entitlementId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'userId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'deploymentId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'brokerAccountId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'strategyId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'strategyVersionId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'safetyPolicyVersionId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'workerAssignmentId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'workerInstanceId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'supervisorWorkloadId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'strategyHostWorkloadId')
+            is distinct from true
+        or control.json_token_is_uuid_string(binding -> 'gatewayHostWorkloadId')
+            is distinct from true
+        or control.json_token_is_integer(binding -> 'strategyVersion')
+            is distinct from true
+        or control.json_token_is_integer(binding -> 'executionMode')
+            is distinct from true
+        or control.json_token_is_integer(binding -> 'generation')
+            is distinct from true
+        or control.json_token_is_integer(action_policy -> 'active')
+            is distinct from true
+        or control.json_token_is_integer(action_policy -> 'grace')
+            is distinct from true
+        or control.json_token_is_integer(action_policy -> 'expired')
+            is distinct from true
+        or control.json_token_is_integer(action_policy -> 'revoked')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(claims -> 'issuedAtUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(claims -> 'notBeforeUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(claims -> 'expiresAtUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(claims -> 'graceExpiresAtUtc')
+            is distinct from true
+        or pg_catalog.json_typeof(binding -> 'brokerAccountBindingSha256')
+            is distinct from 'string'
+        or binding ->> 'brokerAccountBindingSha256' !~ '^[0-9a-f]{64}$'
+        or pg_catalog.json_typeof(binding -> 'strategyPackageSha256')
+            is distinct from 'string'
+        or binding ->> 'strategyPackageSha256' !~ '^[0-9a-f]{64}$'
+        or pg_catalog.json_typeof(binding -> 'safetyPolicySha256')
+            is distinct from 'string'
+        or binding ->> 'safetyPolicySha256' !~ '^[0-9a-f]{64}$'
+        or control.json_token_is_bounded_canonical_text(binding -> 'region', 100)
+            is distinct from true
+        or pg_catalog.json_typeof(target_envelope -> 'payloadSha256')
+            is distinct from 'string'
+        or target_envelope ->> 'payloadSha256' !~ '^[0-9a-f]{64}$'
+        or control.json_token_is_bounded_canonical_text(
+            target_envelope -> 'signatureAlgorithm', 100) is distinct from true
+        or target_envelope ->> 'signatureAlgorithm' not in
+            ('ECDSA_P256_SHA256_DER', 'EdDSA', 'ES256', 'ES384', 'ES512',
+             'PS256', 'PS384', 'PS512')
+        or control.json_token_is_bounded_canonical_text(
+            target_envelope -> 'signingKeyId', 500) is distinct from true
+        or pg_catalog.json_typeof(target_envelope -> 'signatureBase64Url')
+            is distinct from 'string'
+        or pg_catalog.length(target_envelope ->> 'signatureBase64Url')
+            not between 64 and 2048
+        or target_envelope ->> 'signatureBase64Url' !~ '^[A-Za-z0-9_-]+$' then
+        return false;
+    end if;
+
+    -- ExecutionLeaseCanonicalizer uses the round-trip timestamp format with
+    -- seven fractional digits, while the outer Web JSON serializer trims
+    -- trailing zeros. PostgreSQL authority timestamps are microsecond precise,
+    -- so the seventh payload digit is deterministically zero.
+    issued_at_text := pg_catalog.to_char(
+        (claims ->> 'issuedAtUtc')::timestamptz at time zone 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.US') || '0+00:00';
+    not_before_text := pg_catalog.to_char(
+        (claims ->> 'notBeforeUtc')::timestamptz at time zone 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.US') || '0+00:00';
+    expires_at_text := pg_catalog.to_char(
+        (claims ->> 'expiresAtUtc')::timestamptz at time zone 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.US') || '0+00:00';
+    grace_expires_at_text := pg_catalog.to_char(
+        (claims ->> 'graceExpiresAtUtc')::timestamptz at time zone 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.US') || '0+00:00';
+
+    payload_text := '{"contractVersion":' || (claims -> 'contractVersion')::text
+        || ',"leaseId":' || control.dotnet_canonical_json_string(claims ->> 'leaseId')
+        || ',"binding":{"tenantId":'
+        || control.dotnet_canonical_json_string(binding ->> 'tenantId')
+        || ',"entitlementId":'
+        || control.dotnet_canonical_json_string(binding ->> 'entitlementId')
+        || ',"userId":' || control.dotnet_canonical_json_string(binding ->> 'userId')
+        || ',"deploymentId":'
+        || control.dotnet_canonical_json_string(binding ->> 'deploymentId')
+        || ',"brokerAccountId":'
+        || control.dotnet_canonical_json_string(binding ->> 'brokerAccountId')
+        || ',"brokerAccountBindingSha256":'
+        || control.dotnet_canonical_json_string(binding ->> 'brokerAccountBindingSha256')
+        || ',"strategyId":'
+        || control.dotnet_canonical_json_string(binding ->> 'strategyId')
+        || ',"strategyVersionId":'
+        || control.dotnet_canonical_json_string(binding ->> 'strategyVersionId')
+        || ',"strategyVersion":' || (binding -> 'strategyVersion')::text
+        || ',"strategyPackageSha256":'
+        || control.dotnet_canonical_json_string(binding ->> 'strategyPackageSha256')
+        || ',"executionMode":' || (binding -> 'executionMode')::text
+        || ',"safetyPolicyVersionId":'
+        || control.dotnet_canonical_json_string(binding ->> 'safetyPolicyVersionId')
+        || ',"safetyPolicySha256":'
+        || control.dotnet_canonical_json_string(binding ->> 'safetyPolicySha256')
+        || ',"workerAssignmentId":'
+        || control.dotnet_canonical_json_string(binding ->> 'workerAssignmentId')
+        || ',"workerInstanceId":'
+        || control.dotnet_canonical_json_string(binding ->> 'workerInstanceId')
+        || ',"supervisorWorkloadId":'
+        || control.dotnet_canonical_json_string(binding ->> 'supervisorWorkloadId')
+        || ',"strategyHostWorkloadId":'
+        || control.dotnet_canonical_json_string(binding ->> 'strategyHostWorkloadId')
+        || ',"gatewayHostWorkloadId":'
+        || control.dotnet_canonical_json_string(binding ->> 'gatewayHostWorkloadId')
+        || ',"generation":' || (binding -> 'generation')::text
+        || ',"region":' || control.dotnet_canonical_json_string(binding ->> 'region')
+        || '},"issuedAtUtc":' || control.dotnet_canonical_json_string(issued_at_text)
+        || ',"notBeforeUtc":' || control.dotnet_canonical_json_string(not_before_text)
+        || ',"expiresAtUtc":' || control.dotnet_canonical_json_string(expires_at_text)
+        || ',"graceExpiresAtUtc":'
+        || control.dotnet_canonical_json_string(grace_expires_at_text)
+        || ',"actionPolicy":{"active":' || (action_policy -> 'active')::text
+        || ',"grace":' || (action_policy -> 'grace')::text
+        || ',"expired":' || (action_policy -> 'expired')::text
+        || ',"revoked":' || (action_policy -> 'revoked')::text || '}}';
+
+    return target_envelope ->> 'payloadSha256' = pg_catalog.encode(
+        pg_catalog.sha256(pg_catalog.convert_to(payload_text, 'UTF8')), 'hex');
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.signed_execution_lease_has_typed_shape(json)
+    from public;
+
+-- The proof-only authorizer accepts six independently hashed CLR documents.
+-- Keep their original json tokens until every record/collection shape has been
+-- checked; jsonb equality alone would conflate integer/decimal lexemes and can
+-- silently discard extra or duplicate members.
+create function control.broker_authorization_evidence_has_typed_shape(
+    target_command json,
+    target_exposure json,
+    target_risk_input json,
+    target_risk_decision json,
+    target_reconciliation json,
+    target_authorization json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    item json;
+    nested json;
+begin
+    if control.json_object_has_exact_keys(
+            target_command,
+            array[
+                'action', 'commandId', 'contractVersion', 'createdAtUtc',
+                'deploymentId', 'expectedTargetStatus',
+                'expectedTargetStopLoss', 'expectedTargetTakeProfit',
+                'expectedTargetVolume', 'generation', 'idempotencyKey',
+                'intentId', 'maximumDeviationPoints', 'orderType',
+                'ownershipTag', 'requestedPrice', 'side', 'stopLoss', 'symbol',
+                'takeProfit', 'targetBrokerId', 'targetKind', 'volume']::text[])
+            is distinct from true
+        or control.json_token_is_integer(target_command -> 'contractVersion')
+            is distinct from true
+        or target_command ->> 'contractVersion' is distinct from '1'
+        or control.json_token_is_uuid_string(target_command -> 'commandId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_command -> 'intentId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_command -> 'deploymentId')
+            is distinct from true
+        or control.json_token_is_integer(target_command -> 'generation')
+            is distinct from true
+        or control.json_token_is_integer(target_command -> 'action')
+            is distinct from true
+        or (target_command ->> 'action')::integer not between 0 and 3
+        or control.json_token_is_bounded_canonical_text(
+            target_command -> 'symbol', 100) is distinct from true
+        or control.json_token_is_integer(target_command -> 'side')
+            is distinct from true
+        or (target_command ->> 'side')::integer not between 0 and 1
+        or control.json_token_is_integer(target_command -> 'orderType')
+            is distinct from true
+        or (target_command ->> 'orderType')::integer not between 0 and 3
+        or control.json_token_is_decimal(target_command -> 'volume')
+            is distinct from true
+        or control.json_token_is_decimal_or_null(target_command -> 'requestedPrice')
+            is distinct from true
+        or control.json_token_is_decimal_or_null(target_command -> 'stopLoss')
+            is distinct from true
+        or control.json_token_is_decimal_or_null(target_command -> 'takeProfit')
+            is distinct from true
+        or control.json_token_is_integer(target_command -> 'maximumDeviationPoints')
+            is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            target_command -> 'ownershipTag', 200) is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            target_command -> 'idempotencyKey', 200) is distinct from true
+        or control.json_token_is_integer_or_null(target_command -> 'targetKind')
+            is distinct from true
+        or (target_command ->> 'targetKind')::integer not between 0 and 1
+        or control.json_token_is_bounded_canonical_text_or_null(
+            target_command -> 'targetBrokerId', 200) is distinct from true
+        or control.json_token_is_decimal_or_null(
+            target_command -> 'expectedTargetVolume') is distinct from true
+        or control.json_token_is_bounded_canonical_text_or_null(
+            target_command -> 'expectedTargetStatus', 100) is distinct from true
+        or control.json_token_is_decimal_or_null(
+            target_command -> 'expectedTargetStopLoss') is distinct from true
+        or control.json_token_is_decimal_or_null(
+            target_command -> 'expectedTargetTakeProfit') is distinct from true
+        or control.json_token_is_utc_timestamp(target_command -> 'createdAtUtc')
+            is distinct from true then
+        return false;
+    end if;
+
+    if control.json_object_has_exact_keys(
+            target_exposure,
+            array[
+                'account', 'accountAsOfUtc', 'brokerAccountId', 'contractVersion',
+                'conversionRateAsOfUtc', 'deals', 'deploymentId',
+                'gatewayArtifactId', 'gatewayArtifactSha256', 'generation',
+                'orderAsOfUtc', 'orderRateAsOfUtc', 'orders', 'positionAsOfUtc',
+                'positions', 'quoteAsOfUtc', 'quotes', 'riskDayAsOfUtc',
+                'snapshotId', 'sourceEvidenceSha256', 'sourceKind',
+                'sourceSequence', 'symbolAsOfUtc', 'tenantId',
+                'workerAssignmentId', 'workerInstanceId']::text[])
+            is distinct from true
+        or control.json_token_is_integer(target_exposure -> 'contractVersion')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_exposure -> 'snapshotId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_exposure -> 'tenantId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_exposure -> 'brokerAccountId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_exposure -> 'deploymentId')
+            is distinct from true
+        or control.json_token_is_integer(target_exposure -> 'generation')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_exposure -> 'workerAssignmentId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_exposure -> 'workerInstanceId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_exposure -> 'gatewayArtifactId')
+            is distinct from true
+        or pg_catalog.json_typeof(target_exposure -> 'gatewayArtifactSha256')
+            is distinct from 'string'
+        or target_exposure ->> 'gatewayArtifactSha256' !~ '^[0-9a-f]{64}$'
+        or control.json_token_is_bounded_canonical_text(
+            target_exposure -> 'sourceKind', 100) is distinct from true
+        or control.json_token_is_integer(target_exposure -> 'sourceSequence')
+            is distinct from true
+        or pg_catalog.json_typeof(target_exposure -> 'sourceEvidenceSha256')
+            is distinct from 'string'
+        or target_exposure ->> 'sourceEvidenceSha256' !~ '^[0-9a-f]{64}$'
+        or control.json_token_is_utc_timestamp(target_exposure -> 'quoteAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_exposure -> 'accountAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_exposure -> 'positionAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_exposure -> 'orderAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_exposure -> 'symbolAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(
+            target_exposure -> 'conversionRateAsOfUtc') is distinct from true
+        or control.json_token_is_utc_timestamp(target_exposure -> 'riskDayAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_exposure -> 'orderRateAsOfUtc')
+            is distinct from true
+        or pg_catalog.json_typeof(target_exposure -> 'account')
+            is distinct from 'object'
+        or pg_catalog.json_typeof(target_exposure -> 'quotes')
+            is distinct from 'array'
+        or pg_catalog.json_typeof(target_exposure -> 'positions')
+            is distinct from 'array'
+        or pg_catalog.json_typeof(target_exposure -> 'orders')
+            is distinct from 'array'
+        or pg_catalog.json_typeof(target_exposure -> 'deals')
+            is distinct from 'array'
+        or pg_catalog.json_array_length(target_exposure -> 'quotes') > 10000
+        or pg_catalog.json_array_length(target_exposure -> 'positions') > 10000
+        or pg_catalog.json_array_length(target_exposure -> 'orders') > 10000
+        or pg_catalog.json_array_length(target_exposure -> 'deals') > 50000 then
+        return false;
+    end if;
+
+    nested := target_exposure -> 'account';
+    if control.json_object_has_exact_keys(
+            nested,
+            array[
+                'accountMode', 'balance', 'brokerCompany', 'currency', 'environment',
+                'equity', 'freeMargin', 'maskedLogin', 'observedAtUtc', 'sequence',
+                'serverName', 'tradingAccess']::text[]) is distinct from true
+        or control.json_token_is_integer(nested -> 'sequence') is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            nested -> 'maskedLogin', 200) is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            nested -> 'brokerCompany', 200) is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            nested -> 'serverName', 200) is distinct from true
+        or control.json_token_is_integer(nested -> 'accountMode') is distinct from true
+        or (nested ->> 'accountMode')::integer not between 0 and 3
+        or control.json_token_is_integer(nested -> 'environment') is distinct from true
+        or (nested ->> 'environment')::integer not between 0 and 4
+        or control.json_token_is_integer(nested -> 'tradingAccess') is distinct from true
+        or (nested ->> 'tradingAccess')::integer not between 0 and 3
+        or control.json_token_is_bounded_canonical_text(
+            nested -> 'currency', 16) is distinct from true
+        or control.json_token_is_decimal(nested -> 'balance') is distinct from true
+        or control.json_token_is_decimal(nested -> 'equity') is distinct from true
+        or control.json_token_is_decimal(nested -> 'freeMargin') is distinct from true
+        or control.json_token_is_utc_timestamp(nested -> 'observedAtUtc')
+            is distinct from true then
+        return false;
+    end if;
+
+    for item in select value from pg_catalog.json_array_elements(
+        target_exposure -> 'quotes') as value
+    loop
+        if control.json_object_has_exact_keys(
+                item,
+                array[
+                    'ask', 'bid', 'brokerTimestampUtc', 'receivedAtUtc',
+                    'sequence', 'symbol']::text[]) is distinct from true
+            or control.json_token_is_integer(item -> 'sequence') is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'symbol', 100) is distinct from true
+            or control.json_token_is_decimal(item -> 'bid') is distinct from true
+            or control.json_token_is_decimal(item -> 'ask') is distinct from true
+            or control.json_token_is_utc_timestamp(item -> 'brokerTimestampUtc')
+                is distinct from true
+            or control.json_token_is_utc_timestamp(item -> 'receivedAtUtc')
+                is distinct from true then
+            return false;
+        end if;
+    end loop;
+
+    for item in select value from pg_catalog.json_array_elements(
+        target_exposure -> 'positions') as value
+    loop
+        if control.json_object_has_exact_keys(
+                item,
+                array[
+                    'observedAtUtc', 'openPrice', 'ownershipTag', 'positionId',
+                    'side', 'stopLoss', 'symbol', 'takeProfit', 'volume']::text[])
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'positionId', 200) is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'symbol', 100) is distinct from true
+            or control.json_token_is_integer(item -> 'side') is distinct from true
+            or (item ->> 'side')::integer not between 0 and 1
+            or control.json_token_is_decimal(item -> 'volume') is distinct from true
+            or control.json_token_is_decimal(item -> 'openPrice') is distinct from true
+            or control.json_token_is_decimal_or_null(item -> 'stopLoss')
+                is distinct from true
+            or control.json_token_is_decimal_or_null(item -> 'takeProfit')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'ownershipTag', 200) is distinct from true
+            or control.json_token_is_utc_timestamp(item -> 'observedAtUtc')
+                is distinct from true then
+            return false;
+        end if;
+    end loop;
+
+    for item in select value from pg_catalog.json_array_elements(
+        target_exposure -> 'orders') as value
+    loop
+        if control.json_object_has_exact_keys(
+                item,
+                array[
+                    'observedAtUtc', 'orderId', 'orderType', 'ownershipTag',
+                    'remainingVolume', 'requestedPrice', 'requestedVolume', 'side',
+                    'status', 'stopLoss', 'symbol', 'takeProfit']::text[])
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'orderId', 200) is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'symbol', 100) is distinct from true
+            or control.json_token_is_integer(item -> 'side') is distinct from true
+            or (item ->> 'side')::integer not between 0 and 1
+            or control.json_token_is_integer(item -> 'orderType') is distinct from true
+            or (item ->> 'orderType')::integer not between 0 and 3
+            or control.json_token_is_decimal(item -> 'requestedVolume')
+                is distinct from true
+            or control.json_token_is_decimal(item -> 'remainingVolume')
+                is distinct from true
+            or control.json_token_is_decimal_or_null(item -> 'requestedPrice')
+                is distinct from true
+            or control.json_token_is_decimal_or_null(item -> 'stopLoss')
+                is distinct from true
+            or control.json_token_is_decimal_or_null(item -> 'takeProfit')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'status', 100) is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'ownershipTag', 200) is distinct from true
+            or control.json_token_is_utc_timestamp(item -> 'observedAtUtc')
+                is distinct from true then
+            return false;
+        end if;
+    end loop;
+
+    for item in select value from pg_catalog.json_array_elements(
+        target_exposure -> 'deals') as value
+    loop
+        if control.json_object_has_exact_keys(
+                item,
+                array[
+                    'brokerTimestampUtc', 'dealId', 'orderId', 'price', 'side',
+                    'symbol', 'volume']::text[]) is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'dealId', 200) is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'orderId', 200) is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'symbol', 100) is distinct from true
+            or control.json_token_is_integer(item -> 'side') is distinct from true
+            or (item ->> 'side')::integer not between 0 and 1
+            or control.json_token_is_decimal(item -> 'volume') is distinct from true
+            or control.json_token_is_decimal(item -> 'price') is distinct from true
+            or control.json_token_is_utc_timestamp(item -> 'brokerTimestampUtc')
+                is distinct from true then
+            return false;
+        end if;
+    end loop;
+
+    if control.json_object_has_exact_keys(
+            target_risk_input,
+            array[
+                'account', 'actionClass', 'evaluatedAtUtc', 'exposure', 'market',
+                'protection', 'riskDayState', 'timestamps']::text[])
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_risk_input -> 'evaluatedAtUtc')
+            is distinct from true
+        or control.json_token_is_integer(target_risk_input -> 'actionClass')
+            is distinct from true
+        or (target_risk_input ->> 'actionClass')::integer not between 0 and 4
+        or pg_catalog.json_typeof(target_risk_input -> 'timestamps')
+            is distinct from 'object'
+        or pg_catalog.json_typeof(target_risk_input -> 'account')
+            is distinct from 'object'
+        or pg_catalog.json_typeof(target_risk_input -> 'exposure')
+            is distinct from 'object'
+        or pg_catalog.json_typeof(target_risk_input -> 'riskDayState')
+            is distinct from 'object'
+        or pg_catalog.json_typeof(target_risk_input -> 'market')
+            not in ('object', 'null')
+        or pg_catalog.json_typeof(target_risk_input -> 'protection')
+            not in ('object', 'null') then
+        return false;
+    end if;
+
+    nested := target_risk_input -> 'timestamps';
+    if control.json_object_has_exact_keys(
+            nested,
+            array[
+                'accountAsOfUtc', 'conversionRateAsOfUtc', 'orderAsOfUtc',
+                'positionAsOfUtc', 'quoteAsOfUtc', 'symbolAsOfUtc']::text[])
+            is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(nested -> 'quoteAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(nested -> 'accountAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(nested -> 'positionAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(nested -> 'orderAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(nested -> 'symbolAsOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(
+            nested -> 'conversionRateAsOfUtc') is distinct from true then
+        return false;
+    end if;
+
+    if pg_catalog.json_typeof(target_risk_input -> 'market') = 'object' then
+        nested := target_risk_input -> 'market';
+        if control.json_object_has_exact_keys(
+                nested,
+                array[
+                    'brokerMinimumStopDistancePoints', 'marketSessionOpen',
+                    'requestedDirectionTradable', 'requestedSlippagePoints',
+                    'spreadPoints']::text[]) is distinct from true
+            or control.json_token_is_decimal_or_null(nested -> 'spreadPoints')
+                is distinct from true
+            or control.json_token_is_decimal_or_null(
+                nested -> 'requestedSlippagePoints') is distinct from true
+            or control.json_token_is_boolean_or_null(nested -> 'marketSessionOpen')
+                is distinct from true
+            or control.json_token_is_boolean_or_null(
+                nested -> 'requestedDirectionTradable') is distinct from true
+            or control.json_token_is_decimal_or_null(
+                nested -> 'brokerMinimumStopDistancePoints') is distinct from true then
+            return false;
+        end if;
+    end if;
+
+    nested := target_risk_input -> 'account';
+    if control.json_object_has_exact_keys(
+            nested,
+            array[
+                'automatedTradingAllowed', 'currentEquity', 'environment', 'mode',
+                'targetOwnershipConfirmed', 'unexpectedExternalActivity']::text[])
+            is distinct from true
+        or control.json_token_is_integer(nested -> 'environment') is distinct from true
+        or (nested ->> 'environment')::integer not between 0 and 3
+        or control.json_token_is_integer(nested -> 'mode') is distinct from true
+        or (nested ->> 'mode')::integer not between 0 and 3
+        or control.json_token_is_decimal_or_null(nested -> 'currentEquity')
+            is distinct from true
+        or control.json_token_is_boolean_or_null(
+            nested -> 'automatedTradingAllowed') is distinct from true
+        or control.json_token_is_boolean_or_null(
+            nested -> 'unexpectedExternalActivity') is distinct from true
+        or control.json_token_is_boolean_or_null(
+            nested -> 'targetOwnershipConfirmed') is distinct from true then
+        return false;
+    end if;
+
+    nested := target_risk_input -> 'exposure';
+    if control.json_object_has_exact_keys(
+            nested,
+            array[
+                'orderRateSnapshotAsOfUtc', 'orderRateWindowStartedAtUtc',
+                'ordersAlreadySubmittedInWindow', 'projectedAccountGrossNotional',
+                'projectedAccountPositionVolume', 'projectedOpenOrderCount',
+                'projectedOpenPositionCount', 'requestedOrderVolume']::text[])
+            is distinct from true
+        or control.json_token_is_decimal_or_null(nested -> 'requestedOrderVolume')
+            is distinct from true
+        or control.json_token_is_decimal_or_null(
+            nested -> 'projectedAccountPositionVolume') is distinct from true
+        or control.json_token_is_decimal_or_null(
+            nested -> 'projectedAccountGrossNotional') is distinct from true
+        or control.json_token_is_integer_or_null(
+            nested -> 'projectedOpenPositionCount') is distinct from true
+        or control.json_token_is_integer_or_null(
+            nested -> 'projectedOpenOrderCount') is distinct from true
+        or control.json_token_is_integer_or_null(
+            nested -> 'ordersAlreadySubmittedInWindow') is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(
+            nested -> 'orderRateWindowStartedAtUtc') is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(
+            nested -> 'orderRateSnapshotAsOfUtc') is distinct from true then
+        return false;
+    end if;
+
+    if pg_catalog.json_typeof(target_risk_input -> 'protection') = 'object' then
+        nested := target_risk_input -> 'protection';
+        if control.json_object_has_exact_keys(
+                nested,
+                array[
+                    'hasBrokerHostedStopLoss', 'hasBrokerHostedTakeProfit',
+                    'removesExistingStopLoss', 'stopLossDistancePoints',
+                    'takeProfitDistancePoints', 'widensExistingStopLoss']::text[])
+                is distinct from true
+            or control.json_token_is_boolean_or_null(
+                nested -> 'hasBrokerHostedStopLoss') is distinct from true
+            or control.json_token_is_decimal_or_null(
+                nested -> 'stopLossDistancePoints') is distinct from true
+            or control.json_token_is_boolean_or_null(
+                nested -> 'hasBrokerHostedTakeProfit') is distinct from true
+            or control.json_token_is_decimal_or_null(
+                nested -> 'takeProfitDistancePoints') is distinct from true
+            or control.json_token_is_boolean_or_null(
+                nested -> 'removesExistingStopLoss') is distinct from true
+            or control.json_token_is_boolean_or_null(
+                nested -> 'widensExistingStopLoss') is distinct from true then
+            return false;
+        end if;
+    end if;
+
+    nested := target_risk_input -> 'riskDayState';
+    if control.json_object_has_exact_keys(
+            nested,
+            array[
+                'asOfUtc', 'equityHighWater', 'riskDayKey', 'startOfDayEquity',
+                'verifiedDepositsSinceBaseline',
+                'verifiedWithdrawalsSinceBaseline']::text[]) is distinct from true
+        or control.json_token_is_bounded_canonical_text_or_null(
+            nested -> 'riskDayKey', 200) is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(nested -> 'asOfUtc')
+            is distinct from true
+        or control.json_token_is_decimal_or_null(nested -> 'startOfDayEquity')
+            is distinct from true
+        or control.json_token_is_decimal_or_null(nested -> 'equityHighWater')
+            is distinct from true
+        or control.json_token_is_decimal_or_null(
+            nested -> 'verifiedDepositsSinceBaseline') is distinct from true
+        or control.json_token_is_decimal_or_null(
+            nested -> 'verifiedWithdrawalsSinceBaseline') is distinct from true then
+        return false;
+    end if;
+
+    if control.json_object_has_exact_keys(
+            target_risk_decision,
+            array[
+                'actionClass', 'adjustedEquityHighWater',
+                'adjustedStartOfDayEquity', 'dailyLoss', 'decisionDigest',
+                'disposition', 'drawdown', 'inputDigest', 'isAllowed', 'policyDigest',
+                'riskDayKey', 'rules']::text[]) is distinct from true
+        or control.json_token_is_integer(target_risk_decision -> 'disposition')
+            is distinct from true
+        or (target_risk_decision ->> 'disposition')::integer not between 0 and 1
+        or control.json_token_is_integer(target_risk_decision -> 'actionClass')
+            is distinct from true
+        or (target_risk_decision ->> 'actionClass')::integer not between 0 and 4
+        or pg_catalog.json_typeof(target_risk_decision -> 'isAllowed')
+            is distinct from 'boolean'
+        or (target_risk_decision ->> 'isAllowed')::boolean is distinct from
+            ((target_risk_decision ->> 'disposition')::integer = 0)
+        or pg_catalog.json_typeof(target_risk_decision -> 'policyDigest')
+            is distinct from 'string'
+        or target_risk_decision ->> 'policyDigest' !~ '^[0-9a-f]{64}$'
+        or pg_catalog.json_typeof(target_risk_decision -> 'inputDigest')
+            is distinct from 'string'
+        or target_risk_decision ->> 'inputDigest' !~ '^[0-9a-f]{64}$'
+        or pg_catalog.json_typeof(target_risk_decision -> 'decisionDigest')
+            is distinct from 'string'
+        or target_risk_decision ->> 'decisionDigest' !~ '^[0-9a-f]{64}$'
+        or control.json_token_is_bounded_canonical_text_or_null(
+            target_risk_decision -> 'riskDayKey', 200) is distinct from true
+        or control.json_token_is_decimal_or_null(
+            target_risk_decision -> 'adjustedStartOfDayEquity') is distinct from true
+        or control.json_token_is_decimal_or_null(
+            target_risk_decision -> 'adjustedEquityHighWater') is distinct from true
+        or control.json_token_is_decimal_or_null(target_risk_decision -> 'dailyLoss')
+            is distinct from true
+        or control.json_token_is_decimal_or_null(target_risk_decision -> 'drawdown')
+            is distinct from true
+        or pg_catalog.json_typeof(target_risk_decision -> 'rules')
+            is distinct from 'array'
+        or pg_catalog.json_array_length(target_risk_decision -> 'rules') > 1000 then
+        return false;
+    end if;
+
+    for item in select value from pg_catalog.json_array_elements(
+        target_risk_decision -> 'rules') as value
+    loop
+        if control.json_object_has_exact_keys(
+                item,
+                array['code', 'limit', 'observed', 'outcome']::text[])
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(item -> 'code', 200)
+                is distinct from true
+            or control.json_token_is_integer(item -> 'outcome') is distinct from true
+            or (item ->> 'outcome')::integer not between 0 and 2
+            or control.json_token_is_bounded_canonical_text_or_null(
+                item -> 'observed', 500) is distinct from true
+            or control.json_token_is_bounded_canonical_text_or_null(
+                item -> 'limit', 500) is distinct from true then
+            return false;
+        end if;
+    end loop;
+
+    if control.json_object_has_exact_keys(
+            target_reconciliation,
+            array[
+                'commandId', 'contractVersion', 'method', 'mustBeginByUtc',
+                'mustCompleteByUtc', 'scopeSha256']::text[]) is distinct from true
+        or control.json_token_is_integer(target_reconciliation -> 'contractVersion')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_reconciliation -> 'commandId')
+            is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            target_reconciliation -> 'method', 100) is distinct from true
+        or pg_catalog.json_typeof(target_reconciliation -> 'scopeSha256')
+            is distinct from 'string'
+        or target_reconciliation ->> 'scopeSha256' !~ '^[0-9a-f]{64}$'
+        or control.json_token_is_utc_timestamp(
+            target_reconciliation -> 'mustBeginByUtc') is distinct from true
+        or control.json_token_is_utc_timestamp(
+            target_reconciliation -> 'mustCompleteByUtc') is distinct from true then
+        return false;
+    end if;
+
+    if control.json_object_has_exact_keys(
+            target_authorization,
+            array[
+                'brokerAccountId', 'commandContractVersion', 'commandId',
+                'commandSha256', 'compileProofSha256', 'compiledArtifactSha256',
+                'compilerArtifactSha256', 'contractVersion',
+                'demoRuntimeProofSha256', 'deploymentId',
+                'executionLeaseExpiresAtUtc', 'executionLeaseId',
+                'executionLeasePayloadSha256', 'executionLeaseSignatureAlgorithm',
+                'executionLeaseSignatureSha256', 'executionLeaseSigningKeyId',
+                'executionLeaseTokenSha256',
+                'executionLeaseTrustedVerificationKeySha256',
+                'executionSafetyOverlaySha256',
+                'executionSafetyPolicyVersionWatermark', 'exposureSnapshotId',
+                'exposureSnapshotSha256', 'exposureSourceEvidenceSha256',
+                'exposureSourceKind', 'exposureSourceSequence', 'gatewayArtifactId',
+                'gatewayArtifactSha256', 'generation', 'idempotencyKey', 'intentId',
+                'parseTypecheckProofSha256', 'reconciliationCommitmentSha256',
+                'reconciliationContractVersion', 'reconciliationMethod',
+                'reconciliationMustBeginByUtc', 'reconciliationMustCompleteByUtc',
+                'reconciliationScopeSha256', 'referenceParityProofSha256',
+                'riskActionClass', 'riskDecisionId', 'riskDecisionSha256',
+                'riskInputSha256', 'riskPolicySha256', 'riskPolicyVersionId',
+                'semanticConversionProofSha256', 'sourceCorpusId',
+                'sourceCorpusSha256', 'sourceManifestSha256', 'sourceReportSha256',
+                'strategyId', 'strategyPackageSha256', 'strategySignatureCryptographicallyVerified',
+                'strategySourceBindingId', 'strategyVerificationEvidenceSha256',
+                'strategyVerificationSignatureAlgorithm',
+                'strategyVerificationSignatureSha256',
+                'strategyVerificationSigningKeyId', 'strategyVerifiedAtUtc',
+                'strategyVerifiedByWorkloadId', 'strategyVersion',
+                'strategyVersionId', 'tenantId']::text[]) is distinct from true
+        or control.json_token_is_integer(target_authorization -> 'contractVersion')
+            is distinct from true
+        or control.json_token_is_integer(
+            target_authorization -> 'commandContractVersion') is distinct from true
+        or control.json_token_is_integer(target_authorization -> 'generation')
+            is distinct from true
+        or control.json_token_is_integer(target_authorization -> 'strategyVersion')
+            is distinct from true
+        or control.json_token_is_integer(
+            target_authorization -> 'exposureSourceSequence') is distinct from true
+        or control.json_token_is_integer(
+            target_authorization -> 'executionSafetyPolicyVersionWatermark')
+            is distinct from true
+        or control.json_token_is_integer(
+            target_authorization -> 'reconciliationContractVersion')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(
+            target_authorization -> 'strategyVerifiedAtUtc') is distinct from true
+        or control.json_token_is_utc_timestamp(
+            target_authorization -> 'executionLeaseExpiresAtUtc') is distinct from true
+        or control.json_token_is_utc_timestamp(
+            target_authorization -> 'reconciliationMustBeginByUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(
+            target_authorization -> 'reconciliationMustCompleteByUtc')
+            is distinct from true
+        or pg_catalog.json_typeof(
+            target_authorization -> 'strategySignatureCryptographicallyVerified')
+            is distinct from 'boolean' then
+        return false;
+    end if;
+
+    return true;
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.broker_authorization_evidence_has_typed_shape(
+    json, json, json, json, json, json) from public;
+
+create function control.strategy_event_input_has_typed_shape(
+    target_event json,
+    target_snapshot json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    payload json;
+    item json;
+    event_kind integer;
+    previous_key bytea;
+    current_key bytea;
+    previous_identity text;
+    previous_sequence bigint;
+    current_identity text;
+    current_sequence bigint;
+begin
+    if not control.json_object_has_exact_keys(target_event, array[
+            'brokerTimestampUtc', 'contractVersion', 'deploymentId', 'eventId',
+            'generation', 'payload', 'receivedAtUtc', 'sequence',
+            'workerInstanceId']::text[])
+        or control.json_token_is_integer(target_event -> 'contractVersion')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_event -> 'deploymentId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_event -> 'workerInstanceId')
+            is distinct from true
+        or control.json_token_is_integer(target_event -> 'generation')
+            is distinct from true
+        or control.json_token_is_integer(target_event -> 'sequence')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_event -> 'eventId')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_event -> 'receivedAtUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp_or_null(
+                target_event -> 'brokerTimestampUtc') is distinct from true then
+        return false;
+    end if;
+
+    payload := target_event -> 'payload';
+    if pg_catalog.json_typeof(payload) is distinct from 'object'
+        or control.json_token_is_integer(payload -> 'contractVersion')
+            is distinct from true
+        or control.json_token_is_integer(payload -> 'kind')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(payload -> 'occurredAtUtc')
+            is distinct from true
+        or pg_catalog.json_typeof(payload -> '$event') is distinct from 'string' then
+        return false;
+    end if;
+    event_kind := (payload ->> 'kind')::integer;
+
+    if event_kind = 0 then
+        if not control.json_object_has_exact_keys(payload, array[
+                '$event', 'contractVersion', 'kind', 'occurredAtUtc',
+                'reasonCode']::text[])
+            or payload ->> '$event' is distinct from 'initialize-v1'
+            or control.json_token_is_bounded_canonical_text(
+                payload -> 'reasonCode', 200) is distinct from true then
+            return false;
+        end if;
+    elsif event_kind = 1 then
+        if not control.json_object_has_exact_keys(payload, array[
+                '$event', 'ask', 'bid', 'contractVersion', 'kind',
+                'marketDataSequence', 'occurredAtUtc', 'symbol']::text[])
+            or payload ->> '$event' is distinct from 'new-tick-v1'
+            or control.json_token_is_decimal(payload -> 'ask') is distinct from true
+            or control.json_token_is_decimal(payload -> 'bid') is distinct from true
+            or control.json_token_is_integer(payload -> 'marketDataSequence')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                payload -> 'symbol', 100) is distinct from true
+            or (payload ->> 'bid')::numeric <= 0
+            or (payload ->> 'ask')::numeric < (payload ->> 'bid')::numeric
+            or (payload ->> 'marketDataSequence')::bigint <= 0 then
+            return false;
+        end if;
+    elsif event_kind = 2 then
+        if not control.json_object_has_exact_keys(payload, array[
+                '$event', 'close', 'contractVersion', 'high', 'kind', 'low',
+                'marketDataSequence', 'occurredAtUtc', 'open', 'openedAtUtc',
+                'symbol', 'tickVolume', 'timeframe']::text[])
+            or payload ->> '$event' is distinct from 'bar-closed-v1'
+            or control.json_token_is_decimal(payload -> 'open') is distinct from true
+            or control.json_token_is_decimal(payload -> 'high') is distinct from true
+            or control.json_token_is_decimal(payload -> 'low') is distinct from true
+            or control.json_token_is_decimal(payload -> 'close') is distinct from true
+            or control.json_token_is_integer(payload -> 'tickVolume')
+                is distinct from true
+            or control.json_token_is_integer(payload -> 'marketDataSequence')
+                is distinct from true
+            or control.json_token_is_utc_timestamp(payload -> 'openedAtUtc')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                payload -> 'symbol', 100) is distinct from true
+            or control.json_token_is_positive_timespan(payload -> 'timeframe')
+                is distinct from true
+            or (payload ->> 'openedAtUtc')::timestamptz >
+                (payload ->> 'occurredAtUtc')::timestamptz
+            or (payload ->> 'open')::numeric <= 0
+            or (payload ->> 'high')::numeric <= 0
+            or (payload ->> 'low')::numeric <= 0
+            or (payload ->> 'close')::numeric <= 0
+            or (payload ->> 'low')::numeric > (payload ->> 'high')::numeric
+            or (payload ->> 'open')::numeric not between
+                (payload ->> 'low')::numeric and (payload ->> 'high')::numeric
+            or (payload ->> 'close')::numeric not between
+                (payload ->> 'low')::numeric and (payload ->> 'high')::numeric
+            or (payload ->> 'tickVolume')::bigint < 0
+            or (payload ->> 'marketDataSequence')::bigint <= 0 then
+            return false;
+        end if;
+    elsif event_kind = 3 then
+        if not control.json_object_has_exact_keys(payload, array[
+                '$event', 'contractVersion', 'kind', 'occurredAtUtc',
+                'scheduledAtUtc', 'timerId']::text[])
+            or payload ->> '$event' is distinct from 'timer-v1'
+            or control.json_token_is_utc_timestamp(payload -> 'scheduledAtUtc')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                payload -> 'timerId', 200) is distinct from true
+            or (payload ->> 'scheduledAtUtc')::timestamptz >
+                (payload ->> 'occurredAtUtc')::timestamptz then
+            return false;
+        end if;
+    elsif event_kind = 4 then
+        if not control.json_object_has_exact_keys(payload, array[
+                '$event', 'brokerCommandId', 'brokerEventId', 'contractVersion',
+                'dealId', 'executionKind', 'fillPrice', 'filledVolume', 'kind',
+                'occurredAtUtc', 'orderId', 'reasonCode']::text[])
+            or payload ->> '$event' is distinct from 'execution-v1'
+            or control.json_token_is_uuid_string(payload -> 'brokerCommandId')
+                is distinct from true
+            or (payload ->> 'brokerCommandId')::uuid =
+                '00000000-0000-0000-0000-000000000000'::uuid
+            or control.json_token_is_bounded_canonical_text(
+                payload -> 'brokerEventId', 200) is distinct from true
+            or control.json_token_is_string_or_null(payload -> 'orderId')
+                is distinct from true
+            or control.json_token_is_string_or_null(payload -> 'dealId')
+                is distinct from true
+            or (pg_catalog.json_typeof(payload -> 'orderId') = 'string'
+                and control.json_token_is_bounded_canonical_text(
+                    payload -> 'orderId', 200) is distinct from true)
+            or (pg_catalog.json_typeof(payload -> 'dealId') = 'string'
+                and control.json_token_is_bounded_canonical_text(
+                    payload -> 'dealId', 200) is distinct from true)
+            or control.json_token_is_integer(payload -> 'executionKind')
+                is distinct from true
+            or (payload ->> 'executionKind')::integer not between 0 and 5
+            or control.json_token_is_decimal(payload -> 'filledVolume')
+                is distinct from true
+            or control.json_token_is_decimal_or_null(payload -> 'fillPrice')
+                is distinct from true
+            or (payload ->> 'filledVolume')::numeric < 0
+            or (pg_catalog.json_typeof(payload -> 'fillPrice') = 'number'
+                and (payload ->> 'fillPrice')::numeric <= 0)
+            or control.json_token_is_bounded_canonical_text(
+                payload -> 'reasonCode', 200) is distinct from true then
+            return false;
+        end if;
+    elsif event_kind = 5 then
+        if not control.json_object_has_exact_keys(payload, array[
+                '$event', 'accountSequence', 'contractVersion', 'kind',
+                'occurredAtUtc', 'reasonCode']::text[])
+            or payload ->> '$event' is distinct from 'account-changed-v1'
+            or control.json_token_is_integer(payload -> 'accountSequence')
+                is distinct from true
+            or (payload ->> 'accountSequence')::bigint <= 0
+            or control.json_token_is_bounded_canonical_text(
+                payload -> 'reasonCode', 200) is distinct from true then
+            return false;
+        end if;
+    elsif event_kind = 6 then
+        if not control.json_object_has_exact_keys(payload, array[
+                '$event', 'contractVersion', 'kind', 'occurredAtUtc',
+                'reason']::text[])
+            or payload ->> '$event' is distinct from 'stop-v1'
+            or control.json_token_is_integer(payload -> 'reason') is distinct from true
+            or (payload ->> 'reason')::integer not between 0 and 5 then
+            return false;
+        end if;
+    else
+        return false;
+    end if;
+
+    if not control.json_object_has_exact_keys(target_snapshot, array[
+            'account', 'asOfUtc', 'contractVersion', 'deterministicNowUtc',
+            'pendingOrders', 'positions', 'quotes', 'sequence']::text[])
+        or control.json_token_is_integer(target_snapshot -> 'contractVersion')
+            is distinct from true
+        or control.json_token_is_integer(target_snapshot -> 'sequence')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_snapshot -> 'asOfUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(
+                target_snapshot -> 'deterministicNowUtc') is distinct from true
+        or pg_catalog.json_typeof(target_snapshot -> 'quotes') is distinct from 'array'
+        or pg_catalog.json_typeof(target_snapshot -> 'positions') is distinct from 'array'
+        or pg_catalog.json_typeof(target_snapshot -> 'pendingOrders')
+            is distinct from 'array'
+        or pg_catalog.json_array_length(target_snapshot -> 'quotes') > 10000
+        or pg_catalog.json_array_length(target_snapshot -> 'positions') > 10000
+        or pg_catalog.json_array_length(target_snapshot -> 'pendingOrders') > 10000
+        or not control.json_object_has_exact_keys(target_snapshot -> 'account', array[
+            'balance', 'currency', 'equity', 'freeMargin', 'sequence']::text[])
+        or control.json_token_is_integer(
+                target_snapshot #> '{account,sequence}') is distinct from true
+        or control.json_token_is_decimal(
+                target_snapshot #> '{account,balance}') is distinct from true
+        or control.json_token_is_decimal(
+                target_snapshot #> '{account,equity}') is distinct from true
+        or control.json_token_is_decimal(
+                target_snapshot #> '{account,freeMargin}') is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+                target_snapshot #> '{account,currency}', 20) is distinct from true
+        or (target_snapshot #>> '{account,sequence}')::bigint <= 0
+        or (target_snapshot ->> 'asOfUtc')::timestamptz >
+            (target_snapshot ->> 'deterministicNowUtc')::timestamptz then
+        return false;
+    end if;
+
+    previous_key := null;
+    previous_identity := null;
+    previous_sequence := null;
+    for item in select value
+        from pg_catalog.json_array_elements(target_snapshot -> 'quotes') as quote(value)
+    loop
+        if not control.json_object_has_exact_keys(item, array[
+                'ask', 'bid', 'observedAtUtc', 'sequence', 'symbol']::text[])
+            or control.json_token_is_decimal(item -> 'ask') is distinct from true
+            or control.json_token_is_decimal(item -> 'bid') is distinct from true
+            or control.json_token_is_integer(item -> 'sequence') is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'symbol', 100) is distinct from true
+            or control.json_token_is_utc_timestamp(item -> 'observedAtUtc')
+                is distinct from true then
+            return false;
+        end if;
+        current_identity := item ->> 'symbol';
+        current_sequence := (item ->> 'sequence')::bigint;
+        current_key := control.dotnet_utf16_sort_key(current_identity);
+        if current_sequence <= 0
+            or (item ->> 'bid')::numeric <= 0
+            or (item ->> 'ask')::numeric < (item ->> 'bid')::numeric
+            or (item ->> 'observedAtUtc')::timestamptz >
+                (target_snapshot ->> 'asOfUtc')::timestamptz
+            or previous_key > current_key
+            or (previous_identity = current_identity
+                and previous_sequence >= current_sequence) then
+            return false;
+        end if;
+        previous_key := current_key;
+        previous_identity := current_identity;
+        previous_sequence := current_sequence;
+    end loop;
+
+    previous_key := null;
+    previous_identity := null;
+    for item in select value
+        from pg_catalog.json_array_elements(target_snapshot -> 'positions') as position(value)
+    loop
+        if not control.json_object_has_exact_keys(item, array[
+                'openPrice', 'ownedByDeployment', 'positionId', 'side', 'stopLoss',
+                'symbol', 'takeProfit', 'volume']::text[])
+            or control.json_token_is_decimal(item -> 'openPrice') is distinct from true
+            or pg_catalog.json_typeof(item -> 'ownedByDeployment')
+                is distinct from 'boolean'
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'positionId', 200) is distinct from true
+            or control.json_token_is_integer(item -> 'side') is distinct from true
+            or (item ->> 'side')::integer not between 0 and 1
+            or control.json_token_is_decimal_or_null(item -> 'stopLoss')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'symbol', 100) is distinct from true
+            or control.json_token_is_decimal_or_null(item -> 'takeProfit')
+                is distinct from true
+            or control.json_token_is_decimal(item -> 'volume') is distinct from true then
+            return false;
+        end if;
+        current_identity := item ->> 'positionId';
+        current_key := control.dotnet_utf16_sort_key(current_identity);
+        if (item ->> 'openPrice')::numeric <= 0
+            or (item ->> 'volume')::numeric <= 0
+            or (pg_catalog.json_typeof(item -> 'stopLoss') = 'number'
+                and (item ->> 'stopLoss')::numeric <= 0)
+            or (pg_catalog.json_typeof(item -> 'takeProfit') = 'number'
+                and (item ->> 'takeProfit')::numeric <= 0)
+            or previous_key > current_key
+            or previous_identity = current_identity then
+            return false;
+        end if;
+        previous_key := current_key;
+        previous_identity := current_identity;
+    end loop;
+
+    previous_key := null;
+    previous_identity := null;
+    for item in select value
+        from pg_catalog.json_array_elements(
+            target_snapshot -> 'pendingOrders') as pending_order(value)
+    loop
+        if not control.json_object_has_exact_keys(item, array[
+                'orderId', 'ownedByDeployment', 'requestedPrice', 'side', 'stopLoss',
+                'symbol', 'takeProfit', 'volume']::text[])
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'orderId', 200) is distinct from true
+            or pg_catalog.json_typeof(item -> 'ownedByDeployment')
+                is distinct from 'boolean'
+            or control.json_token_is_decimal(item -> 'requestedPrice')
+                is distinct from true
+            or control.json_token_is_integer(item -> 'side') is distinct from true
+            or (item ->> 'side')::integer not between 0 and 1
+            or control.json_token_is_decimal_or_null(item -> 'stopLoss')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                item -> 'symbol', 100) is distinct from true
+            or control.json_token_is_decimal_or_null(item -> 'takeProfit')
+                is distinct from true
+            or control.json_token_is_decimal(item -> 'volume') is distinct from true then
+            return false;
+        end if;
+        current_identity := item ->> 'orderId';
+        current_key := control.dotnet_utf16_sort_key(current_identity);
+        if (item ->> 'requestedPrice')::numeric <= 0
+            or (item ->> 'volume')::numeric <= 0
+            or (pg_catalog.json_typeof(item -> 'stopLoss') = 'number'
+                and (item ->> 'stopLoss')::numeric <= 0)
+            or (pg_catalog.json_typeof(item -> 'takeProfit') = 'number'
+                and (item ->> 'takeProfit')::numeric <= 0)
+            or previous_key > current_key
+            or previous_identity = current_identity then
+            return false;
+        end if;
+        previous_key := current_key;
+        previous_identity := current_identity;
+    end loop;
+
+    return true;
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.strategy_event_input_has_typed_shape(json, json)
+    from public;
+
+create function control.strategy_action_has_typed_shape(target_action json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    action_kind integer;
+begin
+    if pg_catalog.json_typeof(target_action) is distinct from 'object'
+        or pg_catalog.json_typeof(target_action -> '$action') is distinct from 'string'
+        or control.json_token_is_uuid_string(target_action -> 'actionId')
+            is distinct from true
+        or control.json_token_is_integer(target_action -> 'exposureHint')
+            is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            target_action -> 'idempotencyKey', 500) is distinct from true
+        or control.json_token_is_integer(target_action -> 'kind')
+            is distinct from true
+        or control.json_token_is_integer(target_action -> 'marketDataSequence')
+            is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            target_action -> 'reasonCode', 1048576) is distinct from true
+        or control.json_token_is_bounded_canonical_text(
+            target_action -> 'symbol', 100) is distinct from true
+        or (target_action ->> 'exposureHint')::integer not between 0 and 4
+        or (target_action ->> 'marketDataSequence')::bigint <= 0 then
+        return false;
+    end if;
+    action_kind := (target_action ->> 'kind')::integer;
+
+    if action_kind = 0 then
+        return control.json_object_has_exact_keys(target_action, array[
+                '$action', 'actionId', 'expiresAtUtc', 'exposureHint',
+                'idempotencyKey', 'kind', 'marketDataSequence',
+                'maximumDeviationPoints', 'orderType', 'reasonCode',
+                'requestedPrice', 'side', 'stopLoss', 'symbol', 'takeProfit',
+                'volume']::text[])
+            and target_action ->> '$action' = 'place-order-v1'
+            and (target_action ->> 'exposureHint')::integer = 0
+            and control.json_token_is_utc_timestamp_or_null(
+                target_action -> 'expiresAtUtc')
+            and control.json_token_is_integer(
+                target_action -> 'maximumDeviationPoints')
+            and (target_action ->> 'maximumDeviationPoints')::integer >= 0
+            and control.json_token_is_integer(target_action -> 'orderType')
+            and (target_action ->> 'orderType')::integer between 0 and 3
+            and control.json_token_is_decimal_or_null(
+                target_action -> 'requestedPrice')
+            and (pg_catalog.json_typeof(target_action -> 'requestedPrice') = 'null'
+                or (target_action ->> 'requestedPrice')::numeric > 0)
+            and control.json_token_is_integer(target_action -> 'side')
+            and (target_action ->> 'side')::integer between 0 and 1
+            and control.json_token_is_decimal(target_action -> 'stopLoss')
+            and (target_action ->> 'stopLoss')::numeric > 0
+            and control.json_token_is_decimal(target_action -> 'takeProfit')
+            and (target_action ->> 'takeProfit')::numeric > 0
+            and control.json_token_is_decimal(target_action -> 'volume')
+            and (target_action ->> 'volume')::numeric > 0;
+    elsif action_kind = 1 then
+        return control.json_object_has_exact_keys(target_action, array[
+                '$action', 'actionId', 'exposureHint', 'idempotencyKey', 'kind',
+                'marketDataSequence', 'positionId', 'reasonCode', 'stopLoss',
+                'symbol', 'takeProfit']::text[])
+            and target_action ->> '$action' = 'update-protection-v1'
+            and (target_action ->> 'exposureHint')::integer = 2
+            and control.json_token_is_bounded_canonical_text(
+                target_action -> 'positionId', 1048576)
+            and control.json_token_is_decimal(target_action -> 'stopLoss')
+            and (target_action ->> 'stopLoss')::numeric > 0
+            and control.json_token_is_decimal(target_action -> 'takeProfit')
+            and (target_action ->> 'takeProfit')::numeric > 0;
+    elsif action_kind = 2 then
+        return control.json_object_has_exact_keys(target_action, array[
+                '$action', 'actionId', 'exposureHint', 'idempotencyKey', 'kind',
+                'marketDataSequence', 'orderId', 'reasonCode', 'symbol']::text[])
+            and target_action ->> '$action' = 'cancel-pending-order-v1'
+            and (target_action ->> 'exposureHint')::integer = 3
+            and control.json_token_is_bounded_canonical_text(
+                target_action -> 'orderId', 1048576);
+    elsif action_kind = 3 then
+        return control.json_object_has_exact_keys(target_action, array[
+                '$action', 'actionId', 'exposureHint', 'idempotencyKey', 'kind',
+                'marketDataSequence', 'positionId', 'reasonCode', 'symbol',
+                'volume']::text[])
+            and target_action ->> '$action' = 'close-position-v1'
+            and (target_action ->> 'exposureHint')::integer in (1, 4)
+            and control.json_token_is_bounded_canonical_text(
+                target_action -> 'positionId', 1048576)
+            and control.json_token_is_decimal(target_action -> 'volume')
+            and (target_action ->> 'volume')::numeric > 0;
+    end if;
+    return false;
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.strategy_action_has_typed_shape(json) from public;
+
+create function control.strategy_commit_has_typed_shape(target_commit json)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+declare
+    action_wrapper json;
+    action_document json;
+    outbox_document json;
+    result_document json;
+    result_action json;
+    action_index bigint := 0;
+begin
+    if not control.json_object_has_exact_keys(target_commit, array[
+            'actions', 'claimAuthorityNowUtc', 'claimExpiresAtUtc', 'claimToken',
+            'combinedActionBytes', 'commitId', 'contractVersion', 'deploymentId',
+            'eventContractVersion', 'eventId', 'eventJson', 'eventKind',
+            'eventSequence', 'eventSha256', 'generation', 'nextStateJson',
+            'nextStateSha256', 'nextStateVersion', 'preparedAtUtc',
+            'priorStateJson', 'priorStateSha256', 'priorStateVersion',
+            'resultJson', 'resultSha256', 'snapshotContractVersion',
+            'snapshotJson', 'snapshotSequence', 'snapshotSha256', 'stateBytes',
+            'tenantId', 'workerInstanceId']::text[])
+        or control.json_token_is_integer(target_commit -> 'contractVersion')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_commit -> 'commitId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_commit -> 'claimToken')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_commit -> 'tenantId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_commit -> 'deploymentId')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_commit -> 'workerInstanceId')
+            is distinct from true
+        or control.json_token_is_integer(target_commit -> 'generation')
+            is distinct from true
+        or control.json_token_is_integer(target_commit -> 'eventSequence')
+            is distinct from true
+        or control.json_token_is_uuid_string(target_commit -> 'eventId')
+            is distinct from true
+        or control.json_token_is_integer(target_commit -> 'eventKind')
+            is distinct from true
+        or control.json_token_is_integer(target_commit -> 'eventContractVersion')
+            is distinct from true
+        or pg_catalog.json_typeof(target_commit -> 'eventJson') is distinct from 'string'
+        or pg_catalog.json_typeof(target_commit -> 'eventSha256') is distinct from 'string'
+        or control.json_token_is_integer(target_commit -> 'snapshotSequence')
+            is distinct from true
+        or control.json_token_is_integer(target_commit -> 'snapshotContractVersion')
+            is distinct from true
+        or pg_catalog.json_typeof(target_commit -> 'snapshotJson')
+            is distinct from 'string'
+        or pg_catalog.json_typeof(target_commit -> 'snapshotSha256')
+            is distinct from 'string'
+        or control.json_token_is_integer(target_commit -> 'priorStateVersion')
+            is distinct from true
+        or pg_catalog.json_typeof(target_commit -> 'priorStateJson')
+            is distinct from 'string'
+        or pg_catalog.json_typeof(target_commit -> 'priorStateSha256')
+            is distinct from 'string'
+        or control.json_token_is_integer(target_commit -> 'nextStateVersion')
+            is distinct from true
+        or pg_catalog.json_typeof(target_commit -> 'nextStateJson')
+            is distinct from 'string'
+        or pg_catalog.json_typeof(target_commit -> 'nextStateSha256')
+            is distinct from 'string'
+        or pg_catalog.json_typeof(target_commit -> 'resultJson') is distinct from 'string'
+        or pg_catalog.json_typeof(target_commit -> 'resultSha256')
+            is distinct from 'string'
+        or control.json_token_is_integer(target_commit -> 'stateBytes')
+            is distinct from true
+        or control.json_token_is_integer(target_commit -> 'combinedActionBytes')
+            is distinct from true
+        or pg_catalog.json_typeof(target_commit -> 'actions') is distinct from 'array'
+        or control.json_token_is_utc_timestamp(target_commit -> 'claimAuthorityNowUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_commit -> 'claimExpiresAtUtc')
+            is distinct from true
+        or control.json_token_is_utc_timestamp(target_commit -> 'preparedAtUtc')
+            is distinct from true then
+        return false;
+    end if;
+
+    result_document := (target_commit ->> 'resultJson')::json;
+    if not control.json_object_has_exact_keys(result_document, array[
+            'actions', 'contractVersion', 'state']::text[])
+        or control.json_token_is_integer(result_document -> 'contractVersion')
+            is distinct from true
+        or pg_catalog.json_typeof(result_document -> 'actions') is distinct from 'array'
+        or not control.json_object_has_exact_keys(result_document -> 'state', array[
+            'contentHash', 'payloadJson', 'version']::text[])
+        or pg_catalog.json_typeof(result_document #> '{state,contentHash}')
+            is distinct from 'string'
+        or pg_catalog.json_typeof(result_document #> '{state,payloadJson}')
+            is distinct from 'string'
+        or control.json_token_is_integer(result_document #> '{state,version}')
+            is distinct from true then
+        return false;
+    end if;
+
+    for action_wrapper in select value
+        from pg_catalog.json_array_elements(target_commit -> 'actions')
+            as committed_action(value)
+    loop
+        if not control.json_object_has_exact_keys(action_wrapper, array[
+                'actionId', 'actionJson', 'actionSha256', 'exposureHint',
+                'idempotencyKey', 'kind', 'marketDataSequence', 'ordinal',
+                'outboxMessageId', 'outboxPayloadJson', 'outboxPayloadSha256',
+                'outboxTopic', 'symbol']::text[])
+            or control.json_token_is_integer(action_wrapper -> 'ordinal')
+                is distinct from true
+            or control.json_token_is_uuid_string(action_wrapper -> 'actionId')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                action_wrapper -> 'idempotencyKey', 500) is distinct from true
+            or control.json_token_is_integer(action_wrapper -> 'kind')
+                is distinct from true
+            or control.json_token_is_integer(action_wrapper -> 'exposureHint')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                action_wrapper -> 'symbol', 100) is distinct from true
+            or control.json_token_is_integer(action_wrapper -> 'marketDataSequence')
+                is distinct from true
+            or pg_catalog.json_typeof(action_wrapper -> 'actionJson')
+                is distinct from 'string'
+            or pg_catalog.json_typeof(action_wrapper -> 'actionSha256')
+                is distinct from 'string'
+            or control.json_token_is_uuid_string(action_wrapper -> 'outboxMessageId')
+                is distinct from true
+            or pg_catalog.json_typeof(action_wrapper -> 'outboxTopic')
+                is distinct from 'string'
+            or pg_catalog.json_typeof(action_wrapper -> 'outboxPayloadJson')
+                is distinct from 'string'
+            or pg_catalog.json_typeof(action_wrapper -> 'outboxPayloadSha256')
+                is distinct from 'string' then
+            return false;
+        end if;
+
+        action_document := (action_wrapper ->> 'actionJson')::json;
+        if control.strategy_action_has_typed_shape(action_document)
+                is distinct from true then
+            return false;
+        end if;
+        outbox_document := (action_wrapper ->> 'outboxPayloadJson')::json;
+        if not control.json_object_has_exact_keys(outbox_document, array[
+                'actionId', 'actionKind', 'actionOrdinal', 'actionSha256',
+                'contractVersion', 'deploymentId', 'eventId', 'eventSequence',
+                'exposureHint', 'generation', 'idempotencyKey', 'stateVersion',
+                'tenantId', 'workerInstanceId']::text[])
+            or control.json_token_is_uuid_string(outbox_document -> 'actionId')
+                is distinct from true
+            or control.json_token_is_integer(outbox_document -> 'actionKind')
+                is distinct from true
+            or control.json_token_is_integer(outbox_document -> 'actionOrdinal')
+                is distinct from true
+            or pg_catalog.json_typeof(outbox_document -> 'actionSha256')
+                is distinct from 'string'
+            or control.json_token_is_integer(outbox_document -> 'contractVersion')
+                is distinct from true
+            or control.json_token_is_uuid_string(outbox_document -> 'deploymentId')
+                is distinct from true
+            or control.json_token_is_uuid_string(outbox_document -> 'eventId')
+                is distinct from true
+            or control.json_token_is_integer(outbox_document -> 'eventSequence')
+                is distinct from true
+            or control.json_token_is_integer(outbox_document -> 'exposureHint')
+                is distinct from true
+            or control.json_token_is_integer(outbox_document -> 'generation')
+                is distinct from true
+            or control.json_token_is_bounded_canonical_text(
+                outbox_document -> 'idempotencyKey', 500) is distinct from true
+            or control.json_token_is_integer(outbox_document -> 'stateVersion')
+                is distinct from true
+            or control.json_token_is_uuid_string(outbox_document -> 'tenantId')
+                is distinct from true
+            or control.json_token_is_uuid_string(outbox_document -> 'workerInstanceId')
+                is distinct from true then
+            return false;
+        end if;
+
+        select value into result_action
+        from pg_catalog.json_array_elements(result_document -> 'actions')
+            with ordinality as result_actions(value, ordinal)
+        where ordinal = action_index + 1;
+        if result_action is null
+            or control.strategy_action_has_typed_shape(result_action)
+                is distinct from true
+            or (action_wrapper ->> 'actionJson') is distinct from
+                control.dotnet_canonical_json(result_action) then
+            return false;
+        end if;
+        action_index := action_index + 1;
+    end loop;
+
+    return action_index = pg_catalog.json_array_length(result_document -> 'actions');
+exception
+    when others then
+        return false;
+end
+$$;
+
+revoke all on function control.strategy_commit_has_typed_shape(json) from public;
+
+-- The analyzer's canonical digest uses .NET string.Length (UTF-16 code units),
+-- not PostgreSQL character or UTF-8 byte length. Supplementary code points add
+-- one extra code unit. This internal helper keeps digest validation exact for
+-- Unicode paths without exposing a worker capability of its own.
+create function control.dotnet_length_prefixed_text(target_value text)
+returns text
+language sql
+immutable
+strict
+parallel safe
+set search_path = ''
+as $$
+    select
+        (
+            pg_catalog.length(target_value)::bigint
+            + coalesce(pg_catalog.sum(
+                case when pg_catalog.ascii(character_value) > 65535
+                    then 1 else 0 end), 0)
+        )::text
+        || ':' || target_value
+    from pg_catalog.regexp_split_to_table(target_value, '')
+        as character_value
+$$;
+
+revoke all on function control.dotnet_length_prefixed_text(text) from public;
+
+-- Persist the exact static conversion-classification evidence as a single
+-- execute-only capability. The evidence is governance input only: this
+-- function has no strategy-version, promotion, deployment, or execution side
+-- effects. A retry with byte-for-byte identical evidence returns the original
+-- receipt; every drift fails closed before any append occurs.
+create function control.persist_strategy_conversion_classification(
+    target_corpus_id uuid,
+    target_schema_version text,
+    target_analyzer_version text,
+    target_input_static_schema_version text,
+    target_input_static_analyzer_version text,
+    target_input_corpus_sha256 text,
+    target_dependency_graph_sha256 text,
+    target_embedded_evidence_sha256 text,
+    target_formatted_evidence_sha256 text,
+    target_canonical_evidence_sha256 text,
+    target_file_count integer,
+    target_total_bytes bigint,
+    target_disposition_counts jsonb,
+    target_formatted_evidence_content bytea,
+    target_canonical_evidence_content bytea,
+    target_audit_event_id uuid,
+    target_outbox_message_id uuid)
+returns table
+(
+    persisted_embedded_evidence_sha256 text,
+    persisted_formatted_evidence_sha256 text,
+    persisted_canonical_evidence_sha256 text,
+    recorded_at_utc timestamptz,
+    persisted_audit_event_id uuid,
+    persisted_outbox_message_id uuid,
+    replayed boolean
+)
+language plpgsql
+security definer
+set search_path = ''
+set row_security = on
+as $$
+declare
+    locked_job control.strategy_import_jobs%rowtype;
+    persisted_corpus governance.strategy_source_corpora%rowtype;
+    existing_classification governance.strategy_conversion_classifications%rowtype;
+    formatted_raw_document json;
+    canonical_raw_document json;
+    formatted_document jsonb;
+    canonical_document jsonb;
+    computed_disposition_counts jsonb;
+    computed_embedded_evidence_sha256 text;
+    safe_payload jsonb;
+    safe_payload_canonical text;
+    safe_payload_sha256 text;
+    authorization_now timestamptz;
+begin
+    if session_user <> 'yo4x_conversion_worker'
+        or control.current_tenant_id() is null
+        or control.current_actor_id() is null
+        or control.current_correlation_id() is null
+        or target_corpus_id is null
+        or target_audit_event_id is null
+        or target_outbox_message_id is null
+        or target_audit_event_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_outbox_message_id = '00000000-0000-0000-0000-000000000000'::uuid
+        or target_schema_version is distinct from 'mql5-conversion-evidence.v1'
+        or target_analyzer_version is distinct from 'yo4x-mql5-conversion-evidence.v2'
+        or target_input_static_schema_version is null
+        or length(btrim(target_input_static_schema_version)) not between 1 and 100
+        or target_input_static_analyzer_version is null
+        or length(btrim(target_input_static_analyzer_version)) not between 1 and 200
+        or target_input_corpus_sha256 is null
+        or target_input_corpus_sha256 !~ '^[0-9a-f]{64}$'
+        or target_dependency_graph_sha256 is null
+        or target_dependency_graph_sha256 !~ '^[0-9a-f]{64}$'
+        or target_embedded_evidence_sha256 is null
+        or target_embedded_evidence_sha256 !~ '^[0-9a-f]{64}$'
+        or target_formatted_evidence_sha256 is null
+        or target_formatted_evidence_sha256 !~ '^[0-9a-f]{64}$'
+        or target_canonical_evidence_sha256 is null
+        or target_canonical_evidence_sha256 !~ '^[0-9a-f]{64}$'
+        or target_file_count is null
+        or target_file_count not between 1 and 10000
+        or target_total_bytes is null
+        or target_total_bytes not between 1 and 268435456
+        or target_disposition_counts is null
+        or pg_catalog.jsonb_typeof(target_disposition_counts) is distinct from 'object'
+        or pg_catalog.octet_length(target_disposition_counts::text) > 4096
+        or target_formatted_evidence_content is null
+        or pg_catalog.octet_length(target_formatted_evidence_content) not between 2 and 67108864
+        or target_canonical_evidence_content is null
+        or pg_catalog.octet_length(target_canonical_evidence_content) not between 2 and 67108864 then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification evidence is invalid.';
+    end if;
+
+    if target_formatted_evidence_sha256 is distinct from pg_catalog.encode(
+            pg_catalog.sha256(target_formatted_evidence_content), 'hex')
+        or target_canonical_evidence_sha256 is distinct from pg_catalog.encode(
+            pg_catalog.sha256(target_canonical_evidence_content), 'hex') then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification digest is invalid.';
+    end if;
+
+    begin
+        formatted_raw_document := pg_catalog.convert_from(
+            target_formatted_evidence_content, 'UTF8')::json;
+        canonical_raw_document := pg_catalog.convert_from(
+            target_canonical_evidence_content, 'UTF8')::json;
+        formatted_document := formatted_raw_document::jsonb;
+        canonical_document := canonical_raw_document::jsonb;
+    exception
+        when others then
+            raise exception using
+                errcode = '22023',
+                message = 'The strategy conversion classification content is not valid UTF-8 JSON.';
+    end;
+
+    if control.json_has_duplicate_object_keys(formatted_raw_document)
+        or control.json_has_duplicate_object_keys(canonical_raw_document) then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification contains duplicate object keys.';
+    end if;
+
+    if pg_catalog.jsonb_typeof(formatted_document) is distinct from 'object'
+        or (select count(*) from pg_catalog.jsonb_object_keys(formatted_document)) <> 10
+        or (formatted_document - 'files') is distinct from pg_catalog.jsonb_build_object(
+            'schemaVersion', target_schema_version,
+            'analyzerVersion', target_analyzer_version,
+            'inputStaticSchemaVersion', target_input_static_schema_version,
+            'inputStaticAnalyzerVersion', target_input_static_analyzer_version,
+            'inputCorpusSha256', target_input_corpus_sha256,
+            'dependencyGraphSha256', target_dependency_graph_sha256,
+            'evidenceSha256', target_embedded_evidence_sha256,
+            'fileCount', target_file_count,
+            'totalBytes', target_total_bytes)
+        or pg_catalog.jsonb_typeof(formatted_document -> 'files') is distinct from 'array'
+        or pg_catalog.jsonb_array_length(formatted_document -> 'files') is distinct from target_file_count
+        or pg_catalog.jsonb_typeof(canonical_document) is distinct from 'object'
+        or (select count(*) from pg_catalog.jsonb_object_keys(canonical_document)) <> 10
+        or (canonical_document - 'files') is distinct from pg_catalog.jsonb_build_object(
+            'schemaVersion', target_schema_version,
+            'analyzerVersion', target_analyzer_version,
+            'inputStaticSchemaVersion', target_input_static_schema_version,
+            'inputStaticAnalyzerVersion', target_input_static_analyzer_version,
+            'inputCorpusSha256', target_input_corpus_sha256,
+            'dependencyGraphSha256', target_dependency_graph_sha256,
+            'evidenceSha256', target_embedded_evidence_sha256,
+            'fileCount', target_file_count,
+            'totalBytes', target_total_bytes)
+        or pg_catalog.jsonb_typeof(canonical_document -> 'files') is distinct from 'array'
+        or pg_catalog.jsonb_array_length(canonical_document -> 'files') is distinct from target_file_count then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification root is not exact.';
+    end if;
+
+    if exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            with ordinality as evidence_file(document, ordinal)
+        where pg_catalog.jsonb_typeof(evidence_file.document) is distinct from 'object'
+           or not (evidence_file.document ?& array[
+                'relativePath', 'sourceSha256', 'dependencyClosureSha256',
+                'evidenceSha256', 'textEncoding', 'kind', 'staticDisposition',
+                'disposition', 'entrypoints', 'staticFeatures', 'staticFindings',
+                'includes', 'dependencyClosure', 'lexical', 'structural',
+                'stages', 'findings']::text[])
+           or (select count(*)
+               from pg_catalog.jsonb_object_keys(evidence_file.document)) <> 17
+           or evidence_file.document ->> 'relativePath' is null
+           or evidence_file.document ->> 'sourceSha256' !~ '^[0-9a-f]{64}$'
+           or evidence_file.document ->> 'dependencyClosureSha256' !~ '^[0-9a-f]{64}$'
+           or evidence_file.document ->> 'evidenceSha256' !~ '^[0-9a-f]{64}$'
+           or evidence_file.document ->> 'disposition' not in
+                ('blockedAllNulSource', 'blockedBinarySource',
+                 'blockedInvalidSyntax', 'blockedMissingDependency',
+                 'blockedExternalDependencySnapshot', 'blockedDependencyCycle',
+                 'blockedUnsupportedSemantics', 'awaitingIsolatedTypeCheck')
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'entrypoints')
+                is distinct from 'array'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'staticFeatures')
+                is distinct from 'array'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'staticFindings')
+                is distinct from 'array'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'includes')
+                is distinct from 'array'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'dependencyClosure')
+                is distinct from 'object'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'lexical')
+                is distinct from 'object'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'structural')
+                is distinct from 'object'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'stages')
+                is distinct from 'array'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'findings')
+                is distinct from 'array'
+    )
+    or exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(canonical_document -> 'files')
+            with ordinality as evidence_file(document, ordinal)
+        where pg_catalog.jsonb_typeof(evidence_file.document) is distinct from 'object'
+           or not (evidence_file.document ?& array[
+                'relativePath', 'sourceSha256', 'dependencyClosureSha256',
+                'evidenceSha256', 'textEncoding', 'kind', 'staticDisposition',
+                'disposition', 'entrypoints', 'staticFeatures', 'staticFindings',
+                'includes', 'dependencyClosure', 'lexical', 'structural',
+                'stages', 'findings']::text[])
+           or (select count(*)
+               from pg_catalog.jsonb_object_keys(evidence_file.document)) <> 17
+           or evidence_file.document ->> 'relativePath' is null
+           or evidence_file.document ->> 'sourceSha256' !~ '^[0-9a-f]{64}$'
+           or evidence_file.document ->> 'dependencyClosureSha256' !~ '^[0-9a-f]{64}$'
+           or evidence_file.document ->> 'evidenceSha256' !~ '^[0-9a-f]{64}$'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'disposition')
+                is distinct from 'number'
+           or evidence_file.document -> 'kind' not in ('0'::jsonb, '1'::jsonb)
+           or evidence_file.document -> 'staticDisposition'
+                not in ('0'::jsonb, '1'::jsonb, '2'::jsonb, '3'::jsonb)
+           or evidence_file.document -> 'disposition' not in
+                ('0'::jsonb, '1'::jsonb, '2'::jsonb, '3'::jsonb,
+                 '4'::jsonb, '5'::jsonb, '6'::jsonb, '7'::jsonb)
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'structural')
+                is distinct from 'object'
+           or pg_catalog.jsonb_typeof(evidence_file.document -> 'stages')
+                is distinct from 'array'
+    ) then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification file wrappers are not exact.';
+    end if;
+
+    if exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            as evidence_file(document)
+        where not (evidence_file.document -> 'dependencyClosure' ?& array[
+                'directDependencies', 'transitiveDependencies',
+                'dependencyFirstOrder', 'reachableCycleMembers',
+                'dependencyFirstOrderProven']::text[])
+           or (select count(*) from pg_catalog.jsonb_object_keys(
+                evidence_file.document -> 'dependencyClosure')) <> 5
+           or not (evidence_file.document -> 'lexical' ?& array[
+                'tokenCount', 'identifierCount', 'numericLiteralCount',
+                'stringLiteralCount', 'characterLiteralCount', 'commentCount',
+                'nulCharacterCount', 'forbiddenControlCharacterCount',
+                'preprocessorDirectiveCount', 'maximumDelimiterDepth']::text[])
+           or (select count(*) from pg_catalog.jsonb_object_keys(
+                evidence_file.document -> 'lexical')) <> 10
+           or not (evidence_file.document -> 'structural' ?& array[
+                'functionDefinitionCount', 'typeDeclarationCount',
+                'inputDeclarationCount', 'statementTerminatorCount',
+                'macroDefinitionCount', 'conditionalDirectiveCount',
+                'delimitersBalanced', 'conditionalDirectivesBalanced',
+                'fullGrammarParseProven', 'typeCheckProven',
+                'restrictedIrLoweringProven']::text[])
+           or (select count(*) from pg_catalog.jsonb_object_keys(
+                evidence_file.document -> 'structural')) <> 11
+           or exists
+              (
+                  select 1
+                  from pg_catalog.jsonb_array_elements(
+                      evidence_file.document -> 'staticFeatures') as feature(document)
+                  where pg_catalog.jsonb_typeof(feature.document) is distinct from 'object'
+                     or not (feature.document ?& array[
+                          'code', 'support', 'occurrenceCount', 'lines']::text[])
+                     or (select count(*)
+                         from pg_catalog.jsonb_object_keys(feature.document)) <> 4
+                     or feature.document ->> 'support' not in
+                          ('supportedSubsetCandidate', 'reviewRequired',
+                           'needsSource', 'unsupported')
+                     or pg_catalog.jsonb_typeof(feature.document -> 'lines')
+                          is distinct from 'array'
+              )
+           or exists
+              (
+                  select 1
+                  from pg_catalog.jsonb_array_elements(
+                      evidence_file.document -> 'staticFindings') as finding(document)
+                  where pg_catalog.jsonb_typeof(finding.document) is distinct from 'object'
+                     or not (finding.document ?& array[
+                          'code', 'severity', 'support', 'message', 'lines']::text[])
+                     or (select count(*)
+                         from pg_catalog.jsonb_object_keys(finding.document)) <> 5
+                     or finding.document ->> 'severity' not in
+                          ('information', 'warning', 'error')
+                     or finding.document ->> 'support' not in
+                          ('supportedSubsetCandidate', 'reviewRequired',
+                           'needsSource', 'unsupported')
+                     or pg_catalog.jsonb_typeof(finding.document -> 'lines')
+                          is distinct from 'array'
+              )
+           or exists
+              (
+                  select 1
+                  from pg_catalog.jsonb_array_elements(
+                      evidence_file.document -> 'includes') as include_edge(document)
+                  where pg_catalog.jsonb_typeof(include_edge.document) is distinct from 'object'
+                     or not (include_edge.document ?& array[
+                          'declaredPath', 'kind', 'resolution',
+                          'resolvedRelativePath', 'line']::text[])
+                     or (select count(*)
+                         from pg_catalog.jsonb_object_keys(include_edge.document)) <> 5
+                     or include_edge.document ->> 'kind' not in
+                          ('local', 'platformOrSearchPath')
+                     or include_edge.document ->> 'resolution' not in
+                          ('resolvedInCorpus', 'platformLibrary', 'missingSource',
+                           'ambiguous', 'invalid')
+              )
+           or exists
+              (
+                  select 1
+                  from pg_catalog.jsonb_array_elements(
+                      evidence_file.document -> 'findings') as finding(document)
+                  where pg_catalog.jsonb_typeof(finding.document) is distinct from 'object'
+                     or not (finding.document ?& array[
+                          'code', 'severity', 'message', 'location']::text[])
+                     or (select count(*)
+                         from pg_catalog.jsonb_object_keys(finding.document)) <> 4
+                     or finding.document ->> 'severity' not in
+                          ('information', 'warning', 'error')
+                     or pg_catalog.jsonb_typeof(finding.document -> 'location')
+                          not in ('object', 'null')
+                     or
+                     (
+                         pg_catalog.jsonb_typeof(finding.document -> 'location') = 'object'
+                         and
+                         (
+                             not (finding.document -> 'location' ?&
+                                 array['line', 'column']::text[])
+                             or (select count(*) from pg_catalog.jsonb_object_keys(
+                                 finding.document -> 'location')) <> 2
+                         )
+                     )
+              )
+    ) then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification nested wrappers are not exact.';
+    end if;
+
+    if exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            with ordinality as formatted_file(document, ordinal)
+        join pg_catalog.jsonb_array_elements(canonical_document -> 'files')
+            with ordinality as canonical_file(document, ordinal)
+          on canonical_file.ordinal = formatted_file.ordinal
+        where formatted_file.document ->> 'relativePath'
+                is distinct from canonical_file.document ->> 'relativePath'
+           or formatted_file.document ->> 'sourceSha256'
+                is distinct from canonical_file.document ->> 'sourceSha256'
+           or formatted_file.document ->> 'dependencyClosureSha256'
+                is distinct from canonical_file.document ->> 'dependencyClosureSha256'
+           or formatted_file.document ->> 'evidenceSha256'
+                is distinct from canonical_file.document ->> 'evidenceSha256'
+           or formatted_file.document ->> 'textEncoding'
+                is distinct from canonical_file.document ->> 'textEncoding'
+           or canonical_file.document -> 'kind' is distinct from
+                case formatted_file.document ->> 'kind'
+                    when 'expertOrProgram' then '0'::jsonb
+                    when 'header' then '1'::jsonb
+                    else null
+                end
+           or canonical_file.document -> 'staticDisposition' is distinct from
+                case formatted_file.document ->> 'staticDisposition'
+                    when 'needsSemanticValidation' then '0'::jsonb
+                    when 'needsSource' then '1'::jsonb
+                    when 'unsupported' then '2'::jsonb
+                    when 'rejected' then '3'::jsonb
+                    else null
+                end
+           or canonical_file.document -> 'disposition' is distinct from
+                case formatted_file.document ->> 'disposition'
+                    when 'blockedAllNulSource' then '0'::jsonb
+                    when 'blockedBinarySource' then '1'::jsonb
+                    when 'blockedInvalidSyntax' then '2'::jsonb
+                    when 'blockedMissingDependency' then '3'::jsonb
+                    when 'blockedExternalDependencySnapshot' then '4'::jsonb
+                    when 'blockedDependencyCycle' then '5'::jsonb
+                    when 'blockedUnsupportedSemantics' then '6'::jsonb
+                    when 'awaitingIsolatedTypeCheck' then '7'::jsonb
+                    else null
+                end
+           or formatted_file.document -> 'structural'
+                is distinct from canonical_file.document -> 'structural'
+    )
+    or (select count(distinct pg_catalog.lower(evidence_file.document ->> 'relativePath'))
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            as evidence_file(document)) is distinct from target_file_count then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification file bindings are not unique and exact.';
+    end if;
+
+    -- The source-bound formatted representation is authoritative. Derive the
+    -- complete CanonicalJson file object from it (including every nested enum)
+    -- and require exact jsonb equality, so the second retained digest can never
+    -- describe divergent semantic evidence.
+    if exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            with ordinality as formatted_file(document, ordinal)
+        join pg_catalog.jsonb_array_elements(canonical_document -> 'files')
+            with ordinality as canonical_file(document, ordinal)
+          on canonical_file.ordinal = formatted_file.ordinal
+        where canonical_file.document is distinct from pg_catalog.jsonb_build_object(
+            'relativePath', formatted_file.document -> 'relativePath',
+            'sourceSha256', formatted_file.document -> 'sourceSha256',
+            'dependencyClosureSha256',
+                formatted_file.document -> 'dependencyClosureSha256',
+            'evidenceSha256', formatted_file.document -> 'evidenceSha256',
+            'textEncoding', formatted_file.document -> 'textEncoding',
+            'kind', case formatted_file.document ->> 'kind'
+                when 'expertOrProgram' then '0'::jsonb
+                when 'header' then '1'::jsonb
+                else null
+            end,
+            'staticDisposition', case formatted_file.document ->> 'staticDisposition'
+                when 'needsSemanticValidation' then '0'::jsonb
+                when 'needsSource' then '1'::jsonb
+                when 'unsupported' then '2'::jsonb
+                when 'rejected' then '3'::jsonb
+                else null
+            end,
+            'disposition', case formatted_file.document ->> 'disposition'
+                when 'blockedAllNulSource' then '0'::jsonb
+                when 'blockedBinarySource' then '1'::jsonb
+                when 'blockedInvalidSyntax' then '2'::jsonb
+                when 'blockedMissingDependency' then '3'::jsonb
+                when 'blockedExternalDependencySnapshot' then '4'::jsonb
+                when 'blockedDependencyCycle' then '5'::jsonb
+                when 'blockedUnsupportedSemantics' then '6'::jsonb
+                when 'awaitingIsolatedTypeCheck' then '7'::jsonb
+                else null
+            end,
+            'entrypoints', formatted_file.document -> 'entrypoints',
+            'staticFeatures',
+            (
+                select coalesce(pg_catalog.jsonb_agg(
+                    pg_catalog.jsonb_build_object(
+                        'code', feature.document -> 'code',
+                        'support', case feature.document ->> 'support'
+                            when 'supportedSubsetCandidate' then '0'::jsonb
+                            when 'reviewRequired' then '1'::jsonb
+                            when 'needsSource' then '2'::jsonb
+                            when 'unsupported' then '3'::jsonb
+                            else null
+                        end,
+                        'occurrenceCount', feature.document -> 'occurrenceCount',
+                        'lines', feature.document -> 'lines')
+                    order by feature.ordinal), '[]'::jsonb)
+                from pg_catalog.jsonb_array_elements(
+                    formatted_file.document -> 'staticFeatures')
+                    with ordinality as feature(document, ordinal)
+            ),
+            'staticFindings',
+            (
+                select coalesce(pg_catalog.jsonb_agg(
+                    pg_catalog.jsonb_build_object(
+                        'code', finding.document -> 'code',
+                        'severity', case finding.document ->> 'severity'
+                            when 'information' then '0'::jsonb
+                            when 'warning' then '1'::jsonb
+                            when 'error' then '2'::jsonb
+                            else null
+                        end,
+                        'support', case finding.document ->> 'support'
+                            when 'supportedSubsetCandidate' then '0'::jsonb
+                            when 'reviewRequired' then '1'::jsonb
+                            when 'needsSource' then '2'::jsonb
+                            when 'unsupported' then '3'::jsonb
+                            else null
+                        end,
+                        'message', finding.document -> 'message',
+                        'lines', finding.document -> 'lines')
+                    order by finding.ordinal), '[]'::jsonb)
+                from pg_catalog.jsonb_array_elements(
+                    formatted_file.document -> 'staticFindings')
+                    with ordinality as finding(document, ordinal)
+            ),
+            'includes',
+            (
+                select coalesce(pg_catalog.jsonb_agg(
+                    pg_catalog.jsonb_build_object(
+                        'declaredPath', include_edge.document -> 'declaredPath',
+                        'kind', case include_edge.document ->> 'kind'
+                            when 'local' then '0'::jsonb
+                            when 'platformOrSearchPath' then '1'::jsonb
+                            else null
+                        end,
+                        'resolution', case include_edge.document ->> 'resolution'
+                            when 'resolvedInCorpus' then '0'::jsonb
+                            when 'platformLibrary' then '1'::jsonb
+                            when 'missingSource' then '2'::jsonb
+                            when 'ambiguous' then '3'::jsonb
+                            when 'invalid' then '4'::jsonb
+                            else null
+                        end,
+                        'resolvedRelativePath',
+                            include_edge.document -> 'resolvedRelativePath',
+                        'line', include_edge.document -> 'line')
+                    order by include_edge.ordinal), '[]'::jsonb)
+                from pg_catalog.jsonb_array_elements(
+                    formatted_file.document -> 'includes')
+                    with ordinality as include_edge(document, ordinal)
+            ),
+            'dependencyClosure', formatted_file.document -> 'dependencyClosure',
+            'lexical', formatted_file.document -> 'lexical',
+            'structural', formatted_file.document -> 'structural',
+            'stages',
+            (
+                select coalesce(pg_catalog.jsonb_agg(
+                    pg_catalog.jsonb_build_object(
+                        'name', case stage.document ->> 'name'
+                            when 'sourceIntegrity' then '0'::jsonb
+                            when 'dependencyResolution' then '1'::jsonb
+                            when 'lexicalAnalysis' then '2'::jsonb
+                            when 'structuralParse' then '3'::jsonb
+                            when 'typeChecking' then '4'::jsonb
+                            when 'restrictedIrLowering' then '5'::jsonb
+                            else null
+                        end,
+                        'status', case stage.document ->> 'status'
+                            when 'passed' then '0'::jsonb
+                            when 'failed' then '1'::jsonb
+                            when 'blocked' then '2'::jsonb
+                            when 'notAttempted' then '3'::jsonb
+                            else null
+                        end,
+                        'evidenceCode', stage.document -> 'evidenceCode')
+                    order by stage.ordinal), '[]'::jsonb)
+                from pg_catalog.jsonb_array_elements(
+                    formatted_file.document -> 'stages')
+                    with ordinality as stage(document, ordinal)
+            ),
+            'findings',
+            (
+                select coalesce(pg_catalog.jsonb_agg(
+                    pg_catalog.jsonb_build_object(
+                        'code', finding.document -> 'code',
+                        'severity', case finding.document ->> 'severity'
+                            when 'information' then '0'::jsonb
+                            when 'warning' then '1'::jsonb
+                            when 'error' then '2'::jsonb
+                            else null
+                        end,
+                        'message', finding.document -> 'message',
+                        'location', finding.document -> 'location')
+                    order by finding.ordinal), '[]'::jsonb)
+                from pg_catalog.jsonb_array_elements(
+                    formatted_file.document -> 'findings')
+                    with ordinality as finding(document, ordinal)
+            ))
+    ) then
+        raise exception using
+            errcode = '22023',
+            message = 'Formatted and canonical strategy conversion evidence diverge.';
+    end if;
+
+    if exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            with ordinality as formatted_file(document, file_ordinal)
+        join pg_catalog.jsonb_array_elements(canonical_document -> 'files')
+            with ordinality as canonical_file(document, file_ordinal)
+          on canonical_file.file_ordinal = formatted_file.file_ordinal
+        where pg_catalog.jsonb_array_length(formatted_file.document -> 'stages') <> 6
+           or pg_catalog.jsonb_array_length(canonical_file.document -> 'stages') <> 6
+           or exists
+              (
+                  select 1
+                  from pg_catalog.jsonb_array_elements(formatted_file.document -> 'stages')
+                      with ordinality as formatted_stage(document, stage_ordinal)
+                  join pg_catalog.jsonb_array_elements(canonical_file.document -> 'stages')
+                      with ordinality as canonical_stage(document, stage_ordinal)
+                    on canonical_stage.stage_ordinal = formatted_stage.stage_ordinal
+                  where pg_catalog.jsonb_typeof(formatted_stage.document)
+                            is distinct from 'object'
+                     or pg_catalog.jsonb_typeof(canonical_stage.document)
+                            is distinct from 'object'
+                     or (select count(*)
+                         from pg_catalog.jsonb_object_keys(formatted_stage.document)) <> 3
+                     or (select count(*)
+                         from pg_catalog.jsonb_object_keys(canonical_stage.document)) <> 3
+                     or formatted_stage.document ->> 'name' is distinct from
+                          case formatted_stage.stage_ordinal
+                              when 1 then 'sourceIntegrity'
+                              when 2 then 'dependencyResolution'
+                              when 3 then 'lexicalAnalysis'
+                              when 4 then 'structuralParse'
+                              when 5 then 'typeChecking'
+                              when 6 then 'restrictedIrLowering'
+                          end
+                     or canonical_stage.document -> 'name' is distinct from
+                          pg_catalog.to_jsonb((formatted_stage.stage_ordinal - 1)::integer)
+                     or canonical_stage.document -> 'status' is distinct from
+                          case formatted_stage.document ->> 'status'
+                              when 'passed' then '0'::jsonb
+                              when 'failed' then '1'::jsonb
+                              when 'blocked' then '2'::jsonb
+                              when 'notAttempted' then '3'::jsonb
+                              else null
+                          end
+                     or pg_catalog.jsonb_typeof(canonical_stage.document -> 'status')
+                          is distinct from 'number'
+                     or canonical_stage.document -> 'status'
+                          not in ('0'::jsonb, '1'::jsonb, '2'::jsonb, '3'::jsonb)
+                     or formatted_stage.document ->> 'evidenceCode' is null
+                     or length(formatted_stage.document ->> 'evidenceCode') not between 1 and 200
+                     or formatted_stage.document ->> 'evidenceCode'
+                          is distinct from canonical_stage.document ->> 'evidenceCode'
+              )
+    ) then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification stages are not exact.';
+    end if;
+
+    -- Neither representation may imply a later proof gate. The formatted
+    -- representation carries string enums; CanonicalJson carries numeric enums
+    -- (TypeChecking=4, RestrictedIrLowering=5, Passed=0).
+    if exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            as evidence_file(document)
+        where (select count(*)
+               from pg_catalog.jsonb_object_keys(evidence_file.document -> 'structural')) <> 11
+           or evidence_file.document -> 'structural' -> 'fullGrammarParseProven'
+                is distinct from 'false'::jsonb
+           or evidence_file.document -> 'structural' -> 'typeCheckProven'
+                is distinct from 'false'::jsonb
+           or evidence_file.document -> 'structural' -> 'restrictedIrLoweringProven'
+                is distinct from 'false'::jsonb
+           or exists
+              (
+                  select 1
+                  from pg_catalog.jsonb_array_elements(evidence_file.document -> 'stages')
+                      as stage(document)
+                  where stage.document ->> 'name' in ('typeChecking', 'restrictedIrLowering')
+                    and stage.document ->> 'status' = 'passed'
+              )
+    )
+    or exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(canonical_document -> 'files')
+            as evidence_file(document)
+        where (select count(*)
+               from pg_catalog.jsonb_object_keys(evidence_file.document -> 'structural')) <> 11
+           or evidence_file.document -> 'structural' -> 'fullGrammarParseProven'
+                is distinct from 'false'::jsonb
+           or evidence_file.document -> 'structural' -> 'typeCheckProven'
+                is distinct from 'false'::jsonb
+           or evidence_file.document -> 'structural' -> 'restrictedIrLoweringProven'
+                is distinct from 'false'::jsonb
+           or exists
+              (
+                  select 1
+                  from pg_catalog.jsonb_array_elements(evidence_file.document -> 'stages')
+                      as stage(document)
+                  where stage.document -> 'name' in ('4'::jsonb, '5'::jsonb)
+                    and stage.document -> 'status' = '0'::jsonb
+              )
+    ) then
+        raise exception using
+            errcode = '22023',
+            message = 'Static conversion classification cannot claim later proof gates.';
+    end if;
+
+    select pg_catalog.jsonb_object_agg(
+        disposition_count.disposition,
+        disposition_count.quantity
+        order by disposition_count.disposition)
+    into computed_disposition_counts
+    from
+    (
+        select evidence_file.document ->> 'disposition' as disposition,
+            count(*) as quantity
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            as evidence_file(document)
+        group by evidence_file.document ->> 'disposition'
+    ) as disposition_count;
+
+    if computed_disposition_counts is distinct from target_disposition_counts then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification disposition counts are inconsistent.';
+    end if;
+
+    select pg_catalog.encode(
+        pg_catalog.sha256(pg_catalog.convert_to(
+            control.dotnet_length_prefixed_text(target_schema_version)
+            || control.dotnet_length_prefixed_text(target_analyzer_version)
+            || control.dotnet_length_prefixed_text(target_input_static_schema_version)
+            || control.dotnet_length_prefixed_text(target_input_static_analyzer_version)
+            || control.dotnet_length_prefixed_text(target_input_corpus_sha256)
+            || control.dotnet_length_prefixed_text(target_dependency_graph_sha256)
+            || coalesce(pg_catalog.string_agg(
+                control.dotnet_length_prefixed_text(
+                    evidence_file.document ->> 'relativePath')
+                || control.dotnet_length_prefixed_text(
+                    evidence_file.document ->> 'evidenceSha256'),
+                '' order by evidence_file.ordinal), ''),
+            'UTF8')),
+        'hex')
+    into computed_embedded_evidence_sha256
+    from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+        with ordinality as evidence_file(document, ordinal);
+
+    if computed_embedded_evidence_sha256 is distinct from target_embedded_evidence_sha256 then
+        raise exception using
+            errcode = '22023',
+            message = 'The embedded strategy conversion evidence digest is inconsistent.';
+    end if;
+
+    perform control.acquire_strategy_import_persistence_lock(target_corpus_id);
+    perform control.acquire_u0_authority_lock();
+
+    select job.*
+    into locked_job
+    from control.strategy_import_jobs as job
+    where job.id = target_corpus_id
+      and job.tenant_id = control.current_tenant_id()
+    for update;
+
+    select corpus.*
+    into persisted_corpus
+    from governance.strategy_source_corpora as corpus
+    where corpus.id = target_corpus_id
+      and corpus.tenant_id = control.current_tenant_id()
+      and corpus.user_id = control.current_actor_id()
+      and corpus.import_job_id = target_corpus_id;
+
+    authorization_now := clock_timestamp();
+    if locked_job.id is null
+        or persisted_corpus.id is null
+        or locked_job.user_id is distinct from control.current_actor_id()
+        or locked_job.correlation_id is distinct from control.current_correlation_id()
+        or locked_job.reservation_id is distinct from persisted_corpus.reservation_id
+        or persisted_corpus.schema_version is distinct from target_input_static_schema_version
+        or persisted_corpus.analyzer_version is distinct from target_input_static_analyzer_version
+        or persisted_corpus.corpus_sha256 is distinct from target_input_corpus_sha256
+        or persisted_corpus.file_count is distinct from target_file_count
+        or persisted_corpus.total_bytes is distinct from target_total_bytes then
+        raise exception using
+            errcode = '42501',
+            message = 'A matching reserved strategy import capability is required.';
+    end if;
+
+    if exists
+    (
+        select 1
+        from pg_catalog.jsonb_array_elements(formatted_document -> 'files')
+            with ordinality as evidence_file(document, ordinal)
+        left join governance.strategy_source_files as source_file
+          on source_file.tenant_id = persisted_corpus.tenant_id
+         and source_file.corpus_id = persisted_corpus.id
+         and source_file.manifest_order = evidence_file.ordinal - 1
+        where source_file.id is null
+           or evidence_file.document ->> 'relativePath'
+                is distinct from source_file.relative_path
+           or evidence_file.document ->> 'sourceSha256'
+                is distinct from source_file.source_sha256
+           or evidence_file.document ->> 'textEncoding'
+                is distinct from source_file.text_encoding
+           or evidence_file.document ->> 'kind' is distinct from case source_file.source_kind
+                when 'expert_or_program' then 'expertOrProgram'
+                else 'header'
+              end
+           or evidence_file.document ->> 'staticDisposition'
+                is distinct from case source_file.disposition
+                when 'needs_semantic_validation' then 'needsSemanticValidation'
+                when 'needs_source' then 'needsSource'
+                else source_file.disposition
+              end
+           or evidence_file.document -> 'entrypoints'
+                is distinct from pg_catalog.to_jsonb(source_file.entrypoints)
+           or evidence_file.document -> 'includes' is distinct from source_file.includes
+           or evidence_file.document -> 'staticFeatures' is distinct from source_file.features
+           or evidence_file.document -> 'staticFindings' is distinct from source_file.findings
+    )
+    or (select count(*)
+        from governance.strategy_source_files as source_file
+        where source_file.tenant_id = persisted_corpus.tenant_id
+          and source_file.corpus_id = persisted_corpus.id) is distinct from target_file_count then
+        raise exception using
+            errcode = '22023',
+            message = 'The strategy conversion classification does not bind the exact source corpus.';
+    end if;
+
+    select classification.*
+    into existing_classification
+    from governance.strategy_conversion_classifications as classification
+    where classification.tenant_id = persisted_corpus.tenant_id
+      and classification.corpus_id = persisted_corpus.id;
+
+    if found then
+        if existing_classification.user_id is distinct from persisted_corpus.user_id
+            or existing_classification.import_job_id is distinct from persisted_corpus.import_job_id
+            or existing_classification.reservation_id is distinct from persisted_corpus.reservation_id
+            or existing_classification.schema_version is distinct from target_schema_version
+            or existing_classification.analyzer_version is distinct from target_analyzer_version
+            or existing_classification.input_static_schema_version is distinct from target_input_static_schema_version
+            or existing_classification.input_static_analyzer_version is distinct from target_input_static_analyzer_version
+            or existing_classification.input_corpus_sha256 is distinct from target_input_corpus_sha256
+            or existing_classification.dependency_graph_sha256 is distinct from target_dependency_graph_sha256
+            or existing_classification.embedded_evidence_sha256 is distinct from target_embedded_evidence_sha256
+            or existing_classification.formatted_evidence_sha256 is distinct from target_formatted_evidence_sha256
+            or existing_classification.canonical_evidence_sha256 is distinct from target_canonical_evidence_sha256
+            or existing_classification.file_count is distinct from target_file_count
+            or existing_classification.total_bytes is distinct from target_total_bytes
+            or existing_classification.disposition_counts is distinct from target_disposition_counts
+            or existing_classification.formatted_evidence_content is distinct from target_formatted_evidence_content
+            or existing_classification.canonical_evidence_content is distinct from target_canonical_evidence_content then
+            raise exception using
+                errcode = '23505',
+                message = 'The strategy import is already bound to different conversion classification evidence.';
+        end if;
+
+        persisted_embedded_evidence_sha256 := existing_classification.embedded_evidence_sha256;
+        persisted_formatted_evidence_sha256 := existing_classification.formatted_evidence_sha256;
+        persisted_canonical_evidence_sha256 := existing_classification.canonical_evidence_sha256;
+        recorded_at_utc := existing_classification.created_at;
+        persisted_audit_event_id := existing_classification.audit_event_id;
+        persisted_outbox_message_id := existing_classification.outbox_message_id;
+        replayed := true;
+        return next;
+        return;
+    end if;
+
+    if locked_job.state is distinct from 'reserved'
+        or locked_job.reservation_id is distinct from locked_job.id
+        or locked_job.reservation_expires_at is null
+        or locked_job.reservation_expires_at <= authorization_now
+        or locked_job.expires_at <= authorization_now then
+        raise exception using
+            errcode = '42501',
+            message = 'A live reserved strategy import capability is required.';
+    end if;
+
+    safe_payload_canonical := '{"canonicalEvidenceSha256":"'
+        || target_canonical_evidence_sha256 || '","corpusId":"'
+        || target_corpus_id::text || '","embeddedEvidenceSha256":"'
+        || target_embedded_evidence_sha256 || '","formattedEvidenceSha256":"'
+        || target_formatted_evidence_sha256
+        || '","verification":"static-conversion-classification-only"}';
+    safe_payload := safe_payload_canonical::jsonb;
+    safe_payload_sha256 := pg_catalog.encode(
+        pg_catalog.sha256(pg_catalog.convert_to(safe_payload_canonical, 'UTF8')),
+        'hex');
+
+    insert into audit.audit_events
+    (
+        id, tenant_id, actor_id, category, action, target_type, target_id,
+        outcome, reason, correlation_id, causation_id, payload,
+        payload_sha256, occurred_at
+    )
+    values
+    (
+        target_audit_event_id, persisted_corpus.tenant_id, persisted_corpus.user_id,
+        'governance', 'strategy.source_corpus.conversion_classification_persisted',
+        'strategy_conversion_classification', target_corpus_id::text,
+        'succeeded', 'static_conversion_classification_completed',
+        control.current_correlation_id(), target_corpus_id, safe_payload,
+        safe_payload_sha256, authorization_now
+    );
+
+    insert into messaging.outbox_messages
+    (
+        id, tenant_id, message_type, aggregate_type, aggregate_id,
+        payload, payload_sha256, correlation_id, causation_id,
+        occurred_at, available_at, state, attempts
+    )
+    values
+    (
+        target_outbox_message_id, persisted_corpus.tenant_id,
+        'strategy.source_corpus.conversion_classification_persisted.v1',
+        'strategy_conversion_classification', target_corpus_id::text,
+        safe_payload, safe_payload_sha256, control.current_correlation_id(),
+        target_corpus_id, authorization_now, authorization_now, 'pending', 0
+    );
+
+    insert into governance.strategy_conversion_classifications
+    (
+        tenant_id, corpus_id, user_id, import_job_id, reservation_id,
+        schema_version, analyzer_version, input_static_schema_version,
+        input_static_analyzer_version, input_corpus_sha256,
+        dependency_graph_sha256, embedded_evidence_sha256,
+        formatted_evidence_sha256, canonical_evidence_sha256,
+        file_count, total_bytes, disposition_counts,
+        formatted_evidence_document, formatted_evidence_content,
+        canonical_evidence_document, canonical_evidence_content,
+        audit_event_id, outbox_message_id, created_at
+    )
+    values
+    (
+        persisted_corpus.tenant_id, persisted_corpus.id, persisted_corpus.user_id,
+        persisted_corpus.import_job_id, persisted_corpus.reservation_id,
+        target_schema_version, target_analyzer_version,
+        target_input_static_schema_version, target_input_static_analyzer_version,
+        target_input_corpus_sha256, target_dependency_graph_sha256,
+        target_embedded_evidence_sha256, target_formatted_evidence_sha256,
+        target_canonical_evidence_sha256, target_file_count, target_total_bytes,
+        target_disposition_counts, formatted_document,
+        target_formatted_evidence_content, canonical_document,
+        target_canonical_evidence_content, target_audit_event_id,
+        target_outbox_message_id, authorization_now
+    );
+
+    persisted_embedded_evidence_sha256 := target_embedded_evidence_sha256;
+    persisted_formatted_evidence_sha256 := target_formatted_evidence_sha256;
+    persisted_canonical_evidence_sha256 := target_canonical_evidence_sha256;
+    recorded_at_utc := authorization_now;
+    persisted_audit_event_id := target_audit_event_id;
+    persisted_outbox_message_id := target_outbox_message_id;
+    replayed := false;
+    return next;
+end
+$$;
+
+revoke all on function control.persist_strategy_conversion_classification(
+    uuid, text, text, text, text, text, text, text, text, text,
+    integer, bigint, jsonb, bytea, bytea, uuid, uuid) from public;
+
 create function control.complete_strategy_import_job(
     target_job_id uuid,
     target_audit_event_id uuid,
@@ -7493,6 +16093,7 @@ as $$
 declare
     locked_job control.strategy_import_jobs%rowtype;
     persisted_corpus governance.strategy_source_corpora%rowtype;
+    persisted_classification governance.strategy_conversion_classifications%rowtype;
     persisted_file_count bigint;
     persisted_total_bytes numeric;
     minimum_manifest_order integer;
@@ -7622,10 +16223,33 @@ begin
         group by file.disposition
     ) as disposition_count;
 
-    if computed_disposition_counts <> persisted_corpus.disposition_counts then
+    if computed_disposition_counts is distinct from persisted_corpus.disposition_counts then
         raise exception using
             errcode = '55000',
             message = 'The strategy import corpus disposition evidence is inconsistent.';
+    end if;
+
+    select classification.*
+    into persisted_classification
+    from governance.strategy_conversion_classifications as classification
+    where classification.tenant_id = locked_job.tenant_id
+      and classification.corpus_id = persisted_corpus.id
+      and classification.user_id = locked_job.user_id
+      and classification.import_job_id = locked_job.id
+      and classification.reservation_id = locked_job.reservation_id;
+
+    if not found
+        or persisted_classification.input_static_schema_version
+            is distinct from persisted_corpus.schema_version
+        or persisted_classification.input_static_analyzer_version
+            is distinct from persisted_corpus.analyzer_version
+        or persisted_classification.input_corpus_sha256
+            is distinct from persisted_corpus.corpus_sha256
+        or persisted_classification.file_count is distinct from persisted_corpus.file_count
+        or persisted_classification.total_bytes is distinct from persisted_corpus.total_bytes then
+        raise exception using
+            errcode = '55000',
+            message = 'The strategy import conversion classification is incomplete.';
     end if;
 
     completed_at := clock_timestamp();
@@ -7742,6 +16366,46 @@ after insert on governance.strategy_source_corpora
 deferrable initially deferred
 for each row execute function governance.require_consumed_strategy_source_import();
 
+-- Classification evidence is valid only in the same transaction that consumes
+-- its source import. This closes direct-DML and partial-transaction paths even
+-- for a privileged migration operator accidentally staging a row by hand.
+create function governance.require_consumed_strategy_conversion_import()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    completed_job control.strategy_import_jobs%rowtype;
+begin
+    select job.*
+    into completed_job
+    from control.strategy_import_jobs as job
+    where job.id = new.import_job_id
+      and job.tenant_id = new.tenant_id;
+
+    if session_user <> 'yo4x_conversion_worker'
+        or control.current_tenant_id() is distinct from new.tenant_id
+        or control.current_actor_id() is distinct from new.user_id
+        or control.current_correlation_id() is distinct from completed_job.correlation_id
+        or completed_job.id is null
+        or completed_job.state is distinct from 'consumed'
+        or completed_job.reservation_id is distinct from new.reservation_id
+        or completed_job.corpus_id is distinct from new.corpus_id then
+        raise exception using
+            errcode = '55000',
+            message = 'Unconsumed strategy conversion classification evidence cannot be committed.';
+    end if;
+
+    return new;
+end
+$$;
+
+create constraint trigger strategy_conversion_classification_requires_consumed_job
+after insert on governance.strategy_conversion_classifications
+deferrable initially deferred
+for each row execute function governance.require_consumed_strategy_conversion_import();
+
 -- Runtime roles receive direct DML only for the narrow credential-grant steps
 -- they own. This trigger is the database-side state machine: it prevents a
 -- compromised role from fabricating a consumed grant, bypassing actor/account
@@ -7789,7 +16453,6 @@ begin
                 message = 'Credential-ingestion grant creation is not authorized.';
         end if;
 
-        perform control.acquire_u0_authority_lock();
         if not exists
         (
             select 1
@@ -7829,12 +16492,12 @@ begin
     if
     (
         old.id, old.tenant_id, old.broker_account_id, old.operation,
-        old.allowed_origin, old.bearer_hash, old.nonce_hash,
+        old.allowed_origin, old.bearer_hash, old.nonce_hash, old.proof_key_id,
         old.expires_at, old.created_at
     ) is distinct from
     (
         new.id, new.tenant_id, new.broker_account_id, new.operation,
-        new.allowed_origin, new.bearer_hash, new.nonce_hash,
+        new.allowed_origin, new.bearer_hash, new.nonce_hash, new.proof_key_id,
         new.expires_at, new.created_at
     )
         or new.row_version <> old.row_version + 1
@@ -9196,6 +17859,7 @@ $$;
 create function control.lock_u0_current_tenant_authority_statement()
 returns trigger
 language plpgsql
+security definer
 set search_path = ''
 as $$
 begin
@@ -9209,6 +17873,7 @@ $$;
 create function control.lock_u0_global_authority_mutation()
 returns trigger
 language plpgsql
+security definer
 set search_path = ''
 as $$
 begin
@@ -9342,7 +18007,6 @@ begin
                 from control.credential_ingestion_grants as ingestion_grant
                 where ingestion_grant.tenant_id = old.tenant_id
                   and ingestion_grant.broker_account_id = old.id
-                  and ingestion_grant.id = control.current_correlation_id()
                   and ingestion_grant.operation = 'create'
                   and ingestion_grant.state = 'active'
                   and ingestion_grant.expires_at > lifecycle_now
@@ -9353,7 +18017,6 @@ begin
                 from control.credential_ingestion_grants as ingestion_grant
                 where ingestion_grant.tenant_id = old.tenant_id
                   and ingestion_grant.broker_account_id = old.id
-                  and ingestion_grant.id = control.current_correlation_id()
                   and ingestion_grant.operation = 'rotate'
                   and ingestion_grant.state = 'active'
                   and ingestion_grant.expires_at > lifecycle_now
@@ -9365,8 +18028,10 @@ begin
             and new.credential_reference is not distinct from old.credential_reference
             and
             (
-                -- Grant initiation is possible only after the exact live grant
-                -- has been committed to this same transaction.
+                -- Grant initiation is possible only while the sole live grant
+                -- exists. The partial unique index makes tenant/account the
+                -- unambiguous binding; request correlation remains audit
+                -- causation, not grant identity.
                 (
                     new.state = old.state
                     and
@@ -9725,6 +18390,36 @@ for each statement execute function control.lock_u0_current_tenant_authority_sta
 create trigger execution_policies_z_u0_authority_row_guard
 before insert or update or delete on control.execution_safety_policies
 for each row execute function control.lock_u0_tenant_authority_mutation();
+create trigger deployments_a_u0_authority_statement_lock
+before insert or update or delete on operations.deployments
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger deployments_z_u0_authority_row_guard
+before insert or update or delete on operations.deployments
+for each row execute function control.lock_u0_tenant_authority_mutation();
+create trigger worker_assignments_a_u0_authority_statement_lock
+before insert or update or delete on operations.worker_assignments
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger worker_assignments_z_u0_authority_row_guard
+before insert or update or delete on operations.worker_assignments
+for each row execute function control.lock_u0_tenant_authority_mutation();
+create trigger user_operations_a_u0_authority_statement_lock
+before insert or update or delete on control.user_operations
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger user_operations_z_u0_authority_row_guard
+before insert or update or delete on control.user_operations
+for each row execute function control.lock_u0_tenant_authority_mutation();
+create trigger strategy_import_jobs_a_u0_authority_statement_lock
+before insert or update or delete on control.strategy_import_jobs
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger strategy_import_jobs_z_u0_authority_row_guard
+before insert or update or delete on control.strategy_import_jobs
+for each row execute function control.lock_u0_tenant_authority_mutation();
+create trigger credential_ingestion_grants_a_u0_authority_statement_lock
+before insert or update or delete on control.credential_ingestion_grants
+for each statement execute function control.lock_u0_current_tenant_authority_statement();
+create trigger credential_ingestion_grants_z_u0_authority_row_guard
+before insert or update or delete on control.credential_ingestion_grants
+for each row execute function control.lock_u0_tenant_authority_mutation();
 create trigger broker_profiles_u0_authority_lock
 before insert or update or delete on governance.broker_profiles
 for each statement execute function control.lock_u0_global_authority_mutation();
@@ -9766,6 +18461,9 @@ create index strategy_source_corpora_digest_idx
     on governance.strategy_source_corpora (tenant_id, corpus_sha256, created_at desc);
 create index strategy_source_files_corpus_idx
     on governance.strategy_source_files (tenant_id, corpus_id, relative_path);
+create index strategy_conversion_classifications_digest_idx
+    on governance.strategy_conversion_classifications
+        (tenant_id, input_corpus_sha256, created_at desc);
 create index strategy_versions_strategy_idx on governance.strategy_versions (tenant_id, strategy_id, version_number desc);
 create index strategy_versions_state_idx on governance.strategy_versions (tenant_id, state, updated_at desc);
 create index strategy_version_source_bindings_corpus_idx
@@ -9849,6 +18547,24 @@ create index runtime_event_inbox_pending_idx
 create index runtime_event_inbox_target_idx
     on operations.runtime_event_inbox (tenant_id, target_id, generation, sequence)
     where target_id is not null;
+create index strategy_deployment_heads_worker_idx
+    on operations.strategy_deployment_heads
+        (worker_instance_id, deployment_id, generation);
+create index strategy_state_revisions_event_idx
+    on operations.strategy_state_revisions
+        (tenant_id, deployment_id, generation, produced_by_event_id)
+    where produced_by_event_id is not null;
+create index strategy_event_journal_claim_expiry_idx
+    on operations.strategy_event_journal
+        (tenant_id, claim_expires_at, deployment_id, generation, sequence)
+    where processing_state = 'claimed';
+create index strategy_event_journal_pending_idx
+    on operations.strategy_event_journal
+        (tenant_id, deployment_id, generation, sequence)
+    where processing_state in ('pending', 'claimed');
+create index strategy_requested_actions_state_idx
+    on operations.strategy_requested_actions
+        (tenant_id, deployment_id, generation, state_version, action_ordinal);
 create index deployment_reconciliations_deployment_idx on operations.deployment_reconciliations (tenant_id, deployment_id, started_at desc);
 create index deployment_reconciliations_open_idx on operations.deployment_reconciliations (tenant_id, started_at) where completed_at is null;
 create index support_cases_user_idx on operations.support_cases (tenant_id, user_id, updated_at desc) where user_id is not null;
@@ -9868,7 +18584,12 @@ create unique index credential_ingestion_reservation_idx
 create index credential_ingestion_reservation_expiry_idx
     on control.credential_ingestion_grants (tenant_id, reservation_expires_at)
     where state = 'reserved';
-create index idempotency_expiry_idx on control.idempotency_records (tenant_id, expires_at);
+create unique index idempotency_current_key_idx
+    on control.idempotency_records (tenant_id, actor_id, operation, idempotency_key)
+    where retired_at is null;
+create index idempotency_expiry_idx
+    on control.idempotency_records (tenant_id, expires_at)
+    where retired_at is null;
 create index impact_previews_actor_idx on control.impact_previews (tenant_id, actor_id, created_at desc);
 create index admin_commands_actor_idx on control.admin_commands (tenant_id, actor_id, created_at desc);
 create index admin_commands_state_idx on control.admin_commands (tenant_id, state, created_at);
@@ -9879,6 +18600,26 @@ create index admin_commands_original_idx on control.admin_commands (tenant_id, o
 create index user_operations_user_state_idx on control.user_operations (tenant_id, user_id, state, created_at desc);
 create index user_operations_target_idx on control.user_operations (tenant_id, target_type, target_id, created_at desc);
 create index user_operations_open_idx on control.user_operations (tenant_id, state, created_at)
+    where state in ('accepted', 'dispatching', 'propagating', 'reconciling', 'unknown');
+create index user_operations_fair_open_scan_idx on control.user_operations
+    (
+        tenant_id,
+        (
+            case
+                when operation_type in
+                (
+                    'broker_account.delete',
+                    'broker_account.disable',
+                    'deployment.stop_after_flat',
+                    'deployment.close_only'
+                ) then 0
+                else 1
+            end
+        ),
+        coalesce(next_processing_at, created_at),
+        created_at,
+        id
+    )
     where state in ('accepted', 'dispatching', 'propagating', 'reconciling', 'unknown');
 create index user_operations_claim_expiry_idx on control.user_operations (tenant_id, claim_expires_at, created_at)
     where state in ('accepted', 'dispatching', 'propagating', 'reconciling', 'unknown');
@@ -9941,7 +18682,11 @@ create policy tenant_select on identity.tenants for select
     using (id = (select control.current_tenant_id()));
 create policy worker_tenant_discovery_select on identity.tenants
     as permissive for select to public
-    using (current_user = 'yo4x_worker');
+    using
+    (
+        session_user = 'yo4x_worker'
+        and current_user = 'yo4x_worker'
+    );
 create policy tenant_insert on identity.tenants for insert
     with check (id = (select control.current_tenant_id()));
 create policy tenant_update on identity.tenants for update
@@ -9962,6 +18707,8 @@ select control.apply_tenant_rls('governance.strategy_versions'::regclass);
 select control.apply_tenant_rls('governance.strategy_version_source_bindings'::regclass, false);
 select control.apply_tenant_rls('governance.strategy_source_corpora'::regclass, false);
 select control.apply_tenant_rls('governance.strategy_source_files'::regclass, false);
+select control.apply_tenant_rls(
+    'governance.strategy_conversion_classifications'::regclass, false);
 select control.apply_tenant_rls('governance.risk_policy_versions'::regclass);
 select control.apply_tenant_rls('governance.release_records'::regclass);
 select control.apply_tenant_rls('operations.broker_accounts'::regclass);
@@ -9975,11 +18722,39 @@ select control.apply_tenant_rls('operations.broker_command_reconciliations'::reg
 select control.apply_tenant_rls('operations.runtime_component_evidence'::regclass, false);
 select control.apply_tenant_rls('operations.runtime_event_cursors'::regclass);
 select control.apply_tenant_rls('operations.runtime_event_inbox'::regclass);
+select control.apply_tenant_rls('operations.strategy_deployment_heads'::regclass);
+select control.apply_tenant_rls('operations.strategy_state_revisions'::regclass, false);
+select control.apply_tenant_rls('operations.strategy_event_journal'::regclass);
+select control.apply_tenant_rls('operations.strategy_requested_actions'::regclass, false);
 select control.apply_tenant_rls('operations.deployment_reconciliations'::regclass, false);
 select control.apply_tenant_rls('operations.user_operation_results'::regclass, false);
+select control.apply_tenant_rls(
+    'control.user_operation_reconciliation_challenges'::regclass);
+select control.apply_tenant_rls(
+    'control.user_operation_reconciliation_challenge_consumptions'::regclass,
+    false);
 select control.apply_tenant_rls('operations.support_cases'::regclass);
 select control.apply_tenant_rls('operations.incidents'::regclass);
 select control.apply_tenant_rls('control.tenant_contexts'::regclass, false);
+select control.apply_tenant_rls('control.deployment_scan_cursors'::regclass);
+create policy worker_deployment_scan_cursor_metadata_select
+    on control.deployment_scan_cursors
+    as permissive for select to public
+    using
+    (
+        session_user = 'yo4x_worker'
+        and current_user = 'yo4x_worker'
+    );
+select control.apply_tenant_rls(
+    'control.user_operation_backlog_observations'::regclass);
+create policy worker_user_operation_backlog_metadata_select
+    on control.user_operation_backlog_observations
+    as permissive for select to public
+    using
+    (
+        session_user = 'yo4x_worker'
+        and current_user = 'yo4x_worker'
+    );
 select control.apply_tenant_rls('control.credential_ingestion_grants'::regclass);
 select control.apply_tenant_rls('control.strategy_import_jobs'::regclass);
 select control.apply_tenant_rls('control.idempotency_records'::regclass);
@@ -10039,6 +18814,14 @@ create policy strategy_source_file_actor_insert on governance.strategy_source_fi
     as restrictive for insert
     with check (user_id = (select control.current_actor_id()));
 create policy strategy_source_file_actor_select on governance.strategy_source_files
+    as restrictive for select
+    using (user_id = (select control.current_actor_id()));
+create policy strategy_conversion_classification_actor_insert
+    on governance.strategy_conversion_classifications
+    as restrictive for insert
+    with check (user_id = (select control.current_actor_id()));
+create policy strategy_conversion_classification_actor_select
+    on governance.strategy_conversion_classifications
     as restrictive for select
     using (user_id = (select control.current_actor_id()));
 create policy idempotency_actor_insert on control.idempotency_records

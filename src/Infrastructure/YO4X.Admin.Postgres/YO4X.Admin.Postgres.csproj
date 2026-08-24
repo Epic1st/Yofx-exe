@@ -20,6 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="YO4X.Admin.Bff" />
     <InternalsVisibleTo Include="YO4X.Admin.Postgres.Tests" />
   </ItemGroup>
 

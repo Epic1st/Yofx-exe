@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using YO4X.ControlPlane.Workers.Outbox;
+using YO4X.Outbox;
 
 namespace YO4X.Worker.Tests;
 
@@ -68,6 +69,86 @@ public sealed class OutboxContractTests
         InvalidOperationException error = Assert.Throws<InvalidOperationException>(options.Validate);
 
         Assert.Contains("batch size", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MessageSchemaVersionIsDerivedFromCanonicalMessageType()
+    {
+        OutboxMessage produced = OutboxMessage.Create(
+            Guid.Parse("10000000-0000-0000-0000-000000000001"),
+            "yo4x.deployment.start.requested.v3",
+            "user_operation",
+            "10000000-0000-0000-0000-000000000002",
+            new { schemaVersion = 3 },
+            Guid.Parse("10000000-0000-0000-0000-000000000003"),
+            null,
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(3, produced.SchemaVersion);
+        Assert.Equal(
+            4,
+            OutboxSchemaVersion.ValidateStored(
+                "yo4x.deployment.start.requested.v4",
+                4,
+                "{\"schemaVersion\":4}"));
+        Assert.Equal(
+            2,
+            OutboxSchemaVersion.ValidateStored(
+                "yo4x.user-operation.reconciliation-requested.v2",
+                2,
+                "{\"contractVersion\":2}"));
+        Assert.Equal(
+            1,
+            OutboxSchemaVersion.ValidateStored(
+                "broker_account.credential_ready",
+                1,
+                "{\"value\":1}"));
+        Assert.Equal(
+            1,
+            OutboxSchemaVersion.ValidateStored(
+                "broker_account.vault_ready",
+                1,
+                "{\"value\":1}"));
+        Assert.Equal(
+            1,
+            OutboxSchemaVersion.ValidateStored(
+                "broker_account.credential_ready",
+                1,
+                "{\"value\":1}"));
+        Assert.Equal(
+            4,
+            OutboxSchemaVersion.ValidateStored(
+                "yo4x.deployment.start.requested.v4",
+                4,
+                "{\"schemaVersion\":4}"));
+    }
+
+    [Theory]
+    [InlineData("yo4x.deployment.start.requested.v4", "{\"schemaVersion\":1}")]
+    [InlineData("yo4x.deployment.start.requested.v4", "{}")]
+    [InlineData("yo4x.deployment.start.requested.v4", "{\"schemaVersion\":\"4\"}")]
+    [InlineData("yo4x.user-operation.reconciliation-requested.v2", "{\"contractVersion\":3}")]
+    [InlineData("yo4x.deployment.start.requested.v04", "{\"schemaVersion\":4}")]
+    [InlineData("yo4x.deployment.start.requested.v4", "{\"schemaVersion\":4,\"schemaVersion\":4}")]
+    public void MessageSchemaVersionRejectsTypePayloadDrift(
+        string messageType,
+        string payload)
+    {
+        Assert.Throws<InvalidDataException>(
+            () => OutboxSchemaVersion.ValidateStored(
+                messageType,
+                messageType.EndsWith(".v2", StringComparison.Ordinal) ? 2 : 4,
+                payload));
+    }
+
+    [Fact]
+    public void MessageSchemaVersionRejectsStoredColumnDrift()
+    {
+        Assert.Throws<InvalidDataException>(
+            () => OutboxSchemaVersion.ValidateStored(
+                "yo4x.deployment.start.requested.v4",
+                1,
+                "{\"schemaVersion\":4}"));
     }
 
     private static ClaimedOutboxItem CreateItem(

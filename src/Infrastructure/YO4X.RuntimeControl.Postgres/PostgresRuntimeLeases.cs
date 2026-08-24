@@ -197,26 +197,36 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
         AddUuid(command, "tenant_id", actor.TenantId);
         AddUuid(command, "lease_id", leaseId);
         AddUuid(command, "deployment_id", actor.DeploymentId);
-        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            || reader.GetGuid(4) != binding.AssignmentId
-            || reader.GetGuid(5) != actor.WorkerInstanceId
-            || reader.GetInt64(6) != actor.Generation
-            || reader.GetGuid(7) != binding.SupervisorWorkloadId
-            || reader.GetGuid(8) != binding.StrategyHostWorkloadId
-            || reader.GetGuid(9) != binding.GatewayHostWorkloadId
-            || reader.GetGuid(10) != actor.BrokerAccountId
-            || reader.GetGuid(11) != binding.StrategyVersionId
-            || reader.GetGuid(12) != binding.RiskPolicyVersionId)
+        PersistedLease lease;
+        await using (NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false))
         {
-            throw WrongRuntimeBinding();
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                || reader.GetGuid(4) != binding.AssignmentId
+                || reader.GetGuid(5) != actor.WorkerInstanceId
+                || reader.GetInt64(6) != actor.Generation
+                || reader.GetGuid(7) != binding.SupervisorWorkloadId
+                || reader.GetGuid(8) != binding.StrategyHostWorkloadId
+                || reader.GetGuid(9) != binding.GatewayHostWorkloadId
+                || reader.GetGuid(10) != actor.BrokerAccountId
+                || reader.GetGuid(11) != binding.StrategyVersionId
+                || reader.GetGuid(12) != binding.RiskPolicyVersionId)
+            {
+                throw WrongRuntimeBinding();
+            }
+
+            lease = new PersistedLease(
+                reader.GetGuid(0),
+                reader.GetString(1),
+                reader.GetFieldValue<DateTimeOffset>(2),
+                reader.GetInt64(3));
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw WrongRuntimeBinding();
+            }
         }
 
-        var lease = new PersistedLease(
-            reader.GetGuid(0),
-            reader.GetString(1),
-            reader.GetFieldValue<DateTimeOffset>(2),
-            reader.GetInt64(3));
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return (binding, lease);
     }

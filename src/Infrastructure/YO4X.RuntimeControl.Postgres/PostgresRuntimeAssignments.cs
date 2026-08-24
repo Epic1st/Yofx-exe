@@ -186,7 +186,7 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ValidateActor(actor);
+        UserOperationProtocolAdapterValidation.ValidateActor(actor);
         if (workerId == Guid.Empty
             || workerId != actor.WorkerInstanceId
             || !Enum.IsDefined(component)
@@ -305,7 +305,7 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
 
     private void ValidateRegistration(WorkloadActor actor, WorkerRegistration request)
     {
-        ValidateActor(actor);
+        UserOperationProtocolAdapterValidation.ValidateActor(actor);
         if (request.BrokerAccountId != actor.BrokerAccountId
             || request.DeploymentId != actor.DeploymentId
             || request.WorkerInstanceId != actor.WorkerInstanceId

@@ -1,5 +1,3 @@
-using System.Reflection;
-using System.Security.Cryptography;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -46,7 +44,8 @@ internal static class PostgresMigrationRunner
             await bootstrap.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (EmbeddedMigration migration in LoadMigrations())
+        IReadOnlyList<PostgresEmbeddedMigration> migrations = PostgresMigrationManifest.Load();
+        foreach (PostgresEmbeddedMigration migration in migrations)
         {
             string? appliedChecksum = await ReadAppliedChecksumAsync(
                 connection,
@@ -82,7 +81,56 @@ internal static class PostgresMigrationRunner
             await record.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        await VerifyAppliedManifestAsync(
+            connection,
+            transaction,
+            migrations,
+            cancellationToken).ConfigureAwait(false);
+
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task VerifyAppliedManifestAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        IReadOnlyList<PostgresEmbeddedMigration> migrations,
+        CancellationToken cancellationToken)
+    {
+        string[] migrationIds = migrations.Select(migration => migration.Id).ToArray();
+        string[] migrationSha256 = migrations.Select(migration => migration.Sha256).ToArray();
+        await using var command = new NpgsqlCommand(
+            """
+            with expected(migration_id, sha256) as
+            (
+                select *
+                from unnest(@migration_ids::text[], @migration_sha256::text[])
+            )
+            select not exists
+            (
+                (select migration_id, sha256 from control.schema_migrations
+                 except
+                 select migration_id, sha256 from expected)
+                union all
+                (select migration_id, sha256 from expected
+                 except
+                 select migration_id, sha256 from control.schema_migrations)
+            )
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue(
+            "migration_ids",
+            NpgsqlDbType.Array | NpgsqlDbType.Text,
+            migrationIds);
+        command.Parameters.AddWithValue(
+            "migration_sha256",
+            NpgsqlDbType.Array | NpgsqlDbType.Text,
+            migrationSha256);
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
+        {
+            throw new InvalidOperationException(
+                "The applied PostgreSQL migration manifest does not exactly match the embedded manifest.");
+        }
     }
 
     private static async Task<string?> ReadAppliedChecksumAsync(
@@ -100,47 +148,4 @@ internal static class PostgresMigrationRunner
         return result as string;
     }
 
-    private static List<EmbeddedMigration> LoadMigrations()
-    {
-        Assembly assembly = typeof(PostgresMigrationRunner).Assembly;
-        string[] resourceNames = assembly.GetManifestResourceNames()
-            .Where(name => name.Contains(".Migrations.", StringComparison.Ordinal)
-                && name.EndsWith(".sql", StringComparison.Ordinal))
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .ToArray();
-
-        if (resourceNames.Length == 0)
-        {
-            throw new InvalidOperationException("No embedded PostgreSQL migrations were found.");
-        }
-
-        var migrations = new List<EmbeddedMigration>(resourceNames.Length);
-        foreach (string resourceName in resourceNames)
-        {
-            using Stream stream = assembly.GetManifestResourceStream(resourceName)
-                ?? throw new InvalidOperationException($"Migration resource '{resourceName}' cannot be read.");
-            using var reader = new StreamReader(stream);
-            string sql = reader.ReadToEnd();
-            if (string.IsNullOrWhiteSpace(sql))
-            {
-                throw new InvalidOperationException($"Migration resource '{resourceName}' is empty.");
-            }
-
-            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(sql);
-            string sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-            string id = resourceName[(resourceName.IndexOf(".Migrations.", StringComparison.Ordinal)
-                + ".Migrations.".Length)..^4];
-            migrations.Add(new EmbeddedMigration(id, sha256, sql));
-        }
-
-        if (migrations.Select(migration => migration.Id).Distinct(StringComparer.Ordinal).Count()
-            != migrations.Count)
-        {
-            throw new InvalidOperationException("Embedded PostgreSQL migration identifiers must be unique.");
-        }
-
-        return migrations;
-    }
-
-    private sealed record EmbeddedMigration(string Id, string Sha256, string Sql);
 }

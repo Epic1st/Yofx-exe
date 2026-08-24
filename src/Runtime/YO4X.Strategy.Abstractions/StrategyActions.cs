@@ -53,10 +53,14 @@ public abstract record RequestedAction
             throw new ArgumentException("Action identifier cannot be empty.", nameof(actionId));
         }
 
-        ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
-        ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
-        ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
+        RequireCanonicalText(idempotencyKey, nameof(idempotencyKey));
+        RequireCanonicalText(symbol, nameof(symbol));
+        RequireCanonicalText(reasonCode, nameof(reasonCode));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(marketDataSequence);
+        if (!Enum.IsDefined(exposureHint))
+        {
+            throw new ArgumentOutOfRangeException(nameof(exposureHint));
+        }
 
         ActionId = actionId;
         IdempotencyKey = idempotencyKey;
@@ -79,6 +83,16 @@ public abstract record RequestedAction
     public long MarketDataSequence { get; }
 
     public RequestedExposureHint ExposureHint { get; }
+
+    protected static void RequireCanonicalText(string? value, string parameterName)
+    {
+        if (!StrategyCanonicalText.IsCanonical(value))
+        {
+            throw new ArgumentException(
+                "Strategy action text must be canonical Unicode text without boundary whitespace or control characters.",
+                parameterName);
+        }
+    }
 }
 
 public sealed record PlaceOrderAction : RequestedAction
@@ -100,6 +114,21 @@ public sealed record PlaceOrderAction : RequestedAction
         DateTimeOffset? expiresAtUtc = null)
         : base(actionId, idempotencyKey, symbol, reasonCode, marketDataSequence, exposureHint)
     {
+        if (!Enum.IsDefined(side))
+        {
+            throw new ArgumentOutOfRangeException(nameof(side));
+        }
+
+        if (!Enum.IsDefined(orderType))
+        {
+            throw new ArgumentOutOfRangeException(nameof(orderType));
+        }
+
+        if (exposureHint != RequestedExposureHint.Increase)
+        {
+            throw new ArgumentOutOfRangeException(nameof(exposureHint));
+        }
+
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(volume);
         if (requestedPrice is { } normalizedRequestedPrice)
         {
@@ -158,7 +187,7 @@ public sealed record UpdateProtectionAction : RequestedAction
             marketDataSequence,
             RequestedExposureHint.Protect)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(positionId);
+        RequireCanonicalText(positionId, nameof(positionId));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(stopLoss);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(takeProfit);
         PositionId = positionId;
@@ -192,7 +221,7 @@ public sealed record CancelPendingOrderAction : RequestedAction
             marketDataSequence,
             RequestedExposureHint.Cancel)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(orderId);
+        RequireCanonicalText(orderId, nameof(orderId));
         OrderId = orderId;
     }
 
@@ -214,7 +243,7 @@ public sealed record ClosePositionAction : RequestedAction
         RequestedExposureHint exposureHint = RequestedExposureHint.Reduce)
         : base(actionId, idempotencyKey, symbol, reasonCode, marketDataSequence, exposureHint)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(positionId);
+        RequireCanonicalText(positionId, nameof(positionId));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(volume);
         if (exposureHint is not RequestedExposureHint.Reduce and not RequestedExposureHint.EmergencyClose)
         {

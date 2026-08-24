@@ -6,8 +6,6 @@ namespace YO4X.Runtime.Tests;
 public sealed class StrategyContractTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 22, 10, 0, 0, TimeSpan.Zero);
-    private static readonly string[] ExpectedQuoteSymbols = ["EURUSD", "USDJPY"];
-
     [Fact]
     public void EventContractExposesAllSevenVersionedTypedEvents()
     {
@@ -46,6 +44,24 @@ public sealed class StrategyContractTests
     }
 
     [Fact]
+    public void EventContractsRejectUndefinedEnums()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ExecutionEvent(
+            Now,
+            Guid.NewGuid(),
+            "broker-event-1",
+            (StrategyExecutionEventKind)99,
+            null,
+            null,
+            0,
+            null,
+            "invalid-kind"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new StopEvent(
+            Now,
+            (StrategyStopReason)99));
+    }
+
+    [Fact]
     public void StrategyHandleContractIsSynchronous()
     {
         System.Reflection.MethodInfo handle = typeof(IYo4xStrategy).GetMethod(nameof(IYo4xStrategy.Handle))
@@ -78,6 +94,25 @@ public sealed class StrategyContractTests
         Assert.True(firstValidation.IsValid);
         Assert.True(secondValidation.IsValid);
         Assert.Equal(firstValidation.BoundedResult!.ResultHash, secondValidation.BoundedResult!.ResultHash);
+    }
+
+    [Theory]
+    [InlineData("{\"value\":\"\\u0000\"}")]
+    [InlineData("{\"\\u0000\":true}")]
+    [InlineData("[\"safe\",{\"nested\":\"before\\u0000after\"}]")]
+    public void StrategyStateRejectsPostgresUnsupportedNullCharacters(string json)
+    {
+        Assert.Throws<ArgumentException>(() => StrategyState.FromJson(1, json));
+    }
+
+    [Fact]
+    public void StrategyStateAllowsEscapedTextThatOnlySpellsAUnicodeEscape()
+    {
+        StrategyState state = StrategyState.FromJson(
+            1,
+            "{\"value\":\"\\\\u0000\"}");
+
+        Assert.Contains("\\\\u0000", state.PayloadJson, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -141,6 +176,168 @@ public sealed class StrategyContractTests
     }
 
     [Fact]
+    public void ResultValidatorRejectsNullActionDeterministically()
+    {
+        var result = new StrategyResult(
+            StrategyState.FromJson(1, "{}"),
+            [null!]);
+
+        StrategyResultValidation validation = StrategyResultValidator.Validate(
+            StrategyState.Empty,
+            result,
+            Bounds(),
+            TimeSpan.Zero);
+
+        Assert.Equal(StrategyResultValidationCode.StrategyFaulted, validation.Code);
+        Assert.Equal("strategy_action_missing", validation.ReasonCode);
+    }
+
+    [Fact]
+    public void ActionContractsRejectUndefinedEnums()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Place(
+            Guid.NewGuid(),
+            "undefined-exposure",
+            exposureHint: (RequestedExposureHint)99));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Place(
+            Guid.NewGuid(),
+            "undefined-side",
+            side: (RequestedOrderSide)99));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Place(
+            Guid.NewGuid(),
+            "undefined-order-type",
+            orderType: (RequestedOrderType)99));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ClosePositionAction(
+            Guid.NewGuid(),
+            "undefined-close-exposure",
+            "EURUSD",
+            "signal_exit",
+            1,
+            "position-1",
+            0.01m,
+            (RequestedExposureHint)99));
+    }
+
+    [Theory]
+    [InlineData(RequestedExposureHint.Reduce)]
+    [InlineData(RequestedExposureHint.Protect)]
+    [InlineData(RequestedExposureHint.Cancel)]
+    [InlineData(RequestedExposureHint.EmergencyClose)]
+    public void PlaceOrderOnlyAcceptsTheIncreaseExposureHint(RequestedExposureHint exposureHint)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Place(
+            Guid.NewGuid(),
+            "invalid-place-exposure",
+            exposureHint));
+    }
+
+    [Fact]
+    public void CanonicalTextRejectsBoundaryWhitespaceControlsAndInvalidSurrogates()
+    {
+        string[] invalidValues =
+        [
+            " leading",
+            "trailing ",
+            "line\nfeed",
+            "bidi\u200Econtrol",
+            "high\uD800surrogate",
+            "low\uDC00surrogate"
+        ];
+
+        Assert.All(invalidValues, value => Assert.False(
+            StrategyCanonicalText.IsCanonical(value)));
+        Assert.True(StrategyCanonicalText.IsCanonical("replacement-\uFFFD-character"));
+        Assert.True(StrategyCanonicalText.IsCanonical("supplementary-\U0001F4C8-scalar"));
+    }
+
+    [Fact]
+    public void ActionContractsRejectNonCanonicalTextInEveryDurableTextField()
+    {
+        const string invalidScalar = "invalid\uD800text";
+
+        Assert.Throws<ArgumentException>(() => Place(Guid.NewGuid(), invalidScalar));
+        Assert.Throws<ArgumentException>(() => Place(
+            Guid.NewGuid(),
+            "invalid-symbol",
+            symbol: invalidScalar));
+        Assert.Throws<ArgumentException>(() => Place(
+            Guid.NewGuid(),
+            "invalid-reason",
+            reasonCode: invalidScalar));
+        Assert.Throws<ArgumentException>(() => new UpdateProtectionAction(
+            Guid.NewGuid(),
+            "invalid-position",
+            "EURUSD",
+            "protect",
+            1,
+            invalidScalar,
+            1.08m,
+            1.14m));
+        Assert.Throws<ArgumentException>(() => new CancelPendingOrderAction(
+            Guid.NewGuid(),
+            "invalid-order",
+            "EURUSD",
+            "cancel",
+            1,
+            invalidScalar));
+        Assert.Throws<ArgumentException>(() => new ClosePositionAction(
+            Guid.NewGuid(),
+            "invalid-close",
+            "EURUSD",
+            "close",
+            1,
+            invalidScalar,
+            0.01m));
+    }
+
+    [Fact]
+    public void ResultValidatorRejectsHostileNonCanonicalActionTextBeforeHashing()
+    {
+        (RequestedAction Action, Type Owner, string FieldName)[] hostileCases =
+        [
+            (Place(Guid.NewGuid(), "hostile-key"),
+                typeof(RequestedAction), "<IdempotencyKey>k__BackingField"),
+            (Place(Guid.NewGuid(), "hostile-symbol"),
+                typeof(RequestedAction), "<Symbol>k__BackingField"),
+            (Place(Guid.NewGuid(), "hostile-reason"),
+                typeof(RequestedAction), "<ReasonCode>k__BackingField"),
+            (new UpdateProtectionAction(
+                    Guid.NewGuid(), "hostile-update", "EURUSD", "protect", 1,
+                    "position-1", 1.08m, 1.14m),
+                typeof(UpdateProtectionAction), "<PositionId>k__BackingField"),
+            (new CancelPendingOrderAction(
+                    Guid.NewGuid(), "hostile-cancel", "EURUSD", "cancel", 1, "order-1"),
+                typeof(CancelPendingOrderAction), "<OrderId>k__BackingField"),
+            (new ClosePositionAction(
+                    Guid.NewGuid(), "hostile-close", "EURUSD", "close", 1,
+                    "position-1", 0.01m),
+                typeof(ClosePositionAction), "<PositionId>k__BackingField")
+        ];
+
+        foreach ((RequestedAction action, Type owner, string fieldName) in hostileCases)
+        {
+            System.Reflection.FieldInfo textField = owner.GetField(
+                    fieldName,
+                    System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException(
+                    $"Requested-action text field {fieldName} is missing.");
+            textField.SetValue(action, "invalid\uD800text");
+            var result = new StrategyResult(StrategyState.FromJson(1, "{}"), [action]);
+
+            StrategyResultValidation validation = StrategyResultValidator.Validate(
+                StrategyState.Empty,
+                result,
+                Bounds(),
+                TimeSpan.Zero);
+
+            Assert.Equal(StrategyResultValidationCode.StrategyFaulted, validation.Code);
+            Assert.Equal("strategy_action_text_invalid", validation.ReasonCode);
+            Assert.Null(validation.BoundedResult);
+        }
+    }
+
+    [Fact]
     public void ResultBoundsRejectStateAndWallTimeOverruns()
     {
         StrategyResult stateHeavy = new(StrategyState.FromJson(1, "{\"value\":\"1234567890\"}"));
@@ -170,16 +367,93 @@ public sealed class StrategyContractTests
     {
         StrategyAccountSnapshot account = new(1, 10_000m, 10_000m, 9_000m, "USD");
         StrategyQuoteSnapshot laterSymbol = new(2, "USDJPY", 145m, 145.1m, Now);
-        StrategyQuoteSnapshot earlierSymbol = new(1, "EURUSD", 1.1m, 1.11m, Now);
+        StrategyQuoteSnapshot laterSequence = new(2, "EURUSD", 1.11m, 1.12m, Now);
+        StrategyQuoteSnapshot earlierSequence = new(1, "EURUSD", 1.1m, 1.11m, Now);
+        StrategyPositionSnapshot laterPosition = new(
+            "position-b",
+            "EURUSD",
+            StrategyPositionSide.Buy,
+            0.01m,
+            1.10m,
+            null,
+            null,
+            true);
+        StrategyPositionSnapshot earlierPosition = laterPosition with
+        {
+            PositionId = "position-a"
+        };
+        StrategyPendingOrderSnapshot laterOrder = new(
+            "order-b",
+            "EURUSD",
+            StrategyPositionSide.Buy,
+            0.01m,
+            1.10m,
+            null,
+            null,
+            true);
+        StrategyPendingOrderSnapshot earlierOrder = laterOrder with
+        {
+            OrderId = "order-a"
+        };
 
         StrategySnapshot snapshot = StrategySnapshot.Create(
             1,
             Now,
             Now,
             account,
-            [laterSymbol, earlierSymbol]);
+            [laterSymbol, laterSequence, earlierSequence],
+            [laterPosition, earlierPosition],
+            [laterOrder, earlierOrder]);
 
-        Assert.Equal(ExpectedQuoteSymbols, snapshot.Quotes.Select(value => value.Symbol));
+        Assert.Equal(
+            [("EURUSD", 1L), ("EURUSD", 2L), ("USDJPY", 2L)],
+            snapshot.Quotes.Select(value => (value.Symbol, value.Sequence)));
+        Assert.Equal(
+            ["position-a", "position-b"],
+            snapshot.Positions.Select(value => value.PositionId));
+        Assert.Equal(
+            ["order-a", "order-b"],
+            snapshot.PendingOrders.Select(value => value.OrderId));
+    }
+
+    [Fact]
+    public void SnapshotCreationRejectsNullCollectionElements()
+    {
+        Assert.Throws<ArgumentException>(() => StrategySnapshot.Create(
+            1,
+            Now,
+            Now,
+            new StrategyAccountSnapshot(1, 10_000m, 10_000m, 9_000m, "USD"),
+            quotes: [null!]));
+    }
+
+    [Fact]
+    public void SnapshotCreationStopsInfiniteCollectionsAtTheHardElementLimit()
+    {
+        int yielded = 0;
+        StrategyQuoteSnapshot quote = new(1, "EURUSD", 1.10m, 1.11m, Now);
+
+        Assert.Throws<ArgumentException>(() => StrategySnapshot.Create(
+            1,
+            Now,
+            Now,
+            new StrategyAccountSnapshot(1, 10_000m, 10_000m, 9_000m, "USD"),
+            quotes: Infinite(quote, () => yielded++)));
+        Assert.Equal(StrategySnapshot.MaximumQuoteCount + 1, yielded);
+    }
+
+    [Fact]
+    public void StrategyResultStopsInfiniteActionsAtTheDurableLimit()
+    {
+        int yielded = 0;
+        PlaceOrderAction action = Place(
+            Guid.Parse("41000000-0000-0000-0000-000000000099"),
+            "bounded-action");
+
+        Assert.Throws<ArgumentException>(() => new StrategyResult(
+            StrategyState.FromJson(1, "{}"),
+            Infinite<RequestedAction>(action, () => yielded++)));
+        Assert.Equal(StrategyResult.MaximumRequestedActionCount + 1, yielded);
     }
 
     private static StrategyResult ValidResult(string stateJson) =>
@@ -187,16 +461,23 @@ public sealed class StrategyContractTests
             StrategyState.FromJson(1, stateJson),
             [Place(Guid.Parse("41000000-0000-0000-0000-000000000003"), "entry-1")]);
 
-    private static PlaceOrderAction Place(Guid actionId, string idempotencyKey) =>
+    private static PlaceOrderAction Place(
+        Guid actionId,
+        string idempotencyKey,
+        RequestedExposureHint exposureHint = RequestedExposureHint.Increase,
+        RequestedOrderSide side = RequestedOrderSide.Buy,
+        RequestedOrderType orderType = RequestedOrderType.Market,
+        string symbol = "EURUSD",
+        string reasonCode = "signal_entry") =>
         new(
             actionId,
             idempotencyKey,
-            "EURUSD",
-            "signal_entry",
+            symbol,
+            reasonCode,
             1,
-            RequestedExposureHint.Increase,
-            RequestedOrderSide.Buy,
-            RequestedOrderType.Market,
+            exposureHint,
+            side,
+            orderType,
             0.01m,
             null,
             1.08m,
@@ -217,6 +498,15 @@ public sealed class StrategyContractTests
             Now,
             new StrategyAccountSnapshot(1, 10_000m, 10_000m, 9_000m, "USD"),
             [new StrategyQuoteSnapshot(1, "EURUSD", 1.10m, 1.11m, Now)]);
+
+    private static IEnumerable<T> Infinite<T>(T value, Action onYield)
+    {
+        while (true)
+        {
+            onYield();
+            yield return value;
+        }
+    }
 
     private sealed class DeterministicTestStrategy : IYo4xStrategy
     {

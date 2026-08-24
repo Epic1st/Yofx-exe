@@ -178,6 +178,26 @@ public sealed class SecretIngestionBoundaryTests
         Assert.Null(provider.GetService<PostgresDatabase>());
     }
 
+    [Theory]
+    [InlineData("Include Error Detail=true")]
+    [InlineData("Log Parameters=true")]
+    [InlineData("Trust Server Certificate=true")]
+    [InlineData("Options=-c statement_timeout=0")]
+    [InlineData("Search Path=public")]
+    [InlineData("No Reset On Close=true")]
+    [InlineData("Multiplexing=true")]
+    public void UnsafePostgresSessionFeaturesKeepIngestionUnavailable(string unsafeSetting)
+    {
+        string connectionString =
+            "Host=db.example;Database=yo4x;Username=yo4x_secret_ingestion;Password=test-only;"
+            + $"SSL Mode=VerifyFull;{unsafeSetting}";
+
+        Assert.False(SecretIngestionPostgresRegistration.TryReadRuntimeConnectionString(
+            connectionString,
+            out string normalized));
+        Assert.Empty(normalized);
+    }
+
     [Fact]
     public void InvalidConfiguredCorsOriginKeepsIngestionUnavailable()
     {
@@ -197,6 +217,27 @@ public sealed class SecretIngestionBoundaryTests
             scope.ServiceProvider.GetRequiredService<ICredentialIngestionProcessor>());
     }
 
+    [Fact]
+    public void IssuerForAnotherEndpointKeepsIngestionUnavailable()
+    {
+        IConfiguration configuration = Configuration(
+            "Host=other.example;Database=yo4x;Username=yo4x_secret_ingestion;Password=test-only;SSL Mode=VerifyFull",
+            "https://portal.example");
+        var services = new ServiceCollection();
+        services.AddSingleton<IClock>(SystemClock.Instance);
+        services.AddExternalWriteOnlySecretBroker<TestSecretBroker>();
+
+        services.TryAddSecretIngestionPostgres(configuration);
+        services.TryAddScoped<ICredentialIngestionProcessor, UnavailableCredentialIngestionProcessor>();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        using IServiceScope scope = provider.CreateScope();
+        Assert.IsType<UnavailableCredentialIngestionProcessor>(
+            scope.ServiceProvider.GetRequiredService<ICredentialIngestionProcessor>());
+        Assert.Null(provider.GetService<ITenantContextCapabilityProvider>());
+        Assert.Null(provider.GetService<PostgresDatabase>());
+    }
+
     private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
@@ -204,6 +245,8 @@ public sealed class SecretIngestionBoundaryTests
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["ConnectionStrings:Postgres"] = connectionString,
+            ["ConnectionStrings:ContextIssuer"] =
+                "Host=db.example;Database=yo4x;Username=yo4x_context_issuer;Password=test-only;SSL Mode=VerifyFull",
             ["SecretIngestion:ApprovedClientOrigin"] = origin
         }).Build();
 

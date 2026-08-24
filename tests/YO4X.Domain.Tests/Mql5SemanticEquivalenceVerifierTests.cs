@@ -14,7 +14,7 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
         using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using EcdsaP256Mql5RunnerAttestationVerifier trust = CreateTrust(signer);
         Mql5SemanticEquivalenceRequest request = CreateRequest(CreateExactEvents());
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation: null);
 
@@ -38,7 +38,7 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             signer,
             referenceTraceSha256: new string('1', 64),
             loweredTraceSha256: new string('1', 64));
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation);
 
@@ -50,6 +50,8 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
         Assert.Equal(events.Length, evidence.ComparedEventCount);
         Assert.NotNull(evidence.AttestationSha256);
         Assert.Equal("runner-key-1", evidence.AttestationSigningKeyId);
+        Assert.Equal("backend-semantic-profile-1", evidence.ApprovedSemanticProfileId);
+        Assert.Equal(request.TolerancePolicyApprovalSha256, evidence.TolerancePolicyApprovalSha256);
     }
 
     [Fact]
@@ -76,7 +78,7 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             signer,
             referenceTraceSha256: new string('1', 64),
             loweredTraceSha256: new string('2', 64));
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation);
 
@@ -110,7 +112,7 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             signer,
             referenceTraceSha256: new string('1', 64),
             loweredTraceSha256: new string('2', 64));
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation);
 
@@ -140,7 +142,7 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             signer,
             referenceTraceSha256: new string('1', 64),
             loweredTraceSha256: new string('2', 64));
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation);
 
@@ -165,7 +167,7 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             {
                 DependencyClosureSha256 = new string('8', 64)
             });
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation);
 
@@ -190,7 +192,7 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             {
                 ReferenceOutputEventIndexSha256 = new string('8', 64)
             });
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation);
 
@@ -212,7 +214,7 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             attacker,
             referenceTraceSha256: new string('1', 64),
             loweredTraceSha256: new string('1', 64));
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation);
 
@@ -230,12 +232,167 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
         {
             ToolchainBindingSha256 = new string('8', 64)
         };
-        var verifier = new Mql5SemanticEquivalenceVerifier(trust, new FixedTimeProvider(Now));
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
 
         Mql5SemanticParityEvidence evidence = verifier.Verify(request, attestation: null);
 
         Assert.Equal(Mql5SemanticParityState.Blocked, evidence.State);
         Assert.Equal("SEMANTIC_EQUIVALENCE_REQUEST_INVALID", evidence.ReasonCode);
+    }
+
+    [Fact]
+    public void CallerSelectedToleranceApprovalCannotCreateBackendAuthority()
+    {
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using EcdsaP256Mql5RunnerAttestationVerifier trust = CreateTrust(signer);
+        Mql5SemanticEquivalenceRequest approvedRequest = CreateRequest(CreateExactEvents());
+        Mql5SemanticTolerancePolicy callerPolicy = approvedRequest.TolerancePolicy with
+        {
+            MaximumAbsoluteError = decimal.MaxValue,
+            MaximumRelativeError = decimal.MaxValue
+        };
+        Mql5SemanticEquivalenceRequest callerRequest = approvedRequest with
+        {
+            TolerancePolicy = callerPolicy,
+            TolerancePolicySha256 =
+                Mql5SemanticEquivalenceVerifier.ComputeTolerancePolicySha256(callerPolicy),
+            TolerancePolicyApprovalSha256 = new string('9', 64)
+        };
+        var verifier = new Mql5SemanticEquivalenceVerifier(
+            trust,
+            new FixedTimeProvider(Now),
+            CreateApprovedProfile(
+                approvedRequest.Toolchain,
+                approvedRequest.TolerancePolicy,
+                approvedRequest.IsolationPolicy));
+
+        Mql5SemanticParityEvidence evidence = verifier.Verify(callerRequest, attestation: null);
+
+        Assert.Equal(Mql5SemanticParityState.Blocked, evidence.State);
+        Assert.Equal("SEMANTIC_EQUIVALENCE_REQUEST_INVALID", evidence.ReasonCode);
+        Assert.False(evidence.SemanticParityProven);
+    }
+
+    [Fact]
+    public void OversizedSignatureIsRejectedWithoutRetainingTheUnboundedInput()
+    {
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using EcdsaP256Mql5RunnerAttestationVerifier trust = CreateTrust(signer);
+        Mql5SemanticTraceEventEvidence[] events = CreateExactEvents();
+        Mql5SemanticEquivalenceRequest request = CreateRequest(events);
+        Mql5SemanticRunnerAttestation valid = CreateSignedAttestation(
+            request,
+            events,
+            signer,
+            referenceTraceSha256: new string('1', 64),
+            loweredTraceSha256: new string('1', 64));
+        byte[] oversizedSignature = new byte[4_096];
+        var oversized = new Mql5SemanticRunnerAttestation(
+            valid.Descriptor,
+            valid.Algorithm,
+            valid.SigningKeyId,
+            oversizedSignature,
+            Convert.ToHexString(SHA256.HashData(oversizedSignature)).ToLowerInvariant(),
+            valid.SignedPayloadSha256);
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
+
+        Mql5SemanticParityEvidence evidence = verifier.Verify(request, oversized);
+
+        Assert.Equal(257, oversized.GetSignature().Length);
+        Assert.Equal(Mql5SemanticParityState.Blocked, evidence.State);
+        Assert.Equal("SEMANTIC_RUNNER_ATTESTATION_INVALID", evidence.ReasonCode);
+    }
+
+    [Fact]
+    public void ThrowingAttestationEventEnumeratorFailsClosed()
+    {
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using EcdsaP256Mql5RunnerAttestationVerifier trust = CreateTrust(signer);
+        Mql5SemanticTraceEventEvidence[] events = CreateExactEvents();
+        Mql5SemanticEquivalenceRequest request = CreateRequest(events);
+        Mql5SemanticRunnerAttestation valid = CreateSignedAttestation(
+            request,
+            events,
+            signer,
+            referenceTraceSha256: new string('1', 64),
+            loweredTraceSha256: new string('1', 64));
+        Mql5SemanticRunnerAttestationDescriptor hostileDescriptor = valid.Descriptor! with
+        {
+            Events = new ThrowingReadOnlyList<Mql5SemanticTraceEventEvidence>()
+        };
+        var hostile = new Mql5SemanticRunnerAttestation(
+            hostileDescriptor,
+            valid.Algorithm,
+            valid.SigningKeyId,
+            valid.GetSignature(),
+            valid.SignatureSha256,
+            valid.SignedPayloadSha256);
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
+
+        Mql5SemanticParityEvidence evidence = verifier.Verify(request, hostile);
+
+        Assert.Equal(Mql5SemanticParityState.Blocked, evidence.State);
+        Assert.Equal("SEMANTIC_RUNNER_ATTESTATION_INVALID", evidence.ReasonCode);
+    }
+
+    [Fact]
+    public void ThrowingAttestationEventCountFailsClosed()
+    {
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using EcdsaP256Mql5RunnerAttestationVerifier trust = CreateTrust(signer);
+        Mql5SemanticTraceEventEvidence[] events = CreateExactEvents();
+        Mql5SemanticEquivalenceRequest request = CreateRequest(events);
+        Mql5SemanticRunnerAttestation valid = CreateSignedAttestation(
+            request,
+            events,
+            signer,
+            referenceTraceSha256: new string('1', 64),
+            loweredTraceSha256: new string('1', 64));
+        Mql5SemanticRunnerAttestationDescriptor wrappedDescriptor = valid.Descriptor! with
+        {
+            Events = new CountThrowingReadOnlyList<Mql5SemanticTraceEventEvidence>(events)
+        };
+        var wrapped = new Mql5SemanticRunnerAttestation(
+            wrappedDescriptor,
+            valid.Algorithm,
+            valid.SigningKeyId,
+            valid.GetSignature(),
+            valid.SignatureSha256,
+            valid.SignedPayloadSha256);
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, request);
+
+        Mql5SemanticParityEvidence evidence = verifier.Verify(request, wrapped);
+
+        Assert.Equal(Mql5SemanticParityState.Blocked, evidence.State);
+        Assert.Equal("SEMANTIC_RUNNER_ATTESTATION_INVALID", evidence.ReasonCode);
+        Assert.False(evidence.SemanticParityProven);
+    }
+
+    [Fact]
+    public void InvalidRequestCannotAmplifyUntrustedTextIntoLocalEvidence()
+    {
+        using ECDsa signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using EcdsaP256Mql5RunnerAttestationVerifier trust = CreateTrust(signer);
+        Mql5SemanticEquivalenceRequest approvedRequest = CreateRequest(CreateExactEvents());
+        Mql5SemanticEquivalenceRequest hostileRequest = approvedRequest with
+        {
+            RelativePath = new string('x', 1_000_000) + "\r\nforged",
+            SourceSha256 = new string('y', 1_000_000),
+            TolerancePolicySha256 = "not-a-digest"
+        };
+        Mql5SemanticEquivalenceVerifier verifier = CreateVerifier(trust, approvedRequest);
+
+        Mql5SemanticParityEvidence evidence = verifier.Verify(hostileRequest, attestation: null);
+
+        Assert.Equal(Mql5SemanticParityState.Blocked, evidence.State);
+        Assert.Equal("SEMANTIC_EQUIVALENCE_REQUEST_INVALID", evidence.ReasonCode);
+        Assert.Empty(evidence.RelativePath);
+        Assert.Empty(evidence.SourceSha256);
+        Assert.Empty(evidence.TolerancePolicySha256);
+        Assert.Equal("backend-semantic-profile-1", evidence.ApprovedSemanticProfileId);
+        Assert.Equal(
+            approvedRequest.TolerancePolicyApprovalSha256,
+            evidence.TolerancePolicyApprovalSha256);
     }
 
     private static Mql5SemanticEquivalenceRequest CreateRequest(
@@ -262,6 +419,22 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             MaximumAbsoluteError: 0.0001m,
             MaximumRelativeError: 0.0001m,
             MaximumEventCount: 10_000);
+        var isolationPolicy = new Mql5IsolationPolicy(
+            NetworkAccessDisabled: true,
+            ReadOnlyRootFileSystem: true,
+            EphemeralWorkspace: true,
+            HostMountsDisabled: true,
+            NoNewPrivileges: true,
+            MemoryLimitBytes: 512 * 1024 * 1024,
+            CpuTimeLimitMilliseconds: 60_000,
+            WallClockTimeoutMilliseconds: 60_000,
+            ProcessLimit: 8,
+            TemporaryStorageLimitBytes: 256 * 1024 * 1024,
+            CompilerOutputLimitBytes: 1024 * 1024);
+        Mql5ApprovedSemanticProfile approvedProfile = CreateApprovedProfile(
+            toolchain,
+            policy,
+            isolationPolicy);
         return new Mql5SemanticEquivalenceRequest(
             Guid.Parse("22222222-2222-2222-2222-222222222222"),
             Now.AddMinutes(-1),
@@ -280,19 +453,8 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             events.Length,
             policy,
             Mql5SemanticEquivalenceVerifier.ComputeTolerancePolicySha256(policy),
-            new string('9', 64),
-            new Mql5IsolationPolicy(
-                NetworkAccessDisabled: true,
-                ReadOnlyRootFileSystem: true,
-                EphemeralWorkspace: true,
-                HostMountsDisabled: true,
-                NoNewPrivileges: true,
-                MemoryLimitBytes: 512 * 1024 * 1024,
-                CpuTimeLimitMilliseconds: 60_000,
-                WallClockTimeoutMilliseconds: 60_000,
-                ProcessLimit: 8,
-                TemporaryStorageLimitBytes: 256 * 1024 * 1024,
-                CompilerOutputLimitBytes: 1024 * 1024));
+            approvedProfile.ApprovalSha256,
+            isolationPolicy);
     }
 
     private static Mql5SemanticTraceEventEvidence[] CreateExactEvents() =>
@@ -388,6 +550,28 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
             ["runner-key-1"] = signer.ExportSubjectPublicKeyInfo()
         });
 
+    private static Mql5SemanticEquivalenceVerifier CreateVerifier(
+        IMql5RunnerAttestationVerifier trust,
+        Mql5SemanticEquivalenceRequest request) =>
+        new(
+            trust,
+            new FixedTimeProvider(Now),
+            CreateApprovedProfile(
+                request.Toolchain,
+                request.TolerancePolicy,
+                request.IsolationPolicy));
+
+    private static Mql5ApprovedSemanticProfile CreateApprovedProfile(
+        Mql5SemanticToolchainBinding toolchain,
+        Mql5SemanticTolerancePolicy policy,
+        Mql5IsolationPolicy isolationPolicy) =>
+        new(
+            "backend-semantic-profile-1",
+            toolchain,
+            policy,
+            isolationPolicy,
+            ["runner-key-1"]);
+
     private sealed class FixedTimeProvider : TimeProvider
     {
         private readonly DateTimeOffset now;
@@ -398,5 +582,44 @@ public sealed class Mql5SemanticEquivalenceVerifierTests
         }
 
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class ThrowingReadOnlyList<T> : IReadOnlyList<T>
+    {
+        public int Count => throw new InvalidOperationException("Count is untrusted.");
+
+        public T this[int index] => throw new InvalidOperationException("Indexing is untrusted.");
+
+        public IEnumerator<T> GetEnumerator() => new ThrowingEnumerator<T>();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+            GetEnumerator();
+    }
+
+    private sealed class ThrowingEnumerator<T> : IEnumerator<T>
+    {
+        public T Current => throw new InvalidOperationException("Current is untrusted.");
+
+        object System.Collections.IEnumerator.Current => Current!;
+
+        public bool MoveNext() => throw new InvalidOperationException("Enumeration is untrusted.");
+
+        public void Reset() => throw new NotSupportedException();
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class CountThrowingReadOnlyList<T>(IReadOnlyList<T> values) : IReadOnlyList<T>
+    {
+        public int Count => throw new InvalidOperationException("Count is untrusted.");
+
+        public T this[int index] => values[index];
+
+        public IEnumerator<T> GetEnumerator() => values.GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+            GetEnumerator();
     }
 }

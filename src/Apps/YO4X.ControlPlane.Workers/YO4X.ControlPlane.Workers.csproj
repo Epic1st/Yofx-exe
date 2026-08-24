@@ -18,4 +18,8 @@
     <ProjectReference Include="..\..\Modules\Tenancy\YO4X.Tenancy\YO4X.Tenancy.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="YO4X.Postgres.IntegrationTests" />
+  </ItemGroup>
+
 </Project>

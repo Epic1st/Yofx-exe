@@ -137,8 +137,7 @@ public sealed class BrokerCommandCoordinator
                     reference,
                     claim,
                     leaseTrustVerifier,
-                    now,
-                    options.MinimumAuthorityWindow);
+                    now);
             }
             catch (Exception)
             {
@@ -157,7 +156,9 @@ public sealed class BrokerCommandCoordinator
                 null,
                 null,
                 null,
-                now);
+                now,
+                !claim.Replayed
+                    && guardFailure != "broker_command_dispatch_authority_expired");
         }
         else if (cancellationToken.IsCancellationRequested)
         {
@@ -167,48 +168,142 @@ public sealed class BrokerCommandCoordinator
                 null,
                 null,
                 null,
-                now);
+                now,
+                true);
+        }
+        else if (!options.SubmissionEnabled)
+        {
+            result = new GatewaySendResult(
+                GatewayCommandDisposition.SubmissionDisabled,
+                "broker_command_gateway_entry_disabled",
+                null,
+                null,
+                null,
+                now,
+                true);
         }
         else
         {
-            TimeSpan gatewayWindow = BrokerCommandDispatchGuard.RemainingGatewayWindow(
-                claim,
-                now,
-                options.GatewaySendTimeout);
             using var gatewayCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken);
-            gatewayCancellation.CancelAfter(gatewayWindow);
-            try
-            {
-                gatewayInvoked = true;
-                Task<GatewaySendResult> send = gateway.SendAsync(
-                    claim.Command,
-                    gatewayCancellation.Token);
-                GatewaySendResult raw = await send
-                    .WaitAsync(gatewayWindow, cancellationToken)
-                    .ConfigureAwait(false);
-                DateTimeOffset receivedAt = ConservativeAuthorityNowOr(
+            if (!TryGetConservativeAuthorityNow(
                     claim.AuthorityNowUtc,
                     dispatchClaimStartedTimestamp,
-                    now);
-                result = NormalizeGatewayResult(raw, claim.Command, receivedAt);
-            }
-            catch (Exception)
+                    out DateTimeOffset refreshedNow))
             {
-                // Once the gateway boundary has been entered, every exception,
-                // timeout, and cancellation is an ambiguous external outcome.
                 result = new GatewaySendResult(
                     GatewayCommandDisposition.Unknown,
-                    "broker_command_gateway_outcome_unknown",
+                    "broker_command_authority_clock_invalid",
                     null,
                     null,
                     null,
-                    ConservativeAuthorityNowOr(
-                        claim.AuthorityNowUtc,
-                        dispatchClaimStartedTimestamp,
-                        now));
+                    now,
+                    false);
+            }
+            else if (BrokerCommandDispatchGuard.AuthorityWindowRejectReason(
+                    claim,
+                    refreshedNow,
+                    options.MinimumAuthorityWindow) is { } refreshedFailure)
+            {
+                result = new GatewaySendResult(
+                    GatewayCommandDisposition.Unknown,
+                    refreshedFailure,
+                    null,
+                    null,
+                    null,
+                    refreshedNow,
+                    false);
+            }
+            else if (cancellationToken.IsCancellationRequested)
+            {
+                result = new GatewaySendResult(
+                    GatewayCommandDisposition.SubmissionDisabled,
+                    "broker_command_cancelled_before_gateway_invocation",
+                    null,
+                    null,
+                    null,
+                    refreshedNow,
+                    true);
+            }
+            else
+            {
+                now = refreshedNow;
+                TimeSpan gatewayWindow = BrokerCommandDispatchGuard.RemainingGatewayWindow(
+                    claim,
+                    now,
+                    options.GatewaySendTimeout);
+                gatewayCancellation.CancelAfter(gatewayWindow);
+                try
+                {
+                    long gatewayEntryTimestamp = timeProvider.GetTimestamp();
+                    gatewayInvoked = true;
+                    Task<GatewaySendResult> send = gateway.SendAsync(
+                        claim.Command,
+                        gatewayCancellation.Token);
+                    if (!TryGetElapsedTime(
+                            gatewayEntryTimestamp,
+                            out TimeSpan elapsedBeforeAwait)
+                        || elapsedBeforeAwait >= gatewayWindow)
+                    {
+                        _ = ObserveGatewayCompletionAsync(send);
+                        result = GatewayTimeoutUnknown(
+                            claim,
+                            dispatchClaimStartedTimestamp,
+                            now);
+                    }
+                    else
+                    {
+                        GatewaySendResult raw = await send
+                            .WaitAsync(
+                                gatewayWindow - elapsedBeforeAwait,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        DateTimeOffset receivedAt = ConservativeAuthorityNowOr(
+                            claim.AuthorityNowUtc,
+                            dispatchClaimStartedTimestamp,
+                            now);
+                        if (!TryGetElapsedTime(
+                                gatewayEntryTimestamp,
+                                out TimeSpan totalGatewayElapsed)
+                            || totalGatewayElapsed >= gatewayWindow
+                            || BrokerCommandDispatchGuard.IsAuthorityExpired(
+                                claim,
+                                receivedAt))
+                        {
+                            result = GatewayTimeoutUnknown(
+                                claim,
+                                dispatchClaimStartedTimestamp,
+                                now);
+                        }
+                        else
+                        {
+                            result = NormalizeGatewayResult(
+                                raw,
+                                claim.Command,
+                                receivedAt);
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    // Once the gateway boundary has been entered, every exception,
+                    // timeout, and cancellation is an ambiguous external outcome.
+                    result = new GatewaySendResult(
+                        GatewayCommandDisposition.Unknown,
+                        "broker_command_gateway_outcome_unknown",
+                        null,
+                        null,
+                        null,
+                        ConservativeAuthorityNowOr(
+                            claim.AuthorityNowUtc,
+                            dispatchClaimStartedTimestamp,
+                            now),
+                        false);
+                }
             }
         }
+
+        result = BrokerCommandLifecycleEvidence.NormalizeSubmission(result);
 
         BrokerCommandLifecycleReceipt receipt;
         try
@@ -424,6 +519,7 @@ public sealed class BrokerCommandCoordinator
             }
         }
 
+        receivedAt = BrokerCommandLifecycleEvidence.NormalizeUtcTimestamp(receivedAt);
         ValidatedBrokerCommandReconciliation evidence =
             BrokerCommandReconciliationValidator.Validate(claim, observation, receivedAt);
         BrokerCommandLifecycleReceipt receipt;
@@ -474,6 +570,8 @@ public sealed class BrokerCommandCoordinator
         BrokerReconciliationSnapshot snapshot,
         DateTimeOffset receivedAtUtc)
     {
+        receivedAtUtc = BrokerCommandLifecycleEvidence.NormalizeUtcTimestamp(receivedAtUtc);
+        snapshot = BrokerCommandLifecycleEvidence.NormalizeSnapshot(snapshot);
         DateTimeOffset windowStart = snapshot.QueryWindowStartUtc.Offset == TimeSpan.Zero
             ? snapshot.QueryWindowStartUtc
             : claim.QueryWindowStartUtc;
@@ -499,6 +597,7 @@ public sealed class BrokerCommandCoordinator
         DateTimeOffset observedAtUtc,
         string code)
     {
+        observedAtUtc = BrokerCommandLifecycleEvidence.NormalizeUtcTimestamp(observedAtUtc);
         var failure = new BrokerReconciliationFailureDocument(
             claim.Command.Command.CommandId,
             claim.Command.AuthorizationSha256,
@@ -520,8 +619,23 @@ public sealed class BrokerCommandCoordinator
         AuthorizedBrokerCommand capability,
         DateTimeOffset receivedAtUtc)
     {
+        if (result?.Disposition is GatewayCommandDisposition.Rejected
+            or GatewayCommandDisposition.SubmissionDisabled)
+        {
+            return new GatewaySendResult(
+                GatewayCommandDisposition.Unknown,
+                "broker_command_gateway_outcome_unproven",
+                null,
+                null,
+                null,
+                receivedAtUtc,
+                false);
+        }
+
         if (result is null
-            || !ValidCode(result.Code)
+            || result.Disposition is not (GatewayCommandDisposition.Accepted
+                or GatewayCommandDisposition.Unknown)
+            || !BrokerCommandLifecycleEvidence.IsCanonicalCode(result.Code)
             || result.ObservedAtUtc.Offset != TimeSpan.Zero
             || result.ObservedAtUtc < capability.Command.CreatedAtUtc
             || result.ObservedAtUtc > receivedAtUtc
@@ -547,10 +661,11 @@ public sealed class BrokerCommandCoordinator
                 null,
                 null,
                 null,
-                receivedAtUtc);
+                receivedAtUtc,
+                false);
         }
 
-        return result;
+        return result with { PreInvocationNotSentProven = false };
     }
 
     private CancellationTokenSource DurableWriteToken()
@@ -605,6 +720,55 @@ public sealed class BrokerCommandCoordinator
             ? currentAuthorityUtc
             : fallbackUtc;
 
+    private bool TryGetElapsedTime(long startedTimestamp, out TimeSpan elapsed)
+    {
+        try
+        {
+            elapsed = timeProvider.GetElapsedTime(
+                startedTimestamp,
+                timeProvider.GetTimestamp());
+            return elapsed >= TimeSpan.Zero && elapsed <= TimeSpan.FromHours(1);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            elapsed = TimeSpan.Zero;
+            return false;
+        }
+        catch (OverflowException)
+        {
+            elapsed = TimeSpan.Zero;
+            return false;
+        }
+    }
+
+    private GatewaySendResult GatewayTimeoutUnknown(
+        BrokerCommandDispatchClaim claim,
+        long dispatchClaimStartedTimestamp,
+        DateTimeOffset fallbackUtc) => new(
+            GatewayCommandDisposition.Unknown,
+            "broker_command_gateway_timeout_unknown",
+            null,
+            null,
+            null,
+            ConservativeAuthorityNowOr(
+                claim.AuthorityNowUtc,
+                dispatchClaimStartedTimestamp,
+                fallbackUtc),
+            false);
+
+    private static async Task ObserveGatewayCompletionAsync(Task<GatewaySendResult> send)
+    {
+        try
+        {
+            await send.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The durable outcome is already Unknown. Observation prevents an
+            // eventual fault from escaping through the unobserved-task channel.
+        }
+    }
+
     private static void EnsureContext(TenantExecutionContext context, Guid commandId)
     {
         if (context.CorrelationId != commandId)
@@ -637,14 +801,8 @@ public sealed class BrokerCommandCoordinator
 
     private static TimeSpan Min(params TimeSpan[] values) => values.Min();
 
-    private static bool ValidCode(string? value) =>
-        value is { Length: >= 1 and <= 200 }
-        && value == value.Trim()
-        && value.All(character => char.IsAsciiLetterOrDigit(character)
-            || character is '_' or '-' or '.' or ':');
-
     private static bool ValidOptionalBrokerId(string? value) =>
-        value is null || value is { Length: >= 1 and <= 200 } && value == value.Trim();
+        value is null || BrokerCommandLifecycleEvidence.IsCanonicalBoundedText(value, 200);
 
     private sealed record BrokerReconciliationFailureDocument(
         Guid CommandId,

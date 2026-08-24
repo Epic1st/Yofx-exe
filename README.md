@@ -4,6 +4,11 @@ This repository contains the staged YO4X control plane, runtime boundaries, Post
 
 Only the U0/A0-A3 safety foundation is active. The code does **not** authorize live trading, local execution, public registration, general semantic MQ5 conversion, arbitrary broker orders, or production gateway use. The supplied MQL5 corpus is treated as untrusted private source: static inventory and immutable persistence are supported, but a file is never described as converted, compiled, or runtime-proven without the corresponding evidence.
 
+PostgreSQL currently uses an explicit pre-release greenfield baseline. See
+[`docs/backend/POSTGRESQL_BASELINE_POLICY.md`](docs/backend/POSTGRESQL_BASELINE_POLICY.md)
+for checksum immutability, fail-closed startup, and operator backup/reset or
+staged-upgrade requirements.
+
 ## Prerequisites
 
 - .NET SDK 10.0.400 or a compatible 10.0 patch.
@@ -58,10 +63,16 @@ tests/                Domain, architecture, API, runtime, and PostgreSQL tests
 docs/decisions/       Implementation decisions and unresolved provider choices
 ```
 
-The deterministic corpus report is at `docs/backend/MQ5_COMPATIBILITY_REPORT.md`; its machine-readable per-file manifest is `docs/backend/mq5-static-manifest.v1.json`. The checked corpus contains 198 exact `.mq5`/`.mqh` files (13,100,995 bytes). All 198 remain explicitly unproven for semantic conversion, compilation, and runtime behavior.
+The deterministic corpus report is at `docs/backend/MQ5_COMPATIBILITY_REPORT.md`; its machine-readable per-file manifest is `docs/backend/mq5-static-manifest.v1.json`. The checked corpus contains 198 exact byte-preserved `.mq5`/`.mqh` files (166 programs and 32 headers; 12,979,438 bytes) under corpus SHA-256 `9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47`. Static dispositions are 68 `NeedsSemanticValidation`, 3 `NeedsSource`, and 127 `Unsupported`. The separate conversion-evidence pass classifies 30 as awaiting isolated type-check, 1 as all-NUL source, 1 as binary source, 37 as blocked on external dependency snapshots, 2 as invalid syntax, 6 as missing dependencies, and 121 as unsupported semantics. High-confidence secrets are rejected before analysis, artifact generation, compilation planning, or persistence. Full grammar, type-check, restricted-IR lowering, semantic conversion, MetaEditor compilation, reference-parity, and runtime proof counts are all zero.
 
-The supplied vendor dependency is pinned from `mt5-net-api-full-binaries-main/mt5api.dll`. It is used only as a compile-time reference by the MT5 adapter, is not copied to application output, and is not executed by the build or test suite. See `docs/backend/MT5_VENDOR_ARTIFACT_U0.md` for the exact artifact inventory and unresolved release gates.
+The supplied vendor dependency is pinned from `mt5-net-api-full-binaries-main/mt5api.dll`. It is used only as a compile-time reference by the MT5 adapter, is not copied to application output, and is not executed by the build or test suite. The credential-bearing vendor example is deleted from the current tree, but its historical credentials remain an external rotation/history-remediation release blocker. The current v4 host probe is an unsigned, non-executing observation and reports `isolated_runner_not_configured`; it does not authorize compilation or supplied-MQL execution. See `docs/backend/MT5_VENDOR_ARTIFACT_U0.md` for the exact artifact inventory and unresolved release gates.
+
+The local Windows credential boundary can import explicitly approved demo credentials into a user-bound DPAPI vault and emit v3 destination/tool-bound evidence, but GatewayHost cannot consume that vault. The ignored host-local replay evidence is not broker-login evidence and never authorizes a command. See `docs/backend/LOCAL_MT5_CREDENTIAL_BOUNDARY.md`.
+
+The durable broker-command schema, least-privilege gateway lifecycle role, coordinator, one-shot GatewayHost composition, and authenticated one-request child-process transport are implemented as a proof-only boundary. GatewayHost does not reference the MT5 adapter; the child currently composes only a no-vendor-call proof executor. Production broker-command authorization is hard-disabled, GatewayHost seals `SubmissionEnabled` false, and production reconciliation persists no conclusive terminal broker outcome. See `docs/backend/DURABLE_BROKER_COMMAND_PIPELINE.md`.
 
 No application starts with fabricated business data. The frontend's visual fixture is development/test-only, requires an explicit query flag, and is excluded from production data loading.
 
-The latest verified local evidence is recorded in `docs/backend/IMPLEMENTATION_STATUS.md`: a warning-free Release build, all 385 unique .NET test cases green in their required environments (including 18/18 on disposable PostgreSQL 18.6), 13/13 frontend tests, clean TypeScript and production builds, and zero known NuGet/npm audit findings. These results do not claim an MT5 login or trade; the broker gateway remains deliberately submission-disabled until the documented isolation, licence, secret-provider, semantic-parity, and runtime-risk gates are satisfied.
+Fresh full-tree verification (2026-08-23, this working tree): the Release solution builds with zero warnings and zero errors; the thirteen xUnit v3 suites pass 1,101 tests; a fresh disposable PostgreSQL 18 integration pass runs 100 tests; frontend TypeScript checks, vitest, production build, and npm audit are all green. Direct and transitive NuGet audits report no known vulnerable or deprecated packages. The complete evidence table, refreshed baseline pins, and the open external blocker list are recorded in `docs/backend/CLOSURE_LEDGER_2026-08-23.md`.
+
+Frontend verification independently passes TypeScript, 6 test files with 89 tests, the 43-module production build, and a zero-vulnerability npm audit. None of this evidence claims an MT5 login, strategy execution, or trade; the broker gateway remains deliberately submission-disabled until the documented isolation, licence, secret-provider, semantic-parity, trusted-risk-authority, authenticated-reconciliation, and runtime-containment gates are satisfied.

@@ -29,8 +29,8 @@ export interface DashboardApiPayload {
   readonly notices: readonly string[];
 }
 
-const successDeploymentStates = new Set(['READY', 'STARTING', 'RECONCILING', 'RUNNING']);
 const blockedDeploymentStates = new Set(['FAULTED', 'FENCED', 'EXPIRED', 'REVOKED']);
+const inactiveDeploymentStates = new Set(['DRAFT', 'STOPPED']);
 
 function words(value: string): string {
   const normalized = value.replaceAll('_', ' ').trim().toLowerCase();
@@ -48,24 +48,34 @@ function accountMetric(
     return { id: 'account', label: 'Broker account', value: 'Live blocked', tone: 'danger', icon: 'bank' };
   }
   if (credential?.state === 'READY') {
-    return { id: 'account', label: 'Broker account', value: 'MT5 demo connected', tone: 'success', icon: 'bank' };
+    return { id: 'account', label: 'Broker account', value: 'Demo credential ready', tone: 'success', icon: 'bank' };
   }
   return { id: 'account', label: 'Broker account', value: 'Credential not ready', tone: 'warning', icon: 'bank' };
 }
 
+function accountEnvironmentLabel(account: BrokerAccountView | null): string {
+  if (account?.environment === 'DEMO') {
+    return 'Demo environment';
+  }
+  if (account?.environment === 'LIVE') {
+    return 'Live environment — blocked';
+  }
+  return 'Environment not selected';
+}
+
 function deploymentMetric(deployment: DeploymentView | null): SummaryMetric {
   if (!deployment) {
-    return { id: 'deployment', label: 'Deployment', value: 'Not selected', tone: 'neutral', icon: 'rocket' };
+    return { id: 'deployment', label: 'Desired state', value: 'Not selected', tone: 'neutral', icon: 'rocket' };
   }
   const desiredState = deployment.desiredState;
   return {
     id: 'deployment',
-    label: 'Deployment',
+    label: 'Desired state',
     value: words(desiredState),
-    tone: successDeploymentStates.has(desiredState)
-      ? 'success'
-      : blockedDeploymentStates.has(desiredState)
-        ? 'danger'
+    tone: blockedDeploymentStates.has(desiredState)
+      ? 'danger'
+      : inactiveDeploymentStates.has(desiredState)
+        ? 'neutral'
         : 'warning',
     icon: 'rocket',
   };
@@ -263,7 +273,7 @@ export function toDashboardSnapshot(payload: DashboardApiPayload): DashboardSnap
   const summary: readonly SummaryMetric[] = [
     accountMetric(payload.brokerAccount, payload.credentialState),
     {
-      id: 'strategies', label: 'Strategies analyzed', icon: 'file',
+      id: 'strategies', label: 'Static inventory', icon: 'file',
       value: analyzed === undefined ? 'Not projected' : `${analyzed} files`,
       tone: analyzed === undefined ? 'neutral' : 'success',
     },
@@ -279,7 +289,7 @@ export function toDashboardSnapshot(payload: DashboardApiPayload): DashboardSnap
   return {
     source: 'control-plane',
     user: { displayName: payload.user.maskedEmail, secondaryLabel: words(payload.user.assurance) },
-    environmentLabel: payload.brokerAccount?.environment === 'DEMO' ? 'Demo environment' : 'Environment not selected',
+    environmentLabel: accountEnvironmentLabel(payload.brokerAccount),
     summary,
     readiness: readinessChecks(payload),
     deploymentContext: deploymentContext(payload),

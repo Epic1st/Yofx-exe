@@ -16,9 +16,77 @@ internal sealed class PostgresUserOperationWorkStore(
     PostgresWorkerTenantCatalog tenantCatalog,
     ControlWorkOptions options,
     OutboxWorkerIdentity workerIdentity,
-    WorkerPolicySignatureTrustStore policyTrustStore) : IUserOperationWorkStore
+    WorkerPolicySignatureTrustStore policyTrustStore,
+    TimeProvider timeProvider) : IUserOperationWorkStore
 {
     private const string DispatchMessageAggregate = "user_operation";
+
+    internal const string BrokerTargetSnapshotSql = """
+        with authority_time as materialized
+        (
+            select clock_timestamp() as authorization_now
+        )
+        select
+            account.row_version, account.state, account.credential_state,
+            account.environment, account.binding_fingerprint,
+            route.deployment_id, route.fence_generation,
+            route.assignment_id, route.worker_node_id, route.lease_expires_at
+        from authority_time
+        cross join operations.broker_accounts as account
+        left join lateral
+        (
+            select
+                deployment.id as deployment_id,
+                deployment.fence_generation,
+                assignment.id as assignment_id,
+                assignment.worker_node_id,
+                assignment.lease_expires_at
+            from operations.deployments as deployment
+            join operations.worker_assignments as assignment
+              on assignment.tenant_id = deployment.tenant_id
+             and assignment.deployment_id = deployment.id
+             and assignment.fence_generation = deployment.fence_generation
+            where deployment.tenant_id = account.tenant_id
+              and deployment.broker_account_id = account.id
+              and (@dispatch_route_deployment_id is null
+                  or deployment.id = @dispatch_route_deployment_id)
+              and (@dispatch_fence_generation is null
+                  or deployment.fence_generation = @dispatch_fence_generation)
+              and (@dispatch_worker_assignment_id is null
+                  or assignment.id = @dispatch_worker_assignment_id)
+              and (@dispatch_worker_instance_id is null
+                  or assignment.worker_node_id = @dispatch_worker_instance_id)
+              and assignment.state = 'active'
+              and assignment.revoked_at is null
+              and assignment.lease_expires_at >
+                  authority_time.authorization_now + @minimum_route_lifetime
+            order by assignment.lease_expires_at desc, assignment.id
+            limit 1
+        ) as route on true
+        where account.tenant_id = @tenant_id and account.id = @target_id
+        """;
+
+    private const string RefreshBacklogObservationSql = """
+        select
+            tenant_id,
+            last_checked_at,
+            oldest_open_created_at,
+            refresh_count,
+            row_version
+        from control.refresh_user_operation_backlog_observation()
+        """;
+
+    private const string AdvanceInvocationTimeoutsSql = """
+        select
+            attempt_id,
+            prior_state,
+            next_state,
+            state_version,
+            receipt_id,
+            occurred_at,
+            reason_code
+        from control.advance_user_operation_invocation_timeouts(@max_rows)
+        """;
 
     public ValueTask<bool> IsAvailableAsync(CancellationToken cancellationToken) =>
         readiness.IsReadyAsync(cancellationToken);
@@ -29,82 +97,370 @@ internal sealed class PostgresUserOperationWorkStore(
     {
         if (!await IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
-            return new ControlWorkCycleResult(0, 0, 0, 0);
+            return new ControlWorkCycleResult(0, 0, 0, 0, false, false);
         }
 
         // The scheduler supplies this for the shared worker interface only;
         // PostgreSQL owns every authorization, freshness, and lifecycle instant.
         _ = now.ToUniversalTime();
-        IReadOnlyList<Guid> tenantIds = await tenantCatalog.GetTenantIdsAsync(cancellationToken)
+        await using WorkerTenantScanLease tenantScan = await tenantCatalog.BeginScanAsync(
+                WorkerTenantScanConsumer.UserOperations,
+                cancellationToken)
             .ConfigureAwait(false);
+        int tenantsVisited = 0;
         int examined = 0;
         int changed = 0;
         int failed = 0;
-        foreach (Guid tenantId in tenantIds)
+        while (true)
         {
-            IReadOnlyList<OperationCandidate> dispatchCandidates = await ReadCandidatesAsync(
+            WorkerTenantScanStep? step = await tenantScan.TryBeginNextAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (step is not { } tenantStep)
+            {
+                break;
+            }
+
+            Guid tenantId = tenantStep.TenantId;
+            tenantsVisited++;
+            try
+            {
+                int advancedTimeouts = await WorkerOperationBoundary.ExecuteAsync(
+                        token => AdvanceInvocationTimeoutsAsync(tenantId, token),
+                        ItemOperationTimeout(),
+                        options.CancellationConfirmationTimeout,
+                        timeProvider,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                examined += advancedTimeouts;
+                changed += advancedTimeouts;
+            }
+            catch (WorkerOperationTerminationUnconfirmedException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (IsRecoverableProcessingFailure(exception))
+            {
+                // A later tenant rotation retries the database-owned timeout
+                // transition. No attempt is retried or invoked from this path.
+                failed++;
+            }
+
+            IReadOnlyList<OperationCandidate> candidates = await ReadCandidatesAsync(
                 tenantId,
-                dispatch: true,
                 cancellationToken).ConfigureAwait(false);
-            foreach (OperationCandidate candidate in dispatchCandidates)
+            foreach (OperationCandidate candidate in candidates)
             {
                 examined++;
                 try
                 {
-                    if (await DispatchAsync(candidate, cancellationToken).ConfigureAwait(false))
+                    bool itemChanged = await WorkerOperationBoundary.ExecuteAsync(
+                            token => candidate.ForDispatch
+                                ? DispatchAsync(candidate, token)
+                                : ReconcileAsync(candidate, token),
+                            ItemOperationTimeout(),
+                            options.CancellationConfirmationTimeout,
+                            timeProvider,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    if (itemChanged)
                     {
                         changed++;
                     }
+                }
+                catch (WorkerOperationTerminationUnconfirmedException)
+                {
+                    // Continuing could overlap an unobserved transaction with
+                    // another claim for the same broker-facing operation.
+                    throw;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     throw;
                 }
+                catch (WorkerOperationTimedOutException)
+                {
+                    failed++;
+                    await TryRecoverCandidateAsync(
+                        candidate,
+                        "operation_processing_timeout",
+                        terminalizePreDispatch: false,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    failed++;
+                    await TryRecoverCandidateAsync(
+                        candidate,
+                        "operation_processing_cancelled",
+                        terminalizePreDispatch: false,
+                        cancellationToken).ConfigureAwait(false);
+                }
                 catch (NpgsqlException)
                 {
                     failed++;
+                    await TryRecoverCandidateAsync(
+                        candidate,
+                        "operation_processing_database_error",
+                        terminalizePreDispatch: false,
+                        cancellationToken).ConfigureAwait(false);
                 }
-                catch (TimeoutException)
+                catch (Exception exception) when (IsDeterministicProcessingFailure(exception))
                 {
                     failed++;
+                    await TryRecoverCandidateAsync(
+                        candidate,
+                        "operation_processing_invalid",
+                        terminalizePreDispatch: candidate.ForDispatch && !candidate.IsProtective,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsRecoverableProcessingFailure(exception))
+                {
+                    failed++;
+                    await TryRecoverCandidateAsync(
+                        candidate,
+                        "operation_processing_error",
+                        terminalizePreDispatch: false,
+                        cancellationToken).ConfigureAwait(false);
                 }
             }
 
-            IReadOnlyList<OperationCandidate> reconciliationCandidates = await ReadCandidatesAsync(
-                tenantId,
-                dispatch: false,
+            await RefreshBacklogObservationAsync(tenantId, cancellationToken).ConfigureAwait(false);
+        }
+
+        bool scanRotationHealthy = await tenantCatalog.IsScanProgressHealthyAsync(
+                WorkerTenantScanConsumer.UserOperations,
+                options.MaximumTenantScanRotationAge,
+                cancellationToken)
+            .ConfigureAwait(false);
+        bool operationBacklogHealthy = await tenantCatalog.IsUserOperationBacklogHealthyAsync(
+                options.MaximumTenantScanRotationAge,
+                options.MaximumOperationBacklogAge,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return new ControlWorkCycleResult(
+            tenantsVisited,
+            examined,
+            changed,
+            failed,
+            scanRotationHealthy,
+            operationBacklogHealthy);
+    }
+
+    private TimeSpan ItemOperationTimeout()
+    {
+        long halfCycleTicks = Math.Max(1, options.OperationTimeout.Ticks / 2);
+        return TimeSpan.FromTicks(Math.Min(options.DependencyTimeout.Ticks, halfCycleTicks));
+    }
+
+    private async Task<int> AdvanceInvocationTimeoutsAsync(
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        await using TenantPostgresTransaction transaction =
+            await database.BeginTenantTransactionAsync(
+                PostgresWorkerTenantCatalog.CreateContext(tenantId, Guid.CreateVersion7()),
                 cancellationToken).ConfigureAwait(false);
-            foreach (OperationCandidate candidate in reconciliationCandidates)
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            AdvanceInvocationTimeoutsSql);
+        command.Parameters.AddWithValue(
+            "max_rows",
+            NpgsqlDbType.Integer,
+            options.InvocationTimeoutBatchSizePerTenant);
+
+        int advanced = 0;
+        var attempts = new HashSet<Guid>();
+        var receipts = new HashSet<Guid>();
+        await using (NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                examined++;
-                try
+                Guid attemptId = reader.GetGuid(0);
+                string priorState = reader.GetString(1);
+                string nextState = reader.GetString(2);
+                long stateVersion = reader.GetInt64(3);
+                Guid receiptId = reader.GetGuid(4);
+                DateTimeOffset occurredAt = reader
+                    .GetFieldValue<DateTimeOffset>(5).ToUniversalTime();
+                string reasonCode = reader.GetString(6);
+                bool validTransition =
+                    priorState is "pending" or "delivered" or "prepared"
+                        && nextState == "not_sent"
+                        && reasonCode is "delivery_authority_expired"
+                            or "redemption_expired_without_authorization"
+                    || priorState == "authorized"
+                        && nextState == "ambiguous"
+                        && reasonCode == "gateway_invocation_receipt_timeout";
+                if (attemptId == Guid.Empty
+                    || receiptId == Guid.Empty
+                    || stateVersion <= 0
+                    || occurredAt == default
+                    || occurredAt.Offset != TimeSpan.Zero
+                    || !validTransition
+                    || !attempts.Add(attemptId)
+                    || !receipts.Add(receiptId)
+                    || ++advanced > options.InvocationTimeoutBatchSizePerTenant)
                 {
-                    if (await ReconcileAsync(candidate, cancellationToken).ConfigureAwait(false))
-                    {
-                        changed++;
-                    }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (NpgsqlException)
-                {
-                    failed++;
-                }
-                catch (TimeoutException)
-                {
-                    failed++;
+                    throw new InvalidOperationException(
+                        "PostgreSQL returned invalid invocation-timeout evidence.");
                 }
             }
         }
 
-        return new ControlWorkCycleResult(tenantIds.Count, examined, changed, failed);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return advanced;
+    }
+
+    private async Task TryRecoverCandidateAsync(
+        OperationCandidate candidate,
+        string processingErrorCode,
+        bool terminalizePreDispatch,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            _ = await WorkerOperationBoundary.ExecuteAsync(
+                    token => RecoverCandidateAsync(
+                        candidate,
+                        processingErrorCode,
+                        terminalizePreDispatch,
+                        token),
+                    ItemOperationTimeout(),
+                    options.CancellationConfirmationTimeout,
+                    timeProvider,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkerOperationTerminationUnconfirmedException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // The cycle is already degraded. A future scan retries the exact
+            // CAS-bound candidate; no untrusted exception detail is persisted.
+        }
+    }
+
+    private async Task<bool> RecoverCandidateAsync(
+        OperationCandidate candidate,
+        string processingErrorCode,
+        bool terminalizePreDispatch,
+        CancellationToken cancellationToken)
+    {
+        Guid claimToken = Guid.CreateVersion7();
+        await using TenantPostgresTransaction transaction =
+            await database.BeginTenantTransactionAsync(
+                PostgresWorkerTenantCatalog.CreateContext(candidate.TenantId, candidate.CorrelationId),
+                cancellationToken).ConfigureAwait(false);
+        await AcquireAuthorityLockAsync(transaction, cancellationToken).ConfigureAwait(false);
+        PersistedOperation? operation = candidate.ForDispatch
+            ? await ClaimForDispatchAsync(
+                transaction,
+                candidate,
+                claimToken,
+                cancellationToken).ConfigureAwait(false)
+            : await ClaimOpenAsync(
+                transaction,
+                candidate,
+                claimToken,
+                cancellationToken).ConfigureAwait(false);
+        if (operation is null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        if (terminalizePreDispatch)
+        {
+            await FinishAsync(
+                transaction,
+                operation,
+                claimToken,
+                "failed",
+                processingErrorCode,
+                null,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            _ = await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                operation.State,
+                processingErrorCode,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    private static bool IsDeterministicProcessingFailure(Exception exception) => exception is
+        InvalidOperationException or
+        ArgumentException or
+        FormatException or
+        OverflowException or
+        JsonException or
+        System.Security.Cryptography.CryptographicException;
+
+    private static bool IsRecoverableProcessingFailure(Exception exception) => exception is not
+        (OutOfMemoryException or
+        AccessViolationException or
+        AppDomainUnloadedException or
+        BadImageFormatException);
+
+    private async Task RefreshBacklogObservationAsync(
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        await using TenantPostgresTransaction transaction =
+            await database.BeginTenantTransactionAsync(
+                PostgresWorkerTenantCatalog.CreateContext(tenantId, Guid.CreateVersion7()),
+                cancellationToken).ConfigureAwait(false);
+        await using NpgsqlCommand command = transaction.CreateCommand(RefreshBacklogObservationSql);
+        await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false))
+        {
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException(
+                    "The user-operation backlog observation was not refreshed.");
+            }
+
+            Guid observedTenantId = reader.GetGuid(0);
+            DateTimeOffset checkedAt = reader.GetFieldValue<DateTimeOffset>(1);
+            DateTimeOffset? oldestEligible = reader.IsDBNull(2)
+                ? null
+                : reader.GetFieldValue<DateTimeOffset>(2);
+            long refreshCount = reader.GetInt64(3);
+            long rowVersion = reader.GetInt64(4);
+            if (observedTenantId != tenantId
+                || checkedAt == default
+                || oldestEligible > checkedAt
+                || refreshCount <= 0
+                || rowVersion <= 0
+                || await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException(
+                    "The user-operation backlog observation was invalid.");
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<OperationCandidate>> ReadCandidatesAsync(
         Guid tenantId,
-        bool dispatch,
         CancellationToken cancellationToken)
     {
         Guid correlationId = Guid.CreateVersion7();
@@ -112,24 +468,62 @@ internal sealed class PostgresUserOperationWorkStore(
             await database.BeginTenantTransactionAsync(
                 PostgresWorkerTenantCatalog.CreateContext(tenantId, correlationId),
                 cancellationToken).ConfigureAwait(false);
-        string states = dispatch
-            ? "(state = 'accepted' or (state = 'dispatching' and claim_expires_at <= clock_timestamp()))"
-            : "(state in ('propagating', 'reconciling', 'unknown') and (claim_token is null or claim_expires_at <= clock_timestamp()))";
-        await using NpgsqlCommand command = transaction.CreateCommand($$"""
-            select id, tenant_id, correlation_id, row_version
-            from control.user_operations
-            where tenant_id = @tenant_id
-              and {{states}}
+        await using NpgsqlCommand command = transaction.CreateCommand("""
+            with work_clock as materialized
+            (
+                select clock_timestamp() as checked_at
+            )
+            select
+                operation.id,
+                operation.tenant_id,
+                operation.correlation_id,
+                operation.row_version,
+                operation.state in ('accepted', 'dispatching') as for_dispatch,
+                operation.operation_type
+            from control.user_operations as operation
+            cross join work_clock
+            where operation.tenant_id = @tenant_id
+              and
+              (
+                  operation.state = 'accepted'
+                  or
+                  (
+                      operation.state = 'dispatching'
+                      and
+                      (
+                          operation.claim_token is null
+                          or operation.claim_expires_at <= work_clock.checked_at
+                      )
+                  )
+                  or
+                  (
+                      operation.state in ('propagating', 'reconciling', 'unknown')
+                      and
+                      (
+                          operation.claim_token is null
+                          or operation.claim_expires_at <= work_clock.checked_at
+                      )
+                  )
+              )
+              and
+              (
+                  operation.next_processing_at is null
+                  or operation.next_processing_at <= work_clock.checked_at
+              )
             order by
-                case operation_type
-                    when 'broker_account.delete' then 0
-                    when 'broker_account.disable' then 1
-                    when 'deployment.stop_after_flat' then 0
-                    when 'deployment.close_only' then 1
-                    else 2
+                case
+                    when operation.operation_type in
+                    (
+                        'broker_account.delete',
+                        'broker_account.disable',
+                        'deployment.stop_after_flat',
+                        'deployment.close_only'
+                    ) then 0
+                    else 1
                 end,
-                created_at,
-                id
+                coalesce(operation.next_processing_at, operation.created_at),
+                operation.created_at,
+                operation.id
             limit @batch_size
             """);
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, tenantId);
@@ -143,7 +537,9 @@ internal sealed class PostgresUserOperationWorkStore(
                     reader.GetGuid(0),
                     reader.GetGuid(1),
                     reader.GetGuid(2),
-                    reader.GetInt64(3)));
+                    reader.GetInt64(3),
+                    reader.GetBoolean(4),
+                    reader.GetString(5)));
             }
         }
 
@@ -152,6 +548,284 @@ internal sealed class PostgresUserOperationWorkStore(
     }
 
     private async Task<bool> DispatchAsync(
+        OperationCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        Guid claimToken = Guid.CreateVersion7();
+        await using TenantPostgresTransaction transaction =
+            await database.BeginTenantTransactionAsync(
+                PostgresWorkerTenantCatalog.CreateContext(
+                    candidate.TenantId,
+                    candidate.CorrelationId),
+                cancellationToken).ConfigureAwait(false);
+        await AcquireAuthorityLockAsync(transaction, cancellationToken).ConfigureAwait(false);
+        PersistedOperation? operation = await ClaimForDispatchAsync(
+            transaction,
+            candidate,
+            claimToken,
+            cancellationToken).ConfigureAwait(false);
+        if (operation is null)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        TargetSnapshot? snapshot = await ReadTargetSnapshotAsync(
+            transaction,
+            operation,
+            cancellationToken).ConfigureAwait(false);
+        if (snapshot is null)
+        {
+            await FinishAsync(
+                transaction,
+                operation,
+                claimToken,
+                "failed",
+                "dispatch_target_missing",
+                null,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (!UserOperationDispatchGuard.IsCurrent(
+            operation.OperationType,
+            operation.RequestedTargetState,
+            operation.SubmittedResourceVersion,
+            snapshot.ResourceVersion,
+            snapshot.DispatchComparableState))
+        {
+            await FinishAsync(
+                transaction,
+                operation,
+                claimToken,
+                "cancelled",
+                "operation_superseded_before_dispatch",
+                null,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (UserOperationDispatchGuard.ShouldExpireBeforeDispatch(
+            operation.OperationType,
+            operation.CreatedAt,
+            operation.AuthorizationNow,
+            options.OperationExpiresAfter))
+        {
+            await FinishAsync(
+                transaction,
+                operation,
+                claimToken,
+                "expired",
+                "operation_expired_before_dispatch",
+                null,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (!UserOperationDispatchGuard.HasCompleteRoute(
+            snapshot.RouteDeploymentId,
+            snapshot.FenceGeneration,
+            snapshot.WorkerAssignmentId,
+            snapshot.WorkerInstanceId))
+        {
+            _ = await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                "dispatching",
+                candidate.IsProtective ? "protective_dispatch_route_pending" : null,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        DispatchPolicyDecision policy = await EvaluateDispatchPolicyAsync(
+            transaction,
+            operation,
+            cancellationToken).ConfigureAwait(false);
+        if (!policy.Allowed)
+        {
+            await FinishAsync(
+                transaction,
+                operation,
+                claimToken,
+                "cancelled",
+                policy.ErrorCode ?? "dispatch_policy_restricted",
+                null,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        InvocationAttemptCreation? creation = await CreateInvocationAttemptAsync(
+            transaction,
+            operation,
+            claimToken,
+            snapshot,
+            cancellationToken).ConfigureAwait(false);
+        if (creation is null)
+        {
+            _ = await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                "dispatching",
+                "invocation_attempt_creation_deferred",
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<InvocationAttemptCreation?> CreateInvocationAttemptAsync(
+        TenantPostgresTransaction transaction,
+        PersistedOperation operation,
+        Guid claimToken,
+        TargetSnapshot? expectedRoute,
+        CancellationToken cancellationToken)
+    {
+        Guid attemptId = Guid.CreateVersion7();
+        Guid dispatchMessageId = Guid.CreateVersion7();
+        Guid auditEventId = Guid.CreateVersion7();
+        string resultCapability = CreateResultCapability();
+        string deliveryCapability;
+        do
+        {
+            deliveryCapability = CreateResultCapability();
+        }
+        while (string.Equals(
+            deliveryCapability,
+            resultCapability,
+            StringComparison.Ordinal));
+
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            """
+            select
+                creation_status,
+                attempt_id,
+                dispatch_message_id,
+                attempt_number,
+                command_sha256,
+                execute_not_after,
+                result_capability_expires_at,
+                route_deployment_id,
+                fence_generation,
+                worker_assignment_id,
+                worker_instance_id
+            from control.create_user_operation_invocation_attempt(
+                @attempt_id,
+                @operation_id,
+                @claim_token,
+                @expected_row_version,
+                @dispatch_message_id,
+                @audit_event_id,
+                @raw_result_capability,
+                @raw_delivery_capability,
+                @requested_invocation_window,
+                @requested_result_lifetime,
+                @proof_margin)
+            """);
+        command.Parameters.AddWithValue("attempt_id", NpgsqlDbType.Uuid, attemptId);
+        command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operation.Id);
+        command.Parameters.AddWithValue("claim_token", NpgsqlDbType.Uuid, claimToken);
+        command.Parameters.AddWithValue(
+            "expected_row_version",
+            NpgsqlDbType.Bigint,
+            operation.RowVersion);
+        command.Parameters.AddWithValue(
+            "dispatch_message_id",
+            NpgsqlDbType.Uuid,
+            dispatchMessageId);
+        command.Parameters.AddWithValue("audit_event_id", NpgsqlDbType.Uuid, auditEventId);
+        command.Parameters.AddWithValue(
+            "raw_result_capability",
+            NpgsqlDbType.Text,
+            resultCapability);
+        command.Parameters.AddWithValue(
+            "raw_delivery_capability",
+            NpgsqlDbType.Text,
+            deliveryCapability);
+        command.Parameters.AddWithValue(
+            "requested_invocation_window",
+            NpgsqlDbType.Interval,
+            options.DispatchExecutionWindow);
+        command.Parameters.AddWithValue(
+            "requested_result_lifetime",
+            NpgsqlDbType.Interval,
+            options.ResultCapabilityLifetime);
+        command.Parameters.AddWithValue(
+            "proof_margin",
+            NpgsqlDbType.Interval,
+            options.AssignmentProofMargin);
+
+        await using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        string status = reader.GetString(0);
+        Guid persistedAttemptId = reader.GetGuid(1);
+        Guid persistedDispatchMessageId = reader.GetGuid(2);
+        int attemptNumber = reader.GetInt32(3);
+        string commandSha256 = reader.GetString(4);
+        DateTimeOffset executeNotAfter = reader
+            .GetFieldValue<DateTimeOffset>(5).ToUniversalTime();
+        DateTimeOffset resultCapabilityExpiresAt = reader
+            .GetFieldValue<DateTimeOffset>(6).ToUniversalTime();
+        Guid routeDeploymentId = reader.GetGuid(7);
+        long fenceGeneration = reader.GetInt64(8);
+        Guid workerAssignmentId = reader.GetGuid(9);
+        Guid workerInstanceId = reader.GetGuid(10);
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            || status is not ("created" or "duplicate")
+            || persistedAttemptId != attemptId
+            || persistedDispatchMessageId != dispatchMessageId
+            || attemptNumber <= 0
+            || !IsSha256(commandSha256)
+            || executeNotAfter <= operation.AuthorizationNow
+            || resultCapabilityExpiresAt <= executeNotAfter
+            || resultCapabilityExpiresAt - operation.AuthorizationNow > TimeSpan.FromHours(24)
+            || routeDeploymentId == Guid.Empty
+            || fenceGeneration <= 0
+            || workerAssignmentId == Guid.Empty
+            || workerInstanceId == Guid.Empty
+            || expectedRoute is not null
+                && (expectedRoute.RouteDeploymentId != routeDeploymentId
+                    || expectedRoute.FenceGeneration != fenceGeneration
+                    || expectedRoute.WorkerAssignmentId != workerAssignmentId
+                    || expectedRoute.WorkerInstanceId != workerInstanceId))
+        {
+            throw new InvalidOperationException(
+                "PostgreSQL returned invalid invocation-attempt creation evidence.");
+        }
+
+        return new InvocationAttemptCreation(
+            status,
+            persistedAttemptId,
+            persistedDispatchMessageId,
+            attemptNumber,
+            commandSha256,
+            executeNotAfter,
+            resultCapabilityExpiresAt,
+            routeDeploymentId,
+            fenceGeneration,
+            workerAssignmentId,
+            workerInstanceId);
+    }
+
+    /// <summary>
+    /// Retained only to keep the pre-v4 implementation inspectable while the
+    /// immutable baseline remains supported. No active worker path calls it.
+    /// </summary>
+    private async Task<bool> DispatchLegacyV3Async(
         OperationCandidate candidate,
         CancellationToken cancellationToken)
     {
@@ -209,27 +883,41 @@ internal sealed class PostgresUserOperationWorkStore(
             return true;
         }
 
+        // Expiry is authoritative only before the first durable handoff. Once
+        // an outbox message exists, execution may be ambiguous and the
+        // operation must remain reconcilable. Protective intent never expires
+        // merely because routing or proof is delayed.
+        if (UserOperationDispatchGuard.ShouldExpireBeforeDispatch(
+            operation.OperationType,
+            operation.CreatedAt,
+            operation.AuthorizationNow,
+            options.OperationExpiresAfter))
+        {
+            await FinishAsync(
+                transaction,
+                operation,
+                claimToken,
+                "expired",
+                "operation_expired_before_dispatch",
+                null,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
         if (!UserOperationDispatchGuard.HasCompleteRoute(
             snapshot.RouteDeploymentId,
             snapshot.FenceGeneration,
             snapshot.WorkerAssignmentId,
             snapshot.WorkerInstanceId))
         {
-            if (UserOperationDispatchGuard.RouteWaitExpired(
-                operation.CreatedAt,
-                operation.AuthorizationNow,
-                options.OperationExpiresAfter))
-            {
-                await FinishAsync(
-                    transaction,
-                    operation,
-                    claimToken,
-                    "expired",
-                    "dispatch_route_timeout",
-                    null,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
+            _ = await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                "dispatching",
+                candidate.IsProtective ? "protective_dispatch_route_pending" : null,
+                cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return false;
         }
@@ -252,7 +940,55 @@ internal sealed class PostgresUserOperationWorkStore(
             return true;
         }
 
-        DateTimeOffset dispatchNow = operation.AuthorizationNow;
+        DateTimeOffset dispatchNow = await ReadAuthorityNowAsync(transaction, cancellationToken)
+            .ConfigureAwait(false);
+        if (UserOperationDispatchGuard.ShouldExpireBeforeDispatch(
+            operation.OperationType,
+            operation.CreatedAt,
+            dispatchNow,
+            options.OperationExpiresAfter))
+        {
+            await FinishAsync(
+                transaction,
+                operation,
+                claimToken,
+                "expired",
+                "operation_expired_before_dispatch",
+                null,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        DateTimeOffset assignmentLeaseExpiresAt = snapshot.AssignmentLeaseExpiresAt
+            ?? throw new InvalidOperationException(
+                "A complete dispatch route did not carry its assignment lease.");
+        string resultCapability = CreateResultCapability();
+        string resultCapabilitySha256 = Sha256Utf8(resultCapability);
+        DateTimeOffset resultCapabilityExpiresAt =
+            dispatchNow + options.ResultCapabilityLifetime;
+        DateTimeOffset executionDeadline = Earliest(
+            dispatchNow + options.DispatchExecutionWindow,
+            resultCapabilityExpiresAt,
+            assignmentLeaseExpiresAt);
+        if (!UserOperationDispatchGuard.IsProtective(operation.OperationType))
+        {
+            executionDeadline = Earliest(
+                executionDeadline,
+                operation.CreatedAt + options.OperationExpiresAfter);
+        }
+        if (executionDeadline <= dispatchNow)
+        {
+            _ = await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                "dispatching",
+                "dispatch_execution_window_unavailable",
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
 
         UserOperationDispatchEnvelope envelope = UserOperationDispatchEnvelope.Create(
             operation.Id,
@@ -277,8 +1013,12 @@ internal sealed class PostgresUserOperationWorkStore(
             operation.PolicyInputSha256,
             policy.EvaluationEvidenceSha256,
             policy.SnapshotSha256,
+            resultCapability,
             operation.CreatedAt,
-            dispatchNow);
+            dispatchNow,
+            resultCapabilityExpiresAt,
+            assignmentLeaseExpiresAt,
+            executionDeadline);
         OutboxMessage dispatchMessage = OutboxMessage.Create(
             operation.TenantId,
             envelope.MessageType,
@@ -301,7 +1041,10 @@ internal sealed class PostgresUserOperationWorkStore(
             PolicySnapshotSha256 = policy.SnapshotSha256,
             snapshot.FenceGeneration,
             snapshot.WorkerAssignmentId,
-            snapshot.WorkerInstanceId
+            snapshot.WorkerInstanceId,
+            AssignmentLeaseExpiresAt = assignmentLeaseExpiresAt,
+            ExecutionDeadline = executionDeadline,
+            ResultCapabilityExpiresAt = resultCapabilityExpiresAt
         };
         AuditEvent audit = AuditEvent.Create(
             operation.TenantId,
@@ -334,6 +1077,10 @@ internal sealed class PostgresUserOperationWorkStore(
                 dispatch_worker_instance_id = @dispatch_worker_instance_id,
                 dispatch_target_binding_sha256 = @dispatch_target_binding_sha256,
                 dispatch_policy_snapshot_sha256 = @dispatch_policy_snapshot_sha256,
+                result_capability_sha256 = @result_capability_sha256,
+                result_capability_expires_at = @result_capability_expires_at,
+                dispatch_assignment_lease_expires_at = @dispatch_assignment_lease_expires_at,
+                dispatch_execution_deadline = @dispatch_execution_deadline,
                 dispatch_attempts = dispatch_attempts + 1,
                 dispatched_at = @dispatched_at,
                 claimed_by = null,
@@ -373,6 +1120,22 @@ internal sealed class PostgresUserOperationWorkStore(
             "dispatch_policy_snapshot_sha256",
             NpgsqlDbType.Text,
             policy.SnapshotSha256);
+        settle.Parameters.AddWithValue(
+            "result_capability_sha256",
+            NpgsqlDbType.Text,
+            resultCapabilitySha256);
+        settle.Parameters.AddWithValue(
+            "result_capability_expires_at",
+            NpgsqlDbType.TimestampTz,
+            resultCapabilityExpiresAt);
+        settle.Parameters.AddWithValue(
+            "dispatch_assignment_lease_expires_at",
+            NpgsqlDbType.TimestampTz,
+            assignmentLeaseExpiresAt);
+        settle.Parameters.AddWithValue(
+            "dispatch_execution_deadline",
+            NpgsqlDbType.TimestampTz,
+            executionDeadline);
         settle.Parameters.AddWithValue("dispatched_at", NpgsqlDbType.TimestampTz, dispatchNow);
         settle.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, operation.TenantId);
         settle.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operation.Id);
@@ -408,96 +1171,34 @@ internal sealed class PostgresUserOperationWorkStore(
             return false;
         }
 
+        InvocationAttemptReconciliation? invocation =
+            await ReconcileInvocationAttemptAsync(
+                transaction,
+                operation,
+                claimToken,
+                cancellationToken).ConfigureAwait(false);
+        if (invocation is not null)
+        {
+            bool invocationChanged = await HandleInvocationReconciliationAsync(
+                transaction,
+                operation,
+                claimToken,
+                invocation,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return invocationChanged;
+        }
+
         string? dispatchState = await ReadDispatchStateAsync(transaction, operation, cancellationToken)
             .ConfigureAwait(false);
-        if (dispatchState is null)
-        {
-            await FinishAsync(
-                transaction,
-                operation,
-                claimToken,
-                "failed",
-                "dispatch_evidence_missing",
-                null,
-                cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (dispatchState == "dead_letter")
-        {
-            await FinishAsync(
-                transaction,
-                operation,
-                claimToken,
-                "failed",
-                "dispatch_dead_lettered",
-                null,
-                cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (dispatchState != "published")
-        {
-            string nextState = AgeState(operation);
-            await FinishAsync(
-                transaction,
-                operation,
-                claimToken,
-                nextState,
-                nextState == "expired" ? "dispatch_timeout" : null,
-                null,
-                cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return nextState != operation.State;
-        }
-
-        TargetSnapshot? currentTarget = await ReadTargetSnapshotAsync(
-            transaction,
-            operation,
-            cancellationToken).ConfigureAwait(false);
-        if (currentTarget is null
-            || operation.DispatchTargetBindingSha256 is null
-            || !UserOperationDispatchGuard.IsReconciliationBindingCurrent(
-                operation.OperationType,
-                operation.RequestedTargetState,
-                operation.SubmittedResourceVersion,
-                currentTarget.ResourceVersion,
-                currentTarget.DispatchComparableState,
-                operation.DispatchFenceGeneration,
-                currentTarget.FenceGeneration,
-                operation.DispatchWorkerAssignmentId,
-                operation.DispatchWorkerInstanceId,
-                operation.DispatchRouteDeploymentId,
-                currentTarget.RouteDeploymentId,
-                currentTarget.WorkerAssignmentId,
-                currentTarget.WorkerInstanceId,
-                operation.DispatchTargetBindingSha256,
-                CanonicalJson.Sha256(currentTarget.RedactedBinding)))
-        {
-            await FinishAsync(
-                transaction,
-                operation,
-                claimToken,
-                "cancelled",
-                "operation_superseded_after_dispatch",
-                null,
-                cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
         PersistedProof? proof = operation.TargetType == "deployment"
             ? await ReadDeploymentProofAsync(
                 transaction,
                 operation,
-                currentTarget,
                 cancellationToken).ConfigureAwait(false)
             : await ReadBrokerProofAsync(
                 transaction,
                 operation,
-                currentTarget,
                 cancellationToken).ConfigureAwait(false);
         if (operation.TargetType == "broker_account"
             && proof is { Outcome: "succeeded", BrokerResultId: not null }
@@ -507,32 +1208,455 @@ internal sealed class PostgresUserOperationWorkStore(
                 proof.BrokerResultId.Value,
                 cancellationToken).ConfigureAwait(false))
         {
-            proof = new PersistedProof(
-                "unknown",
-                "broker_projection_conflict",
-                proof.Reference,
-                proof.WorkerAssignmentId,
-                proof.WorkerInstanceId,
-                proof.BrokerResultId);
-        }
-        string next = proof?.Outcome ?? AgeState(operation, published: true);
-        string? errorCode = proof?.ErrorCode;
-        if (proof is null && next == "expired")
-        {
-            errorCode = "reconciliation_timeout";
+            proof = proof with
+            {
+                Outcome = "partial",
+                ErrorCode = "broker_projection_conflict"
+            };
         }
 
-        await FinishAsync(
+        bool conclusiveProof = proof?.Outcome is "succeeded" or "partial";
+        string next;
+        if (conclusiveProof)
+        {
+            next = proof!.Outcome;
+            await FinishAsync(
+                transaction,
+                operation,
+                claimToken,
+                next,
+                proof.ErrorCode,
+                proof.Reference,
+                cancellationToken,
+                proof).ConfigureAwait(false);
+        }
+        else
+        {
+            string? challengeStatus = await TryIssueLegacyReconciliationChallengeAsync(
+                transaction,
+                operation,
+                cancellationToken).ConfigureAwait(false);
+            bool challengeActive = challengeStatus is not null;
+            bool published = string.Equals(dispatchState, "published", StringComparison.Ordinal);
+            string? processingError = dispatchState switch
+            {
+                null => "dispatch_transport_binding_missing",
+                "dead_letter" => "dispatch_delivery_ambiguous",
+                _ when challengeStatus == "issued" => "reconciliation_challenge_issued",
+                _ => proof?.ErrorCode
+            };
+            next = challengeActive
+                ? "reconciling"
+                : dispatchState is null or "dead_letter"
+                ? "unknown"
+                : AwaitingProofState(operation, published);
+            _ = await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                next,
+                processingError,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return next != operation.State;
+    }
+
+    private static async Task<InvocationAttemptReconciliation?>
+        ReconcileInvocationAttemptAsync(
+            TenantPostgresTransaction transaction,
+            PersistedOperation operation,
+            Guid claimToken,
+            CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            """
+            select
+                reconciliation_status,
+                attempt_id,
+                attempt_number,
+                attempt_state,
+                attempt_state_version,
+                proof_source,
+                outcome,
+                observation_sha256,
+                observed_at,
+                received_at,
+                result_id,
+                result_record_id,
+                request_sha256,
+                route_deployment_id,
+                fence_generation,
+                worker_assignment_id,
+                worker_instance_id
+            from control.reconcile_user_operation_invocation_attempt(
+                @operation_id,
+                @claim_token,
+                @expected_row_version)
+            """);
+        command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operation.Id);
+        command.Parameters.AddWithValue("claim_token", NpgsqlDbType.Uuid, claimToken);
+        command.Parameters.AddWithValue(
+            "expected_row_version",
+            NpgsqlDbType.Bigint,
+            operation.RowVersion);
+
+        await using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        string status = reader.GetString(0);
+        Guid attemptId = reader.GetGuid(1);
+        int attemptNumber = reader.GetInt32(2);
+        string attemptState = reader.GetString(3);
+        long stateVersion = reader.GetInt64(4);
+        string? proofSource = ReadNullableString(reader, 5);
+        string? outcome = ReadNullableString(reader, 6);
+        string? observationSha256 = ReadNullableString(reader, 7);
+        DateTimeOffset? observedAt = reader.IsDBNull(8)
+            ? null
+            : reader.GetFieldValue<DateTimeOffset>(8).ToUniversalTime();
+        DateTimeOffset? receivedAt = reader.IsDBNull(9)
+            ? null
+            : reader.GetFieldValue<DateTimeOffset>(9).ToUniversalTime();
+        Guid? resultId = reader.IsDBNull(10) ? null : reader.GetGuid(10);
+        Guid? resultRecordId = reader.IsDBNull(11) ? null : reader.GetGuid(11);
+        string? requestSha256 = ReadNullableString(reader, 12);
+        Guid routeDeploymentId = reader.GetGuid(13);
+        long fenceGeneration = reader.GetInt64(14);
+        Guid workerAssignmentId = reader.GetGuid(15);
+        Guid workerInstanceId = reader.GetGuid(16);
+
+        bool conclusive = status is
+            "conclusive_result" or "conclusive_gateway_receipt";
+        bool commonConclusiveEvidenceValid = outcome is "succeeded" or "diverged"
+            && IsSha256(observationSha256)
+            && observedAt is not null
+            && receivedAt is not null
+            && receivedAt.Value >= observedAt.Value;
+        bool conclusiveEvidenceValid = !conclusive
+            || commonConclusiveEvidenceValid
+                && (status == "conclusive_result"
+                    ? (proofSource is
+                            "gateway_result_v5" or "reconciliation_result_v5")
+                        && resultId is not null
+                        && resultRecordId is not null
+                        && IsSha256(requestSha256)
+                    : proofSource == "gateway_observation_receipt"
+                        && resultId is null
+                        && resultRecordId is null
+                        && requestSha256 is null);
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            || status is not (
+                "conclusive_result" or
+                "conclusive_gateway_receipt" or
+                "not_sent" or
+                "challenge_outstanding" or
+                "awaiting_evidence")
+            || attemptId == Guid.Empty
+            || attemptNumber <= 0
+            || attemptState is not (
+                "pending" or
+                "delivered" or
+                "prepared" or
+                "authorized" or
+                "observed" or
+                "ambiguous" or
+                "not_sent")
+            || stateVersion < 0
+            || routeDeploymentId == Guid.Empty
+            || fenceGeneration <= 0
+            || workerAssignmentId == Guid.Empty
+            || workerInstanceId == Guid.Empty
+            || status == "not_sent" && attemptState != "not_sent"
+            || status == "challenge_outstanding"
+                && attemptState is not ("authorized" or "ambiguous")
+            || !conclusiveEvidenceValid)
+        {
+            throw new InvalidOperationException(
+                "PostgreSQL returned invalid invocation-reconciliation evidence.");
+        }
+
+        return new InvocationAttemptReconciliation(
+            status,
+            attemptId,
+            attemptNumber,
+            attemptState,
+            stateVersion,
+            proofSource,
+            outcome,
+            observationSha256,
+            observedAt,
+            receivedAt,
+            resultId,
+            resultRecordId,
+            requestSha256,
+            routeDeploymentId,
+            fenceGeneration,
+            workerAssignmentId,
+            workerInstanceId);
+    }
+
+    private async Task<bool> HandleInvocationReconciliationAsync(
+        TenantPostgresTransaction transaction,
+        PersistedOperation operation,
+        Guid claimToken,
+        InvocationAttemptReconciliation invocation,
+        CancellationToken cancellationToken)
+    {
+        if (invocation.Status == "not_sent")
+        {
+            if (!UserOperationDispatchGuard.IsProtective(operation.OperationType))
+            {
+                await FinishAsync(
+                    transaction,
+                    operation,
+                    claimToken,
+                    "failed",
+                    "invocation_expired_before_provider_call",
+                    $"invocation-attempt/{invocation.AttemptId:D}",
+                    cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+
+            if (operation.State == "propagating")
+            {
+                return await DeferAsync(
+                    transaction,
+                    operation,
+                    claimToken,
+                    "unknown",
+                    "pre_invocation_not_sent_proven",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            InvocationAttemptCreation? retry = await CreateInvocationAttemptAsync(
+                transaction,
+                operation,
+                claimToken,
+                expectedRoute: null,
+                cancellationToken).ConfigureAwait(false);
+            if (retry is not null)
+            {
+                return true;
+            }
+
+            return await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                operation.State,
+                "protective_invocation_retry_deferred",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (invocation.Status is
+            "conclusive_result" or "conclusive_gateway_receipt")
+        {
+            // Result.v5 currently authenticates invocation/observation but
+            // does not carry the actual target-state fields required for a
+            // truthful broker/deployment projection. Preserve the proof and
+            // keep the operation non-terminal until that strict projection
+            // contract is available.
+            return await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                "reconciling",
+                "invocation_result_projection_required",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (invocation.Status == "challenge_outstanding")
+        {
+            return await DeferAsync(
+                transaction,
+                operation,
+                claimToken,
+                "reconciling",
+                null,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        string? challengeStatus = await TryIssueInvocationReconciliationChallengeAsync(
+            transaction,
+            operation,
+            claimToken,
+            cancellationToken).ConfigureAwait(false);
+        string next = challengeStatus is null
+            ? AwaitingProofState(operation)
+            : "reconciling";
+        return await DeferAsync(
             transaction,
             operation,
             claimToken,
             next,
-            errorCode,
-            proof?.Reference,
-            cancellationToken,
-            proof).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return next != operation.State;
+            challengeStatus == "issued"
+                ? "invocation_reconciliation_challenge_issued"
+                : null,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string?> TryIssueInvocationReconciliationChallengeAsync(
+        TenantPostgresTransaction transaction,
+        PersistedOperation operation,
+        Guid claimToken,
+        CancellationToken cancellationToken)
+    {
+        Guid challengeId = Guid.CreateVersion7();
+        Guid messageId = Guid.CreateVersion7();
+        Guid auditId = Guid.CreateVersion7();
+        string resultCapability = CreateResultCapability();
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            """
+            select
+                challenge_status,
+                challenge_id,
+                challenge_message_id,
+                attempt_id,
+                operation_id,
+                original_dispatch_message_id,
+                issued_at,
+                expires_at,
+                route_deployment_id,
+                fence_generation,
+                worker_assignment_id,
+                worker_instance_id
+            from control.issue_user_operation_invocation_reconciliation_challenge_v3(
+                @operation_id,
+                @claim_token,
+                @expected_row_version,
+                @challenge_id,
+                @challenge_message_id,
+                @audit_event_id,
+                @raw_result_capability,
+                @requested_lifetime)
+            """);
+        command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operation.Id);
+        command.Parameters.AddWithValue("claim_token", NpgsqlDbType.Uuid, claimToken);
+        command.Parameters.AddWithValue(
+            "expected_row_version",
+            NpgsqlDbType.Bigint,
+            operation.RowVersion);
+        command.Parameters.AddWithValue("challenge_id", NpgsqlDbType.Uuid, challengeId);
+        command.Parameters.AddWithValue("challenge_message_id", NpgsqlDbType.Uuid, messageId);
+        command.Parameters.AddWithValue("audit_event_id", NpgsqlDbType.Uuid, auditId);
+        command.Parameters.AddWithValue(
+            "raw_result_capability",
+            NpgsqlDbType.Text,
+            resultCapability);
+        command.Parameters.AddWithValue(
+            "requested_lifetime",
+            NpgsqlDbType.Interval,
+            options.ResultCapabilityLifetime);
+
+        await using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        string status = reader.GetString(0);
+        Guid persistedChallengeId = reader.GetGuid(1);
+        Guid persistedMessageId = reader.GetGuid(2);
+        Guid attemptId = reader.GetGuid(3);
+        Guid operationId = reader.GetGuid(4);
+        Guid originalDispatchMessageId = reader.GetGuid(5);
+        DateTimeOffset issuedAt = reader.GetFieldValue<DateTimeOffset>(6).ToUniversalTime();
+        DateTimeOffset expiresAt = reader.GetFieldValue<DateTimeOffset>(7).ToUniversalTime();
+        Guid routeDeploymentId = reader.GetGuid(8);
+        long fenceGeneration = reader.GetInt64(9);
+        Guid assignmentId = reader.GetGuid(10);
+        Guid workerInstanceId = reader.GetGuid(11);
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            || status is not ("issued" or "duplicate" or "outstanding")
+            || status is not "outstanding" && persistedChallengeId != challengeId
+            || status is not "outstanding" && persistedMessageId != messageId
+            || attemptId == Guid.Empty
+            || operationId != operation.Id
+            || originalDispatchMessageId == Guid.Empty
+            || issuedAt >= expiresAt
+            || expiresAt - issuedAt > TimeSpan.FromHours(24)
+            || routeDeploymentId == Guid.Empty
+            || fenceGeneration <= 0
+            || assignmentId == Guid.Empty
+            || workerInstanceId == Guid.Empty)
+        {
+            throw new InvalidOperationException(
+                "PostgreSQL returned invalid invocation-challenge evidence.");
+        }
+
+        return status;
+    }
+
+    private async Task<string?> TryIssueLegacyReconciliationChallengeAsync(
+        TenantPostgresTransaction transaction,
+        PersistedOperation operation,
+        CancellationToken cancellationToken)
+    {
+        Guid challengeId = Guid.CreateVersion7();
+        Guid messageId = Guid.CreateVersion7();
+        Guid auditId = Guid.CreateVersion7();
+        string resultCapability = CreateResultCapability();
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            """
+            select issue_status, challenge_id, challenge_message_id,
+                issued_at, expires_at, route_deployment_id,
+                fence_generation, worker_assignment_id, worker_instance_id
+            from control.issue_user_operation_reconciliation_challenge(
+                @challenge_id, @challenge_message_id, @audit_event_id,
+                @operation_id, @raw_result_capability, @requested_lifetime)
+            """);
+        command.Parameters.AddWithValue("challenge_id", NpgsqlDbType.Uuid, challengeId);
+        command.Parameters.AddWithValue("challenge_message_id", NpgsqlDbType.Uuid, messageId);
+        command.Parameters.AddWithValue("audit_event_id", NpgsqlDbType.Uuid, auditId);
+        command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operation.Id);
+        command.Parameters.AddWithValue(
+            "raw_result_capability",
+            NpgsqlDbType.Text,
+            resultCapability);
+        command.Parameters.AddWithValue(
+            "requested_lifetime",
+            NpgsqlDbType.Interval,
+            options.ResultCapabilityLifetime);
+
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        string status = reader.GetString(0);
+        Guid persistedChallengeId = reader.GetGuid(1);
+        Guid persistedMessageId = reader.GetGuid(2);
+        DateTimeOffset issuedAt = reader.GetFieldValue<DateTimeOffset>(3).ToUniversalTime();
+        DateTimeOffset expiresAt = reader.GetFieldValue<DateTimeOffset>(4).ToUniversalTime();
+        Guid routeDeploymentId = reader.GetGuid(5);
+        long fenceGeneration = reader.GetInt64(6);
+        Guid assignmentId = reader.GetGuid(7);
+        Guid workerInstanceId = reader.GetGuid(8);
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            || status is not ("issued" or "duplicate" or "outstanding")
+            || status is not "outstanding" && persistedChallengeId != challengeId
+            || status is not "outstanding" && persistedMessageId != messageId
+            || issuedAt >= expiresAt
+            || expiresAt - issuedAt > TimeSpan.FromHours(24)
+            || routeDeploymentId == Guid.Empty
+            || fenceGeneration <= 0
+            || assignmentId == Guid.Empty
+            || workerInstanceId == Guid.Empty)
+        {
+            throw new InvalidOperationException(
+                "The reconciliation-challenge capability returned invalid evidence.");
+        }
+
+        return status;
     }
 
     private async Task<PersistedOperation?> ClaimForDispatchAsync(
@@ -562,7 +1686,8 @@ internal sealed class PostgresUserOperationWorkStore(
               (
                   operation.state = 'accepted'
                   or (operation.state = 'dispatching'
-                      and operation.claim_expires_at <= authority_time.authority_now)
+                      and (operation.claim_token is null
+                          or operation.claim_expires_at <= authority_time.authority_now))
               )
             returning
                 operation.id, operation.tenant_id, operation.operation_type,
@@ -576,7 +1701,8 @@ internal sealed class PostgresUserOperationWorkStore(
                 operation.dispatch_worker_assignment_id, operation.dispatch_worker_instance_id,
                 operation.dispatch_target_binding_sha256,
                 operation.dispatch_policy_snapshot_sha256,
-                operation.row_version, operation.created_at, authority_time.authority_now
+                operation.row_version, operation.created_at, operation.dispatched_at,
+                authority_time.authority_now
             """);
         AddClaimParameters(command, candidate, claimToken);
         return await ReadOperationAsync(command, cancellationToken).ConfigureAwait(false);
@@ -619,7 +1745,8 @@ internal sealed class PostgresUserOperationWorkStore(
                 operation.dispatch_worker_assignment_id, operation.dispatch_worker_instance_id,
                 operation.dispatch_target_binding_sha256,
                 operation.dispatch_policy_snapshot_sha256,
-                operation.row_version, operation.created_at, authority_time.authority_now
+                operation.row_version, operation.created_at, operation.dispatched_at,
+                authority_time.authority_now
             """);
         AddClaimParameters(command, candidate, claimToken);
         return await ReadOperationAsync(command, cancellationToken).ConfigureAwait(false);
@@ -674,10 +1801,11 @@ internal sealed class PostgresUserOperationWorkStore(
             reader.IsDBNull(21) ? null : reader.GetString(21),
             reader.GetInt64(22),
             reader.GetFieldValue<DateTimeOffset>(23),
-            reader.GetFieldValue<DateTimeOffset>(24));
+            reader.IsDBNull(24) ? null : reader.GetFieldValue<DateTimeOffset>(24),
+            reader.GetFieldValue<DateTimeOffset>(25));
     }
 
-    private static async Task<TargetSnapshot?> ReadTargetSnapshotAsync(
+    private async Task<TargetSnapshot?> ReadTargetSnapshotAsync(
         TenantPostgresTransaction transaction,
         PersistedOperation operation,
         CancellationToken cancellationToken)
@@ -685,49 +1813,13 @@ internal sealed class PostgresUserOperationWorkStore(
         if (operation.TargetType == "broker_account")
         {
             await using NpgsqlCommand command = transaction.CreateCommand(
-                """
-                select
-                    account.row_version, account.state, account.credential_state,
-                    account.environment, account.binding_fingerprint,
-                    route.deployment_id, route.fence_generation,
-                    route.assignment_id, route.worker_node_id
-                from operations.broker_accounts as account
-                left join lateral
-                (
-                    select
-                        deployment.id as deployment_id,
-                        deployment.fence_generation,
-                        assignment.id as assignment_id,
-                        assignment.worker_node_id
-                    from operations.deployments as deployment
-                    join operations.worker_assignments as assignment
-                      on assignment.tenant_id = deployment.tenant_id
-                     and assignment.deployment_id = deployment.id
-                     and assignment.fence_generation = deployment.fence_generation
-                    where deployment.tenant_id = account.tenant_id
-                      and deployment.broker_account_id = account.id
-                      and (@dispatch_route_deployment_id is null
-                          or deployment.id = @dispatch_route_deployment_id)
-                      and (@dispatch_fence_generation is null
-                          or deployment.fence_generation = @dispatch_fence_generation)
-                      and (@dispatch_worker_assignment_id is null
-                          or assignment.id = @dispatch_worker_assignment_id)
-                      and (@dispatch_worker_instance_id is null
-                          or assignment.worker_node_id = @dispatch_worker_instance_id)
-                      and
-                      (
-                          @dispatch_worker_assignment_id is not null
-                          or (assignment.state in ('reconciliation_only', 'active')
-                              and assignment.lease_expires_at > transaction_timestamp())
-                      )
-                    order by assignment.lease_expires_at desc, assignment.id
-                    limit 1
-                ) as route on true
-                where account.tenant_id = @tenant_id and account.id = @target_id
-                for share of account
-                """);
+                BrokerTargetSnapshotSql);
             AddTargetParameters(command, operation);
             AddDispatchRouteParameters(command, operation);
+            command.Parameters.AddWithValue(
+                "minimum_route_lifetime",
+                NpgsqlDbType.Interval,
+                options.DispatchExecutionWindow + options.ClaimLease);
             await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -749,6 +1841,9 @@ internal sealed class PostgresUserOperationWorkStore(
                 reader.IsDBNull(6) ? null : reader.GetInt64(6),
                 reader.IsDBNull(7) ? null : reader.GetGuid(7),
                 reader.IsDBNull(8) ? null : reader.GetGuid(8),
+                reader.IsDBNull(9)
+                    ? null
+                    : reader.GetFieldValue<DateTimeOffset>(9).ToUniversalTime(),
                 new
                 {
                     Environment = environment,
@@ -762,16 +1857,22 @@ internal sealed class PostgresUserOperationWorkStore(
 
         await using (NpgsqlCommand command = transaction.CreateCommand(
             """
+            with authority_time as materialized
+            (
+                select clock_timestamp() as authorization_now
+            )
             select
                 row_version, desired_state, observed_state, fence_generation,
                 broker_account_id, strategy_version_id, risk_policy_version_id,
                 gateway_artifact_id, gateway_digest, strategy_package_digest,
                 runtime_digest, configuration_sha256, binding_evidence_sha256,
-                assignment.id, assignment.worker_node_id
-            from operations.deployments as deployment
+                assignment.id, assignment.worker_node_id,
+                assignment.lease_expires_at
+            from authority_time
+            cross join operations.deployments as deployment
             left join lateral
             (
-                select id, worker_node_id
+                select id, worker_node_id, lease_expires_at
                 from operations.worker_assignments
                 where tenant_id = deployment.tenant_id
                   and deployment_id = deployment.id
@@ -780,22 +1881,22 @@ internal sealed class PostgresUserOperationWorkStore(
                       or id = @dispatch_worker_assignment_id)
                   and (@dispatch_worker_instance_id is null
                       or worker_node_id = @dispatch_worker_instance_id)
-                  and
-                  (
-                      @operation_type <> 'deployment.start'
-                      or (state in ('reconciliation_only', 'active')
-                          and lease_expires_at > transaction_timestamp())
-                  )
+                  and state = 'active'
+                  and revoked_at is null
+                  and lease_expires_at >
+                      authority_time.authorization_now + @minimum_route_lifetime
                 order by id desc
                 limit 1
             ) as assignment on true
             where deployment.tenant_id = @tenant_id and deployment.id = @target_id
-            for share of deployment
             """))
         {
             AddTargetParameters(command, operation);
             AddDispatchRouteParameters(command, operation);
-            command.Parameters.AddWithValue("operation_type", NpgsqlDbType.Text, operation.OperationType);
+            command.Parameters.AddWithValue(
+                "minimum_route_lifetime",
+                NpgsqlDbType.Interval,
+                options.DispatchExecutionWindow + options.ClaimLease);
             await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -816,6 +1917,9 @@ internal sealed class PostgresUserOperationWorkStore(
                 generation,
                 reader.IsDBNull(13) ? null : reader.GetGuid(13),
                 reader.IsDBNull(14) ? null : reader.GetGuid(14),
+                reader.IsDBNull(15)
+                    ? null
+                    : reader.GetFieldValue<DateTimeOffset>(15).ToUniversalTime(),
                 new
                 {
                     DesiredState = desiredState,
@@ -1294,14 +2398,13 @@ internal sealed class PostgresUserOperationWorkStore(
         command.Parameters.AddWithValue(
             "message_type",
             NpgsqlDbType.Text,
-            $"yo4x.{operation.OperationType.Replace('_', '-')}.requested.v1");
+            $"yo4x.{operation.OperationType.Replace('_', '-')}.requested.v3");
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
     }
 
     private static async Task<PersistedProof?> ReadDeploymentProofAsync(
         TenantPostgresTransaction transaction,
         PersistedOperation operation,
-        TargetSnapshot currentTarget,
         CancellationToken cancellationToken)
     {
         await using NpgsqlCommand command = transaction.CreateCommand(
@@ -1319,13 +2422,34 @@ internal sealed class PostgresUserOperationWorkStore(
                 policy_snapshot_sha256,
                 broker_confirmed,
                 broker_execution_state,
-                broker_position_state
-            from operations.deployment_reconciliations
-            where tenant_id = @tenant_id
-              and deployment_id = @target_id
-              and completed_at is not null
-              and dispatch_message_id = @dispatch_message_id
-            order by completed_at desc, id
+                broker_position_state,
+                reconciliation.dispatch_target_binding_sha256,
+                reconciliation.pre_invocation_not_sent_proven,
+                reconciliation.gateway_invoked,
+                reconciliation.reconciliation_challenge_id,
+                reconciliation.request_sha256,
+                challenge.route_deployment_id,
+                challenge.fence_generation,
+                challenge.worker_assignment_id,
+                challenge.worker_instance_id,
+                consumption.request_sha256,
+                challenge.operation_id,
+                challenge.original_dispatch_message_id
+            from operations.deployment_reconciliations as reconciliation
+            left join control.user_operation_reconciliation_challenges as challenge
+              on challenge.tenant_id = reconciliation.tenant_id
+             and challenge.id = reconciliation.reconciliation_challenge_id
+            left join control.user_operation_reconciliation_challenge_consumptions as consumption
+              on consumption.tenant_id = reconciliation.tenant_id
+             and consumption.challenge_id = reconciliation.reconciliation_challenge_id
+             and consumption.target_type = 'deployment'
+             and consumption.result_record_id = reconciliation.id
+             and consumption.result_id = reconciliation.result_id
+            where reconciliation.tenant_id = @tenant_id
+              and reconciliation.deployment_id = @target_id
+              and reconciliation.completed_at is not null
+              and reconciliation.dispatch_message_id = @dispatch_message_id
+            order by reconciliation.completed_at desc, reconciliation.id
             limit 1
             """);
         AddTargetParameters(command, operation);
@@ -1354,6 +2478,18 @@ internal sealed class PostgresUserOperationWorkStore(
         bool brokerConfirmed = !reader.IsDBNull(14) && reader.GetBoolean(14);
         string? brokerExecutionState = ReadNullableString(reader, 15);
         string? brokerPositionState = ReadNullableString(reader, 16);
+        string? dispatchTargetBindingSha256 = ReadNullableString(reader, 17);
+        bool preInvocationNotSentProven = reader.GetBoolean(18);
+        bool gatewayInvoked = reader.GetBoolean(19);
+        Guid? challengeId = reader.IsDBNull(20) ? null : reader.GetGuid(20);
+        string requestSha256 = reader.GetString(21);
+        Guid? challengeRouteDeploymentId = reader.IsDBNull(22) ? null : reader.GetGuid(22);
+        long? challengeFenceGeneration = reader.IsDBNull(23) ? null : reader.GetInt64(23);
+        Guid? challengeAssignmentId = reader.IsDBNull(24) ? null : reader.GetGuid(24);
+        Guid? challengeWorkerInstanceId = reader.IsDBNull(25) ? null : reader.GetGuid(25);
+        string? consumptionRequestSha256 = ReadNullableString(reader, 26);
+        Guid? challengeOperationId = reader.IsDBNull(27) ? null : reader.GetGuid(27);
+        Guid? challengeOriginalDispatchMessageId = reader.IsDBNull(28) ? null : reader.GetGuid(28);
         string expectedObservedState = operation.RequestedTargetState;
         string expectedBrokerState = operation.OperationType switch
         {
@@ -1363,23 +2499,32 @@ internal sealed class PostgresUserOperationWorkStore(
             _ => throw new InvalidOperationException("A persisted deployment operation is invalid.")
         };
         string reference = $"deployment-reconciliation/{proofId:D}";
+        bool legacyDispatchRouteValid = fenceGeneration == operation.DispatchFenceGeneration
+            && assignmentId == operation.DispatchWorkerAssignmentId
+            && workerInstanceId == operation.DispatchWorkerInstanceId;
+        bool challengeRouteValid = challengeId is null
+            || challengeOperationId == operation.Id
+            && challengeOriginalDispatchMessageId == operation.DispatchMessageId
+            && challengeRouteDeploymentId == operation.TargetId
+            && challengeFenceGeneration is > 0
+            && challengeAssignmentId is not null
+            && challengeWorkerInstanceId is not null
+            && FixedDigestEquals(consumptionRequestSha256 ?? string.Empty, requestSha256);
+        Guid proofRouteDeploymentId = challengeRouteDeploymentId ?? operation.TargetId;
+        long? proofFenceGeneration = challengeFenceGeneration ?? fenceGeneration;
+        Guid? proofAssignmentId = challengeAssignmentId ?? assignmentId;
+        Guid? proofWorkerInstanceId = challengeWorkerInstanceId ?? workerInstanceId;
         bool commonBindingValid = dispatchMessageId == operation.DispatchMessageId
             && submittedResourceVersion == operation.SubmittedResourceVersion
             && string.Equals(requestedTargetState, operation.RequestedTargetState, StringComparison.Ordinal)
-            && fenceGeneration == operation.DispatchFenceGeneration
-            && fenceGeneration == currentTarget.FenceGeneration
             && assignmentId is not null
             && workerInstanceId is not null
-            && assignmentId == currentTarget.WorkerAssignmentId
-            && workerInstanceId == currentTarget.WorkerInstanceId
+            && legacyDispatchRouteValid
+            && challengeRouteValid
             && FixedDigestEquals(policySnapshotSha256 ?? string.Empty, operation.DispatchPolicySnapshotSha256)
-            && await AssignmentMatchesAsync(
-                transaction,
-                operation,
-                fenceGeneration!.Value,
-                assignmentId.Value,
-                workerInstanceId.Value,
-                cancellationToken).ConfigureAwait(false);
+            && FixedDigestEquals(
+                dispatchTargetBindingSha256 ?? string.Empty,
+                operation.DispatchTargetBindingSha256);
         if (!commonBindingValid)
         {
             return null;
@@ -1390,6 +2535,8 @@ internal sealed class PostgresUserOperationWorkStore(
             && IsSha256(brokerDigest)
             && IsSha256(runtimeEvidenceDigest)
             && brokerConfirmed
+            && !preInvocationNotSentProven
+            && gatewayInvoked
             && string.Equals(observedState, expectedObservedState, StringComparison.Ordinal)
             && string.Equals(brokerExecutionState, expectedBrokerState, StringComparison.Ordinal)
             && (operation.OperationType != "deployment.stop_after_flat"
@@ -1399,14 +2546,21 @@ internal sealed class PostgresUserOperationWorkStore(
                 "succeeded",
                 null,
                 reference,
-                assignmentId,
-                workerInstanceId);
+                proofAssignmentId,
+                proofWorkerInstanceId,
+                RouteDeploymentId: proofRouteDeploymentId,
+                FenceGeneration: proofFenceGeneration);
         }
 
         return state switch
         {
-            "failed" => new PersistedProof("failed", "runtime_reconciliation_failed", reference),
-            "diverged" => new PersistedProof("partial", "runtime_reconciliation_diverged", reference),
+            "diverged" when !preInvocationNotSentProven
+                && gatewayInvoked
+                && brokerConfirmed => new PersistedProof(
+                    "partial", "runtime_reconciliation_diverged", reference,
+                    proofAssignmentId, proofWorkerInstanceId,
+                    RouteDeploymentId: proofRouteDeploymentId,
+                    FenceGeneration: proofFenceGeneration),
             "unknown" => new PersistedProof("unknown", "runtime_reconciliation_unknown", reference),
             _ => null
         };
@@ -1415,23 +2569,40 @@ internal sealed class PostgresUserOperationWorkStore(
     private static async Task<PersistedProof?> ReadBrokerProofAsync(
         TenantPostgresTransaction transaction,
         PersistedOperation operation,
-        TargetSnapshot currentTarget,
         CancellationToken cancellationToken)
     {
         await using NpgsqlCommand command = transaction.CreateCommand(
             """
             select
-                id, proof_kind, outcome, evidence_sha256, error_code,
-                dispatch_message_id, submitted_resource_version,
-                requested_target_state, policy_snapshot_sha256,
-                broker_confirmed, account_state, credential_state,
-                route_deployment_id, generation,
-                worker_assignment_id, worker_instance_id
-            from operations.user_operation_results
-            where tenant_id = @tenant_id
-              and operation_id = @operation_id
-              and broker_account_id = @target_id
-              and dispatch_message_id = @dispatch_message_id
+                result.id, result.proof_kind, result.outcome,
+                result.evidence_sha256, result.error_code,
+                result.dispatch_message_id, result.submitted_resource_version,
+                result.requested_target_state, result.policy_snapshot_sha256,
+                result.broker_confirmed, result.account_state,
+                result.credential_state, result.route_deployment_id,
+                result.generation, result.worker_assignment_id,
+                result.worker_instance_id,
+                result.dispatch_target_binding_sha256,
+                result.pre_invocation_not_sent_proven,
+                result.gateway_invoked, result.reconciliation_challenge_id,
+                result.request_sha256, challenge.route_deployment_id,
+                challenge.fence_generation, challenge.worker_assignment_id,
+                challenge.worker_instance_id, consumption.request_sha256,
+                challenge.operation_id, challenge.original_dispatch_message_id
+            from operations.user_operation_results as result
+            left join control.user_operation_reconciliation_challenges as challenge
+              on challenge.tenant_id = result.tenant_id
+             and challenge.id = result.reconciliation_challenge_id
+            left join control.user_operation_reconciliation_challenge_consumptions as consumption
+              on consumption.tenant_id = result.tenant_id
+             and consumption.challenge_id = result.reconciliation_challenge_id
+             and consumption.target_type = 'broker_account'
+             and consumption.result_record_id = result.id
+             and consumption.result_id = result.result_id
+            where result.tenant_id = @tenant_id
+              and result.operation_id = @operation_id
+              and result.broker_account_id = @target_id
+              and result.dispatch_message_id = @dispatch_message_id
             """);
         AddTargetParameters(command, operation);
         command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operation.Id);
@@ -1462,7 +2633,19 @@ internal sealed class PostgresUserOperationWorkStore(
         long generation = reader.GetInt64(13);
         Guid assignmentId = reader.GetGuid(14);
         Guid workerInstanceId = reader.GetGuid(15);
-        string expectedKind = operation.OperationType switch
+        string? dispatchTargetBindingSha256 = ReadNullableString(reader, 16);
+        bool preInvocationNotSentProven = reader.GetBoolean(17);
+        bool gatewayInvoked = reader.GetBoolean(18);
+        Guid? challengeId = reader.IsDBNull(19) ? null : reader.GetGuid(19);
+        string requestSha256 = reader.GetString(20);
+        Guid? challengeRouteDeploymentId = reader.IsDBNull(21) ? null : reader.GetGuid(21);
+        long? challengeFenceGeneration = reader.IsDBNull(22) ? null : reader.GetInt64(22);
+        Guid? challengeAssignmentId = reader.IsDBNull(23) ? null : reader.GetGuid(23);
+        Guid? challengeWorkerInstanceId = reader.IsDBNull(24) ? null : reader.GetGuid(24);
+        string? consumptionRequestSha256 = ReadNullableString(reader, 25);
+        Guid? challengeOperationId = reader.IsDBNull(26) ? null : reader.GetGuid(26);
+        Guid? challengeOriginalDispatchMessageId = reader.IsDBNull(27) ? null : reader.GetGuid(27);
+        string actionSuccessKind = operation.OperationType switch
         {
             "broker_account.connection_test" => "connection_verified",
             "broker_account.credential_rotation" => "credential_rotated",
@@ -1470,23 +2653,63 @@ internal sealed class PostgresUserOperationWorkStore(
             "broker_account.delete" => "credential_deleted",
             _ => throw new InvalidOperationException("A persisted broker-account operation is invalid.")
         };
+        if (outcome is not ("succeeded" or "diverged"))
+        {
+            // Result v4 has no database-owned invocation-attempt receipt. Historical
+            // caller-asserted failures remain audit evidence only and must never
+            // terminalize or make a fresh mutation retryable.
+            return null;
+        }
+
+        string expectedKind = outcome switch
+        {
+            "diverged" => "state_observed_diverged",
+            _ => actionSuccessKind
+        };
         string brokerResultState = $"{accountState}:{credentialState}";
+        bool legacyDispatchRouteValid = routeDeploymentId == operation.DispatchRouteDeploymentId
+            && generation == operation.DispatchFenceGeneration
+            && assignmentId == operation.DispatchWorkerAssignmentId
+            && workerInstanceId == operation.DispatchWorkerInstanceId;
+        bool challengeRouteValid = challengeId is null
+            || challengeOperationId == operation.Id
+            && challengeOriginalDispatchMessageId == operation.DispatchMessageId
+            && challengeRouteDeploymentId is not null
+            && challengeFenceGeneration is > 0
+            && challengeAssignmentId is not null
+            && challengeWorkerInstanceId is not null
+            && FixedDigestEquals(consumptionRequestSha256 ?? string.Empty, requestSha256);
+        Guid proofRouteDeploymentId = challengeRouteDeploymentId ?? routeDeploymentId;
+        long proofFenceGeneration = challengeFenceGeneration ?? generation;
+        Guid proofAssignmentId = challengeAssignmentId ?? assignmentId;
+        Guid proofWorkerInstanceId = challengeWorkerInstanceId ?? workerInstanceId;
         if (!string.Equals(proofKind, expectedKind, StringComparison.Ordinal)
             || !IsSha256(evidenceDigest)
             || dispatchMessageId != operation.DispatchMessageId
             || submittedResourceVersion != operation.SubmittedResourceVersion
             || !string.Equals(requestedTargetState, operation.RequestedTargetState, StringComparison.Ordinal)
             || !FixedDigestEquals(policySnapshotSha256 ?? string.Empty, operation.DispatchPolicySnapshotSha256)
-            || routeDeploymentId != operation.DispatchRouteDeploymentId
-            || routeDeploymentId != currentTarget.RouteDeploymentId
-            || generation != operation.DispatchFenceGeneration
-            || generation != currentTarget.FenceGeneration
-            || assignmentId != operation.DispatchWorkerAssignmentId
-            || assignmentId != currentTarget.WorkerAssignmentId
-            || workerInstanceId != operation.DispatchWorkerInstanceId
-            || workerInstanceId != currentTarget.WorkerInstanceId
+            || !legacyDispatchRouteValid
+            || !challengeRouteValid
+            || !FixedDigestEquals(
+                dispatchTargetBindingSha256 ?? string.Empty,
+                operation.DispatchTargetBindingSha256)
             || outcome == "succeeded"
-               && !string.Equals(brokerResultState, operation.RequestedTargetState, StringComparison.Ordinal))
+                && (!gatewayInvoked
+                    || preInvocationNotSentProven
+                    || !brokerConfirmed
+                    || accountState is null
+                    || credentialState is null
+                    || resultCode is not null
+                    || !string.Equals(brokerResultState, operation.RequestedTargetState, StringComparison.Ordinal))
+            || outcome == "diverged"
+                && (!gatewayInvoked
+                    || preInvocationNotSentProven
+                    || !brokerConfirmed
+                    || accountState is null
+                    || credentialState is null
+                    || resultCode is null
+                    || string.Equals(brokerResultState, operation.RequestedTargetState, StringComparison.Ordinal)))
         {
             return null;
         }
@@ -1498,48 +2721,21 @@ internal sealed class PostgresUserOperationWorkStore(
                 "succeeded",
                 null,
                 reference,
-                assignmentId,
-                workerInstanceId,
-                proofId),
-            "failed" => new PersistedProof("failed", NormalizeError(resultCode, "runtime_operation_failed"), reference),
+                proofAssignmentId,
+                proofWorkerInstanceId,
+                proofId,
+                proofRouteDeploymentId,
+                proofFenceGeneration),
+            "diverged" => new PersistedProof(
+                "partial",
+                NormalizeError(resultCode, "runtime_reconciliation_diverged"),
+                reference,
+                proofAssignmentId,
+                proofWorkerInstanceId,
+                RouteDeploymentId: proofRouteDeploymentId,
+                FenceGeneration: proofFenceGeneration),
             _ => null
         };
-    }
-
-    private static async Task<bool> AssignmentMatchesAsync(
-        TenantPostgresTransaction transaction,
-        PersistedOperation operation,
-        long fenceGeneration,
-        Guid assignmentId,
-        Guid workerInstanceId,
-        CancellationToken cancellationToken)
-    {
-        await using NpgsqlCommand command = transaction.CreateCommand(
-            """
-            select exists
-            (
-                select 1
-                from operations.worker_assignments
-                where tenant_id = @tenant_id
-                  and deployment_id = @deployment_id
-                  and id = @assignment_id
-                  and worker_node_id = @worker_instance_id
-                  and fence_generation = @fence_generation
-                  and
-                  (
-                      @operation_type <> 'deployment.start'
-                      or (state in ('reconciliation_only', 'active')
-                          and lease_expires_at > clock_timestamp())
-                  )
-            )
-            """);
-        command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, operation.TenantId);
-        command.Parameters.AddWithValue("deployment_id", NpgsqlDbType.Uuid, operation.TargetId);
-        command.Parameters.AddWithValue("assignment_id", NpgsqlDbType.Uuid, assignmentId);
-        command.Parameters.AddWithValue("worker_instance_id", NpgsqlDbType.Uuid, workerInstanceId);
-        command.Parameters.AddWithValue("fence_generation", NpgsqlDbType.Bigint, fenceGeneration);
-        command.Parameters.AddWithValue("operation_type", NpgsqlDbType.Text, operation.OperationType);
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
     }
 
     private static async Task<bool> ApplyConfirmedBrokerResultAsync(
@@ -1558,6 +2754,69 @@ internal sealed class PostgresUserOperationWorkStore(
 
     private static string? ReadNullableString(NpgsqlDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+
+    private static async Task<bool> DeferAsync(
+        TenantPostgresTransaction transaction,
+        PersistedOperation operation,
+        Guid claimToken,
+        string state,
+        string? processingErrorCode,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            "select * from control.defer_user_operation(@operation_id, @claim_token, @expected_version, @state, @processing_error_code)");
+        command.Parameters.AddWithValue("operation_id", NpgsqlDbType.Uuid, operation.Id);
+        command.Parameters.AddWithValue("claim_token", NpgsqlDbType.Uuid, claimToken);
+        command.Parameters.AddWithValue("expected_version", NpgsqlDbType.Bigint, operation.RowVersion);
+        command.Parameters.AddWithValue("state", NpgsqlDbType.Text, state);
+        command.Parameters.AddWithValue(
+            "processing_error_code",
+            NpgsqlDbType.Text,
+            processingErrorCode is null
+                ? DBNull.Value
+                : NormalizeProcessingError(processingErrorCode));
+        long nextVersion;
+        DateTimeOffset deferredAt;
+        DateTimeOffset nextProcessingAt;
+        long deferralCount;
+        await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false))
+        {
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("The user-operation deferral claim was lost.");
+            }
+
+            nextVersion = reader.GetInt64(0);
+            deferredAt = reader.GetFieldValue<DateTimeOffset>(1);
+            nextProcessingAt = reader.GetFieldValue<DateTimeOffset>(2);
+            deferralCount = reader.GetInt64(3);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                || nextVersion != operation.RowVersion + 1
+                || nextProcessingAt <= deferredAt
+                || deferralCount <= 0)
+            {
+                throw new InvalidOperationException("The user-operation deferral evidence was invalid.");
+            }
+        }
+
+        bool stateChanged = !string.Equals(operation.State, state, StringComparison.Ordinal);
+        if (stateChanged)
+        {
+            await AppendLifecycleEventAsync(
+                transaction,
+                operation,
+                state,
+                processingErrorCode,
+                null,
+                null,
+                nextVersion,
+                deferredAt,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return stateChanged;
+    }
 
     private static async Task FinishAsync(
         TenantPostgresTransaction transaction,
@@ -1580,6 +2839,12 @@ internal sealed class PostgresUserOperationWorkStore(
             set state = @state,
                 last_error_code = @last_error_code,
                 result_reference = @result_reference,
+                reconciliation_route_deployment_id = coalesce(
+                    operation.reconciliation_route_deployment_id,
+                    @proof_route_deployment_id),
+                reconciliation_fence_generation = coalesce(
+                    operation.reconciliation_fence_generation,
+                    @proof_fence_generation),
                 reconciliation_worker_assignment_id = coalesce(
                     operation.reconciliation_worker_assignment_id,
                     @proof_worker_assignment_id),
@@ -1600,6 +2865,12 @@ internal sealed class PostgresUserOperationWorkStore(
               and operation.id = @operation_id
               and operation.claim_token = @claim_token
               and operation.row_version = @expected_version
+              and (@proof_route_deployment_id is null
+                  or operation.reconciliation_route_deployment_id is null
+                  or operation.reconciliation_route_deployment_id = @proof_route_deployment_id)
+              and (@proof_fence_generation is null
+                  or operation.reconciliation_fence_generation is null
+                  or operation.reconciliation_fence_generation = @proof_fence_generation)
               and (@proof_worker_assignment_id is null
                   or operation.reconciliation_worker_assignment_id is null
                   or operation.reconciliation_worker_assignment_id = @proof_worker_assignment_id)
@@ -1618,6 +2889,14 @@ internal sealed class PostgresUserOperationWorkStore(
             NpgsqlDbType.Text,
             resultReference is null ? DBNull.Value : resultReference);
         update.Parameters.AddWithValue("terminal", NpgsqlDbType.Boolean, terminal);
+        update.Parameters.AddWithValue(
+            "proof_route_deployment_id",
+            NpgsqlDbType.Uuid,
+            proof?.RouteDeploymentId is Guid routeDeploymentId ? routeDeploymentId : DBNull.Value);
+        update.Parameters.AddWithValue(
+            "proof_fence_generation",
+            NpgsqlDbType.Bigint,
+            proof?.FenceGeneration is long fenceGeneration ? fenceGeneration : DBNull.Value);
         update.Parameters.AddWithValue(
             "proof_worker_assignment_id",
             NpgsqlDbType.Uuid,
@@ -1651,6 +2930,29 @@ internal sealed class PostgresUserOperationWorkStore(
             return;
         }
 
+        await AppendLifecycleEventAsync(
+            transaction,
+            operation,
+            state,
+            errorCode,
+            resultReference,
+            proof,
+            nextVersion,
+            completionNow,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task AppendLifecycleEventAsync(
+        TenantPostgresTransaction transaction,
+        PersistedOperation operation,
+        string state,
+        string? errorCode,
+        string? resultReference,
+        PersistedProof? proof,
+        long nextVersion,
+        DateTimeOffset eventTime,
+        CancellationToken cancellationToken)
+    {
         var safePayload = new
         {
             OperationId = operation.Id,
@@ -1662,7 +2964,8 @@ internal sealed class PostgresUserOperationWorkStore(
             ResultReference = resultReference,
             WorkerAssignmentId = proof?.WorkerAssignmentId ?? operation.DispatchWorkerAssignmentId,
             WorkerInstanceId = proof?.WorkerInstanceId ?? operation.DispatchWorkerInstanceId,
-            operation.DispatchFenceGeneration,
+            RouteDeploymentId = proof?.RouteDeploymentId ?? operation.DispatchRouteDeploymentId,
+            FenceGeneration = proof?.FenceGeneration ?? operation.DispatchFenceGeneration,
             operation.DispatchPolicySnapshotSha256
         };
         AuditOutcome outcome = state switch
@@ -1684,7 +2987,7 @@ internal sealed class PostgresUserOperationWorkStore(
             operation.CorrelationId,
             operation.Id,
             safePayload,
-            completionNow,
+            eventTime,
             PolicyAuditContext(operation, nextVersion));
         OutboxMessage message = OutboxMessage.Create(
             operation.TenantId,
@@ -1694,7 +2997,7 @@ internal sealed class PostgresUserOperationWorkStore(
             safePayload,
             operation.CorrelationId,
             operation.Id,
-            completionNow);
+            eventTime);
         await PostgresAuditOutboxWriter.AppendAsync(
             transaction,
             audit,
@@ -1712,21 +3015,23 @@ internal sealed class PostgresUserOperationWorkStore(
             ResourceVersionBefore: operation.RowVersion,
             ResourceVersionAfter: afterVersion);
 
-    private string AgeState(PersistedOperation operation, bool published = false)
+    private static string NormalizeProcessingError(string value)
     {
-        TimeSpan age = operation.AuthorizationNow - operation.CreatedAt;
-        if (age >= options.OperationExpiresAfter)
-        {
-            return "expired";
-        }
-
-        if (published && age >= options.ProofUnknownAfter)
-        {
-            return "unknown";
-        }
-
-        return published ? "reconciling" : operation.State;
+        string candidate = value.Trim().ToLowerInvariant();
+        return candidate.Length is >= 1 and <= 100
+            && char.IsAsciiLetter(candidate[0])
+            && candidate.All(character => char.IsAsciiLetterOrDigit(character) || character == '_')
+            ? candidate
+            : "operation_processing_error";
     }
+
+    private string AwaitingProofState(PersistedOperation operation, bool published = false) =>
+        UserOperationDispatchGuard.AwaitingProofState(
+            operation.State,
+            operation.DispatchedAt ?? operation.CreatedAt,
+            operation.AuthorizationNow,
+            options.ProofUnknownAfter,
+            published);
 
     private static void AddTargetParameters(NpgsqlCommand command, PersistedOperation operation)
     {
@@ -1773,9 +3078,47 @@ internal sealed class PostgresUserOperationWorkStore(
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task<DateTimeOffset> ReadAuthorityNowAsync(
+        TenantPostgresTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            "select clock_timestamp()");
+        object? value = await command.ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return value is DateTimeOffset authorityNow
+            ? authorityNow.ToUniversalTime()
+            : throw new InvalidOperationException(
+                "PostgreSQL did not return the dispatch authority clock.");
+    }
+
+    private static DateTimeOffset Earliest(params DateTimeOffset[] values) => values.Min();
+
     private static bool IsSha256(string? value) =>
         value is { Length: 64 }
         && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static string CreateResultCapability()
+    {
+        byte[] randomBytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            string value = CanonicalBase64Url.Encode(randomBytes);
+            return CanonicalBase64Url.IsEncodedByteCount(value, 32)
+                ? value
+                : throw new InvalidOperationException(
+                    "The broker-result capability encoding was invalid.");
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(randomBytes);
+        }
+    }
+
+    private static string Sha256Utf8(string value) => Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(value)))
+        .ToLowerInvariant();
 
     private static bool FixedDigestEquals(string? first, string? second)
     {
@@ -1841,7 +3184,48 @@ internal sealed class PostgresUserOperationWorkStore(
             ReviewDeadline = reviewDeadline.ToUniversalTime().ToString("O")
         });
 
-    private sealed record OperationCandidate(Guid Id, Guid TenantId, Guid CorrelationId, long RowVersion);
+    private sealed record OperationCandidate(
+        Guid Id,
+        Guid TenantId,
+        Guid CorrelationId,
+        long RowVersion,
+        bool ForDispatch,
+        string OperationType)
+    {
+        public bool IsProtective => UserOperationDispatchGuard.IsProtective(OperationType);
+    }
+
+    private sealed record InvocationAttemptCreation(
+        string Status,
+        Guid AttemptId,
+        Guid DispatchMessageId,
+        int AttemptNumber,
+        string CommandSha256,
+        DateTimeOffset ExecuteNotAfter,
+        DateTimeOffset ResultCapabilityExpiresAt,
+        Guid RouteDeploymentId,
+        long FenceGeneration,
+        Guid WorkerAssignmentId,
+        Guid WorkerInstanceId);
+
+    private sealed record InvocationAttemptReconciliation(
+        string Status,
+        Guid AttemptId,
+        int AttemptNumber,
+        string AttemptState,
+        long StateVersion,
+        string? ProofSource,
+        string? Outcome,
+        string? ObservationSha256,
+        DateTimeOffset? ObservedAt,
+        DateTimeOffset? ReceivedAt,
+        Guid? ResultId,
+        Guid? ResultRecordId,
+        string? RequestSha256,
+        Guid RouteDeploymentId,
+        long FenceGeneration,
+        Guid WorkerAssignmentId,
+        Guid WorkerInstanceId);
 
     private sealed record PersistedOperation(
         Guid Id,
@@ -1868,6 +3252,7 @@ internal sealed class PostgresUserOperationWorkStore(
         string? DispatchPolicySnapshotSha256,
         long RowVersion,
         DateTimeOffset CreatedAt,
+        DateTimeOffset? DispatchedAt,
         DateTimeOffset AuthorizationNow);
 
     private sealed record TargetSnapshot(
@@ -1879,6 +3264,7 @@ internal sealed class PostgresUserOperationWorkStore(
         long? FenceGeneration,
         Guid? WorkerAssignmentId,
         Guid? WorkerInstanceId,
+        DateTimeOffset? AssignmentLeaseExpiresAt,
         object RedactedBinding);
 
     private sealed record DispatchPolicyDecision(
@@ -2132,5 +3518,7 @@ internal sealed class PostgresUserOperationWorkStore(
         string Reference,
         Guid? WorkerAssignmentId = null,
         Guid? WorkerInstanceId = null,
-        Guid? BrokerResultId = null);
+        Guid? BrokerResultId = null,
+        Guid? RouteDeploymentId = null,
+        long? FenceGeneration = null);
 }

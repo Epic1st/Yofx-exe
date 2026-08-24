@@ -24,7 +24,7 @@ describe('ControlPlaneClient', () => {
   });
 
   it('preserves safe RFC 7807 metadata for unauthorized handling', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
       type: 'https://errors.yo4x.test/authentication-required',
       title: 'Authentication is required.',
       status: 401,
@@ -73,6 +73,74 @@ describe('ControlPlaneClient', () => {
     const client = createControlPlaneClient('https://control.example', fetchMock);
 
     await expect(client.getReadiness()).rejects.toThrow('invalid access token');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('uses only the fixed compatibility route for a selected corpus', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+      analyzedFileCount: 0,
+      totalFileCount: 0,
+      items: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = createControlPlaneClient('https://control.example', fetchMock);
+
+    await client.getStrategyCompatibility('0198f000-0000-7000-8000-000000000001');
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]![0].toString()).toBe(
+      'https://control.example/v1/strategy-source-corpora/0198f000-0000-7000-8000-000000000001/compatibility',
+    );
+  });
+
+  it.each([
+    '//evil.example/readiness',
+    '/\\evil.example/readiness',
+    '/readiness\u0000tail',
+    '/safe/../unexpected',
+  ])('rejects an API path escape before reading a token or issuing fetch: %s', async (path) => {
+    const getAccessToken = vi.fn(async () => 'must-not-be-read');
+    window.__YO4X_AUTH__ = { getAccessToken };
+    const fetchMock = vi.fn(async () => new Response());
+    const client = createControlPlaneClient('https://control.example', fetchMock);
+
+    await expect(client.getRuntimeReadiness(path)).rejects.toThrow(/API paths/u);
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a configured API origin containing user information before authentication', async () => {
+    const getAccessToken = vi.fn(async () => 'must-not-be-read');
+    window.__YO4X_AUTH__ = { getAccessToken };
+    const fetchMock = vi.fn(async () => new Response());
+    const client = createControlPlaneClient('https://user@control.example', fetchMock);
+
+    await expect(client.getReadiness()).rejects.toThrow('must contain only an exact origin');
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['ftp://control.example', 'ws://control.example', 'wss://control.example'])(
+    'rejects a non-HTTP API scheme before authentication: %s',
+    async (origin) => {
+      const getAccessToken = vi.fn(async () => 'must-not-be-read');
+      window.__YO4X_AUTH__ = { getAccessToken };
+      const fetchMock = vi.fn(async () => new Response());
+      const client = createControlPlaneClient(origin, fetchMock);
+
+      await expect(client.getReadiness()).rejects.toThrow('must use HTTP or HTTPS');
+      expect(getAccessToken).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects an insecure same-origin fallback before reading authentication', async () => {
+    const getAccessToken = vi.fn(async () => 'must-not-be-read');
+    window.__YO4X_AUTH__ = { getAccessToken };
+    const fetchMock = vi.fn(async () => new Response());
+    const client = createControlPlaneClient('', fetchMock, 'http://non-loopback.example');
+
+    await expect(client.getReadiness()).rejects.toThrow('must use HTTPS');
+    expect(getAccessToken).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

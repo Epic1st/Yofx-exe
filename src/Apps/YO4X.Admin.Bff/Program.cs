@@ -29,8 +29,20 @@ string[] configuredOrigins = builder.Configuration
 var originPolicy = new AdminOriginPolicy(configuredOrigins);
 builder.Services.AddSingleton(originPolicy);
 
-string? adminPostgresConnection = builder.Configuration.GetConnectionString("AdminPostgres");
-if (string.IsNullOrWhiteSpace(adminPostgresConnection))
+if (!AdminPostgresDatabaseIdentity.TryReadRuntimeConnectionString(
+        builder.Configuration.GetConnectionString("AdminPostgres"),
+        out string adminPostgresConnection)
+    || !PostgresDatabaseEndpoint.TryParse(
+        adminPostgresConnection,
+        out PostgresDatabaseEndpoint? adminPostgresEndpoint)
+    || !PostgresTenantContextCapabilityProvider.TryNormalizeIssuerConnectionString(
+        builder.Configuration.GetConnectionString("ContextIssuer"),
+        requireTls: true,
+        out string contextIssuerConnection)
+    || !PostgresDatabaseEndpoint.TryParse(
+        contextIssuerConnection,
+        out PostgresDatabaseEndpoint? contextIssuerEndpoint)
+    || contextIssuerEndpoint != adminPostgresEndpoint)
 {
     builder.Services.TryAddScoped<IAdminApplication, UnavailableAdminApplication>();
 }
@@ -41,7 +53,12 @@ else
         .Get<AdminPostgresOptions>() ?? new AdminPostgresOptions();
     postgresOptions.Validate();
     builder.Services.AddSingleton(postgresOptions);
-    builder.Services.AddSingleton(new PostgresDatabase(adminPostgresConnection));
+    builder.Services.AddSingleton<ITenantContextCapabilityProvider>(_ =>
+        new PostgresTenantContextCapabilityProvider(contextIssuerConnection));
+    builder.Services.AddSingleton(serviceProvider => new PostgresDatabase(
+        adminPostgresConnection,
+        PostgresDatabaseUsage.Runtime,
+        serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>()));
     builder.Services.AddScoped<AdminPostgresApplication>();
     builder.Services.AddScoped<IAdminApplication>(services =>
         services.GetRequiredService<AdminPostgresApplication>());

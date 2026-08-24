@@ -7,7 +7,7 @@ namespace YO4X.StrategyGovernance;
 public sealed class Mql5ConversionEvidenceAnalyzer
 {
     public const string SchemaVersion = "mql5-conversion-evidence.v1";
-    public const string AnalyzerVersion = "yo4x-mql5-conversion-evidence.v1";
+    public const string AnalyzerVersion = "yo4x-mql5-conversion-evidence.v2";
 
     private const int MaximumTokensPerFile = 2_000_000;
     private const int MaximumFindingsPerFile = 256;
@@ -41,9 +41,19 @@ public sealed class Mql5ConversionEvidenceAnalyzer
             {
                 ArgumentNullException.ThrowIfNull(document);
                 ArgumentNullException.ThrowIfNull(document.Content);
-                snapshots.Add(new Mql5SourceDocument(
+                var snapshot = new Mql5SourceDocument(
                     NormalizeRelativePath(document.RelativePath),
-                    document.Content.ToArray()));
+                    document.Content.ToArray());
+                try
+                {
+                    Mql5SourceSecretScanner.EnsureNoHighConfidenceSecrets(snapshot);
+                    snapshots.Add(snapshot);
+                }
+                catch
+                {
+                    CryptographicOperations.ZeroMemory(snapshot.Content);
+                    throw;
+                }
             }
 
             Mql5SourceDocument[] documents = snapshots

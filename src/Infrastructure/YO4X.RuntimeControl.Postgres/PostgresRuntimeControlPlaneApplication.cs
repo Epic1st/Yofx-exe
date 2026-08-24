@@ -50,8 +50,8 @@ public sealed partial class PostgresRuntimeControlPlaneApplication : IRuntimeCon
         CancellationToken cancellationToken,
         bool requireAuthorityLock = false)
     {
-        ValidateActor(actor);
-        ValidateMetadata(metadata);
+        UserOperationProtocolAdapterValidation.ValidateActor(actor);
+        UserOperationProtocolAdapterValidation.ValidateMetadata(metadata);
         TenantPostgresTransaction transaction = await database.BeginTenantTransactionAsync(
                 new TenantExecutionContext(actor.TenantId, actor.WorkloadId, metadata.CorrelationId, null),
                 cancellationToken)
@@ -82,7 +82,11 @@ public sealed partial class PostgresRuntimeControlPlaneApplication : IRuntimeCon
         CancellationToken cancellationToken)
     {
         string lockClause = forUpdate
-            ? "for update of assignment, deployment for share of strategy, source_binding"
+            // U0 is already held by every for-update caller. Strategy state
+            // mutations acquire the same lock, while source bindings are
+            // immutable, so no UPDATE privilege is needed on governance proof
+            // tables merely to stabilize this snapshot.
+            ? "for update of assignment, deployment"
             : string.Empty;
         await using NpgsqlCommand command = transaction.CreateCommand(
             $$"""
@@ -230,7 +234,13 @@ public sealed partial class PostgresRuntimeControlPlaneApplication : IRuntimeCon
         await using NpgsqlCommand authorityTime = transaction.CreateCommand("select clock_timestamp()");
         object? occurredAtValue = await authorityTime.ExecuteScalarAsync(cancellationToken)
             .ConfigureAwait(false);
-        if (occurredAtValue is not DateTimeOffset occurredAt)
+        DateTimeOffset occurredAt = occurredAtValue switch
+        {
+            DateTimeOffset value => value.ToUniversalTime(),
+            DateTime { Kind: DateTimeKind.Utc } value => new DateTimeOffset(value),
+            _ => default
+        };
+        if (occurredAt == default)
         {
             throw new InvalidOperationException("PostgreSQL did not return an evidence timestamp.");
         }
@@ -258,35 +268,6 @@ public sealed partial class PostgresRuntimeControlPlaneApplication : IRuntimeCon
             occurredAt);
         await PostgresAuditOutboxWriter.AppendAsync(transaction, audit, outbox, cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    private static void ValidateActor(WorkloadActor actor)
-    {
-        ArgumentNullException.ThrowIfNull(actor);
-        if (actor.TenantId == Guid.Empty
-            || actor.WorkloadId == Guid.Empty
-            || actor.WorkerInstanceId == Guid.Empty
-            || actor.DeploymentId == Guid.Empty
-            || actor.BrokerAccountId == Guid.Empty
-            || actor.Generation <= 0
-            || string.IsNullOrWhiteSpace(actor.Region)
-            || actor.Region.Length > 100
-            || actor.Component is not ("supervisor" or "strategy_host" or "gateway_host"))
-        {
-            throw new UnauthorizedAccessException("The workload identity binding is invalid.");
-        }
-    }
-
-    private static void ValidateMetadata(RequestMetadata metadata)
-    {
-        ArgumentNullException.ThrowIfNull(metadata);
-        if (metadata.CorrelationId == Guid.Empty
-            || string.IsNullOrWhiteSpace(metadata.IdempotencyKey)
-            || metadata.IdempotencyKey.Length > 200
-            || metadata.Reason?.Length > 2000)
-        {
-            throw new ArgumentException("The request metadata is invalid.", nameof(metadata));
-        }
     }
 
     private static void RequireSupervisor(WorkloadActor actor)

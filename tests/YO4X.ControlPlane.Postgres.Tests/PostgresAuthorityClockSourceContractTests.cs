@@ -73,11 +73,15 @@ public sealed class PostgresAuthorityClockSourceContractTests
         Assert.Contains("clock_timestamp() as authorization_now", binding, StringComparison.Ordinal);
         Assert.Contains("snapshot.AuthorizationNow", leases, StringComparison.Ordinal);
         Assert.Contains("current.AuthorizationNow", leases, StringComparison.Ordinal);
-        Assert.Contains("lease.expires_at > authority_time.authority_now", leases, StringComparison.Ordinal);
-        Assert.Contains("@expires_at > authority_time.authority_now", leases, StringComparison.Ordinal);
+        Assert.Contains("persisted.ExpiresAt <= authorizationNow", leases, StringComparison.Ordinal);
+        Assert.Contains(
+            "EnsureLeaseEligible(current, claims.ExpiresAtUtc, current.AuthorizationNow)",
+            leases,
+            StringComparison.Ordinal);
         Assert.Contains("binding.AuthorizationNow", assignments, StringComparison.Ordinal);
         Assert.Contains("binding.AuthorizationNow", events, StringComparison.Ordinal);
-        Assert.Contains("binding.AuthorizationNow", brokerResults, StringComparison.Ordinal);
+        Assert.Contains("ReadDatabaseClockAsync", brokerResults, StringComparison.Ordinal);
+        Assert.Contains("select clock_timestamp()", brokerResults, StringComparison.Ordinal);
         Assert.Contains("ArgumentNullException.ThrowIfNull(clock)", binding, StringComparison.Ordinal);
         Assert.DoesNotContain("clock.UtcNow", binding, StringComparison.Ordinal);
         Assert.DoesNotContain("private readonly IClock clock", binding, StringComparison.Ordinal);
@@ -130,17 +134,24 @@ public sealed class PostgresAuthorityClockSourceContractTests
             "Operations",
             "PostgresUserOperationWorkStore.cs");
 
-        Assert.Contains("claim_expires_at <= clock_timestamp()", source, StringComparison.Ordinal);
+        Assert.Contains("claim_expires_at <= authority_time.authority_now", source, StringComparison.Ordinal);
         Assert.Contains("with authority_time as materialized", source, StringComparison.Ordinal);
         Assert.Contains(
             "claim_expires_at = authority_time.authority_now + @claim_lease",
             source,
             StringComparison.Ordinal);
-        Assert.Contains("lease_expires_at > clock_timestamp()", source, StringComparison.Ordinal);
-        Assert.Contains("operation.AuthorizationNow - operation.CreatedAt", source, StringComparison.Ordinal);
-        Assert.Contains("DateTimeOffset dispatchNow = operation.AuthorizationNow", source, StringComparison.Ordinal);
+        Assert.Contains("assignment.lease_expires_at >", source, StringComparison.Ordinal);
         Assert.Contains(
-            "operation.CreatedAt,\n                operation.AuthorizationNow",
+            "authority_time.authorization_now + @minimum_route_lifetime",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains("UserOperationDispatchGuard.ShouldExpireBeforeDispatch", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "DateTimeOffset dispatchNow = await ReadAuthorityNowAsync(transaction, cancellationToken)",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "operation.CreatedAt,\n            operation.AuthorizationNow",
             source,
             StringComparison.Ordinal);
         Assert.DoesNotContain("claim_expires_at <= @now", source, StringComparison.OrdinalIgnoreCase);
@@ -157,7 +168,8 @@ public sealed class PostgresAuthorityClockSourceContractTests
             "YO4X.ControlPlane.Workers",
             "Operations",
             "PostgresUserOperationWorkStore.cs");
-        string finish = Slice(source, "private static async Task FinishAsync(", "private static AuditEvidenceContext");
+        string finish = Slice(source, "private static async Task FinishAsync(", "private static AuditEvidenceContext")
+            .Replace("\r\n", "\n");
 
         Assert.Contains("select clock_timestamp() as authority_now", finish, StringComparison.Ordinal);
         Assert.Contains("when @terminal then authority_time.authority_now", finish, StringComparison.Ordinal);
@@ -170,8 +182,8 @@ public sealed class PostgresAuthorityClockSourceContractTests
             finish,
             StringComparison.Ordinal);
         Assert.Contains("completionNow = reader.GetFieldValue<DateTimeOffset>(1)", finish, StringComparison.Ordinal);
-        Assert.Contains("completionNow,\n            PolicyAuditContext", finish, StringComparison.Ordinal);
-        Assert.Contains("completionNow);", finish, StringComparison.Ordinal);
+        Assert.Contains("completionNow,\n            cancellationToken", finish, StringComparison.Ordinal);
+        Assert.Contains("operation.Id,\n            eventTime);", finish, StringComparison.Ordinal);
         Assert.DoesNotContain("@now", finish, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("DateTimeOffset now", finish, StringComparison.Ordinal);
     }

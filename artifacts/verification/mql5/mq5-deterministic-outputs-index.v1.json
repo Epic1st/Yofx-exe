@@ -1,0 +1,35 @@
+﻿{
+    "schema":  "yo4x.mql5-deterministic-outputs-index.v1",
+    "generatedAtUtc":  "2026-08-23T15:43:54.000Z",
+    "outputs":  [
+                    {
+                        "path":  "artifacts/verification/mql5/mq5-static-manifest.v1.json",
+                        "sha256":  "f80fd2589c4efb1d1c2909e5be45e338829994ffebffd8f52f050553b2a25658",
+                        "bytes":  1239087
+                    },
+                    {
+                        "path":  "artifacts/verification/mql5/mq5-conversion-evidence.v1.json",
+                        "sha256":  "a9c4718706c0f4ce4adc1736ade119cc6c5b1d4cefe53db476c51a41202fff20",
+                        "bytes":  1902163
+                    },
+                    {
+                        "path":  "artifacts/verification/mql5/mq5-compile-package-plan.v2.json",
+                        "sha256":  "51e88beddabc6e2d11f00a6b8a2671a27642f58f2d302453f16199da368569e7",
+                        "bytes":  455612
+                    },
+                    {
+                        "path":  "artifacts/verification/mql5/mq5-conversion-evidence-report.md",
+                        "sha256":  "d43fc53e0f09997e1bb8410c45e011ea97edba43de9798b59196e476c2f4e7ca",
+                        "bytes":  64485
+                    },
+                    {
+                        "path":  "artifacts/verification/mql5/mq5-static-compatibility-report.md",
+                        "sha256":  "c36caf178cca0e609693f167129d17964c8e0e844ff9ab0a5ae161a4ae2ab259",
+                        "bytes":  84911
+                    }
+                ],
+    "notes":  [
+                  "Pins the exact bytes of every deterministic MQL5 verification output.",
+                  "Corpus binding (198 files) and its full sha256 are pinned inside mq5-static-manifest.v1.json."
+              ]
+}

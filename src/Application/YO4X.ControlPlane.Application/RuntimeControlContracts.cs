@@ -86,15 +86,50 @@ public sealed record BrokerUserOperationResultInput(
     long SubmittedResourceVersion,
     string RequestedTargetState,
     string PolicySnapshotSha256,
+    string DispatchTargetBindingSha256,
+    string ResultCapability,
     string Outcome,
+    bool PreInvocationNotSentProven,
+    bool GatewayInvoked,
     bool BrokerConfirmed,
-    string AccountState,
-    string CredentialState,
+    string? AccountState,
+    string? CredentialState,
     string EvidenceSha256,
     string? ErrorCode,
     DateTimeOffset ObservedAt);
 
 public sealed record BrokerUserOperationResultAcceptance(Guid ResultId, string State);
+
+/// <summary>
+/// Authenticated runtime evidence for one exact dispatched deployment operation. The request's
+/// short-lived bearer capability and every frozen dispatch binding are verified by PostgreSQL before
+/// an immutable reconciliation proof is accepted. Terminal failure is admissible only when
+/// the authenticated runtime proves that the gateway was never invoked.
+/// </summary>
+public sealed record DeploymentUserOperationResultInput(
+    int SchemaVersion,
+    Guid ResultId,
+    Guid OperationId,
+    Guid DispatchMessageId,
+    long SubmittedResourceVersion,
+    string RequestedTargetState,
+    string PolicySnapshotSha256,
+    string DispatchTargetBindingSha256,
+    string ResultCapability,
+    string Outcome,
+    bool PreInvocationNotSentProven,
+    bool GatewayInvoked,
+    string? ObservedState,
+    string? ObservedDigest,
+    string RuntimeEvidenceSha256,
+    bool BrokerConfirmed,
+    string? BrokerDigest,
+    string? BrokerExecutionState,
+    string? BrokerPositionState,
+    string? ErrorCode,
+    DateTimeOffset ObservedAt);
+
+public sealed record DeploymentUserOperationResultAcceptance(Guid ResultId, string State);
 
 public sealed record RuntimeAcceptance(Guid EventId, string State, long ExpectedNextSequence);
 
@@ -153,6 +188,13 @@ public interface IRuntimeControlPlaneApplication
         BrokerUserOperationResultInput request,
         RequestMetadata metadata,
         CancellationToken cancellationToken);
+
+    Task<DeploymentUserOperationResultAcceptance> RecordDeploymentUserOperationResultAsync(
+        WorkloadActor actor,
+        Guid deploymentId,
+        DeploymentUserOperationResultInput request,
+        RequestMetadata metadata,
+        CancellationToken cancellationToken);
 }
 
 public sealed class UnavailableRuntimeControlPlaneApplication : IRuntimeControlPlaneApplication
@@ -179,6 +221,9 @@ public sealed class UnavailableRuntimeControlPlaneApplication : IRuntimeControlP
 
     public Task<BrokerUserOperationResultAcceptance> RecordBrokerUserOperationResultAsync(WorkloadActor actor, Guid brokerAccountId, BrokerUserOperationResultInput request, RequestMetadata metadata, CancellationToken cancellationToken) =>
         Unavailable<BrokerUserOperationResultAcceptance>();
+
+    public Task<DeploymentUserOperationResultAcceptance> RecordDeploymentUserOperationResultAsync(WorkloadActor actor, Guid deploymentId, DeploymentUserOperationResultInput request, RequestMetadata metadata, CancellationToken cancellationToken) =>
+        Unavailable<DeploymentUserOperationResultAcceptance>();
 
     private static Task<T> Unavailable<T>() => Task.FromException<T>(new BackendCapabilityUnavailableException("runtime_control_postgres"));
 }

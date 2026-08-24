@@ -24,6 +24,7 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
             throw WrongRuntimeBinding();
         }
 
+        DateTimeOffset observedAt = ToPostgresMicrosecond(request.ObservedAt);
         string payload = CanonicalJson.Serialize(request.Payload);
         return AcceptEventAsync(
             actor,
@@ -32,7 +33,7 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
             request.EventId,
             request.Generation,
             request.Sequence,
-            request.ObservedAt,
+            observedAt,
             "deployment_event",
             payload,
             null,
@@ -49,18 +50,22 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
     {
         ArgumentNullException.ThrowIfNull(request);
         RequireSupervisor(actor);
-        ValidateTargetInput(targetId, request);
+        TargetDeliveryInput canonicalRequest = request with
+        {
+            ObservedAt = ToPostgresMicrosecond(request.ObservedAt)
+        };
+        ValidateTargetInput(targetId, canonicalRequest);
         return AcceptEventAsync(
             actor,
             targetId,
-            request.SchemaVersion,
-            request.EventId,
-            request.Generation,
-            request.Sequence,
-            request.ObservedAt,
+            canonicalRequest.SchemaVersion,
+            canonicalRequest.EventId,
+            canonicalRequest.Generation,
+            canonicalRequest.Sequence,
+            canonicalRequest.ObservedAt,
             "target_delivery",
-            CanonicalJson.Serialize(request),
-            request,
+            CanonicalJson.Serialize(canonicalRequest),
+            canonicalRequest,
             metadata,
             cancellationToken);
     }
@@ -74,18 +79,22 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
     {
         ArgumentNullException.ThrowIfNull(request);
         RequireSupervisor(actor);
-        ValidateTargetInput(targetId, request);
+        TargetDeliveryInput canonicalRequest = request with
+        {
+            ObservedAt = ToPostgresMicrosecond(request.ObservedAt)
+        };
+        ValidateTargetInput(targetId, canonicalRequest);
         return AcceptEventAsync(
             actor,
             targetId,
-            request.SchemaVersion,
-            request.EventId,
-            request.Generation,
-            request.Sequence,
-            request.ObservedAt,
+            canonicalRequest.SchemaVersion,
+            canonicalRequest.EventId,
+            canonicalRequest.Generation,
+            canonicalRequest.Sequence,
+            canonicalRequest.ObservedAt,
             "target_reconciliation",
-            CanonicalJson.Serialize(request),
-            request,
+            CanonicalJson.Serialize(canonicalRequest),
+            canonicalRequest,
             metadata,
             cancellationToken);
     }
@@ -104,6 +113,7 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
         RequestMetadata metadata,
         CancellationToken cancellationToken)
     {
+        observedAt = ToPostgresMicrosecond(observedAt);
         if (generation != actor.Generation)
         {
             throw WrongRuntimeBinding();
@@ -517,6 +527,13 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
 
     private static void AddNullableText(NpgsqlCommand command, string name, string? value) =>
         command.Parameters.AddWithValue(name, NpgsqlDbType.Text, value is null ? DBNull.Value : value.Trim());
+
+    private static DateTimeOffset ToPostgresMicrosecond(DateTimeOffset value)
+    {
+        DateTimeOffset utc = value.ToUniversalTime();
+        long ticks = utc.Ticks - (utc.Ticks % TimeSpan.TicksPerMicrosecond);
+        return new DateTimeOffset(ticks, TimeSpan.Zero);
+    }
 
     private sealed record CursorSnapshot(Guid Id, long LastAcceptedSequence, long RowVersion);
 

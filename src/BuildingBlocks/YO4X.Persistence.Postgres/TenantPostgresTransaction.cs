@@ -1,3 +1,4 @@
+using System.Globalization;
 using Npgsql;
 using NpgsqlTypes;
 using YO4X.Tenancy;
@@ -6,13 +7,40 @@ namespace YO4X.Persistence.Postgres;
 
 public sealed class TenantPostgresTransaction : IAsyncDisposable
 {
-    private const string SetContextSql = """
+    private const string ReadTransactionBindingSql = """
+        select control.assert_safe_runtime_role();
+        select
+            current_database(),
+            current_user,
+            pg_backend_pid(),
+            pg_current_xact_id()::text
+        """;
+
+    private const string ActivateContextSql = """
+        select control.activate_tenant_context(
+            @capability,
+            @tenant_id,
+            @actor_id,
+            @correlation_id,
+            @session_id)
+        """;
+
+    private const string ActivateCredentialRuntimeContextSql = """
+        select control.activate_credential_runtime_tenant_context(
+            @capability,
+            @tenant_id,
+            @actor_id,
+            @correlation_id,
+            @session_id)
+        """;
+
+    private const string VerifyActivatedContextSql = """
         select
             control.assert_safe_runtime_role(),
-            set_config('yo4x.tenant_id', @tenant_id::text, true),
-            set_config('yo4x.actor_id', @actor_id::text, true),
-            set_config('yo4x.correlation_id', @correlation_id::text, true),
-            set_config('yo4x.session_id', coalesce(@session_id::text, ''), true)
+            coalesce(control.current_tenant_id() = @tenant_id, false),
+            coalesce(control.current_actor_id() = @actor_id, false),
+            coalesce(control.current_correlation_id() = @correlation_id, false),
+            control.current_session_id() is not distinct from @session_id
         """;
 
     private readonly NpgsqlConnection _connection;
@@ -44,9 +72,62 @@ public sealed class TenantPostgresTransaction : IAsyncDisposable
         return new NpgsqlCommand(commandText, _connection, _transaction);
     }
 
-    internal async Task ApplyContextAsync(CancellationToken cancellationToken)
+    internal async Task<TenantContextTransactionBinding> ReadTransactionBindingAsync(
+        CancellationToken cancellationToken)
     {
-        await using NpgsqlCommand command = CreateCommand(SetContextSql);
+        await using NpgsqlCommand command = CreateCommand(ReadTransactionBindingSql);
+        await using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.NextResultAsync(cancellationToken).ConfigureAwait(false)
+            || !await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "PostgreSQL did not return the transaction binding required for tenant-context activation.");
+        }
+
+        string transactionIdText = reader.GetString(3);
+        if (!ulong.TryParse(
+                transactionIdText,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out ulong transactionId)
+            || transactionId == 0
+            || !string.Equals(
+                transactionId.ToString(CultureInfo.InvariantCulture),
+                transactionIdText,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "PostgreSQL returned a non-canonical full transaction identifier.");
+        }
+
+        return new TenantContextTransactionBinding(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetInt32(2),
+            transactionId);
+    }
+
+    internal async Task ActivateContextAsync(
+        TenantContextCapability capability,
+        string runtimeRole,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(capability);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runtimeRole);
+
+        string activationSql = string.Equals(
+            runtimeRole,
+            PostgresTenantContextCapabilityProvider.CredentialRuntimeRole,
+            StringComparison.Ordinal)
+            ? ActivateCredentialRuntimeContextSql
+            : ActivateContextSql;
+        await using NpgsqlCommand command = CreateCommand(activationSql);
+        command.Parameters.AddWithValue(
+            "capability",
+            NpgsqlDbType.Bytea,
+            capability.BorrowMaterial());
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, Context.TenantId);
         command.Parameters.AddWithValue("actor_id", NpgsqlDbType.Uuid, Context.ActorId);
         command.Parameters.AddWithValue("correlation_id", NpgsqlDbType.Uuid, Context.CorrelationId);
@@ -55,6 +136,31 @@ public sealed class TenantPostgresTransaction : IAsyncDisposable
             NpgsqlDbType.Uuid,
             Context.SessionId is null ? DBNull.Value : Context.SessionId.Value);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task VerifyActivatedContextAsync(CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand command = CreateCommand(VerifyActivatedContextSql);
+        command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, Context.TenantId);
+        command.Parameters.AddWithValue("actor_id", NpgsqlDbType.Uuid, Context.ActorId);
+        command.Parameters.AddWithValue("correlation_id", NpgsqlDbType.Uuid, Context.CorrelationId);
+        command.Parameters.AddWithValue(
+            "session_id",
+            NpgsqlDbType.Uuid,
+            Context.SessionId is null ? DBNull.Value : Context.SessionId.Value);
+        await using NpgsqlDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            || !reader.GetBoolean(1)
+            || !reader.GetBoolean(2)
+            || !reader.GetBoolean(3)
+            || !reader.GetBoolean(4)
+            || await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new UnauthorizedAccessException(
+                "PostgreSQL did not establish the exact authenticated tenant context.");
+        }
     }
 
     public async Task CommitAsync(CancellationToken cancellationToken = default)

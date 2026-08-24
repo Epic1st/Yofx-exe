@@ -26,7 +26,10 @@ public sealed class LocalCredentialImporterProcessTests
         byte[] source = Encoding.UTF8.GetBytes(
             $"MT5 Login: 12345678\nMT5 Password: {firstSecret}\nMT5 Server: Broker-One\n\n"
             + $"MT5 Login: 87654321\nMT5 Password: {secondSecret}\nMT5 Server: Broker-Two\n");
-        await File.WriteAllBytesAsync(sourcePath, source);
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            source,
+            TestContext.Current.CancellationToken);
         string sourceDigest = Digest(source);
         string importerPath = FindImporterExecutable();
 
@@ -87,7 +90,9 @@ public sealed class LocalCredentialImporterProcessTests
         Assert.Equal(0, replayRun.Created);
         Assert.Equal(2, replayRun.Unchanged);
         Assert.Equal(0, replayRun.Rotated);
-        Assert.Equal(source, await File.ReadAllBytesAsync(sourcePath));
+        Assert.Equal(
+            source,
+            await File.ReadAllBytesAsync(sourcePath, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -99,7 +104,10 @@ public sealed class LocalCredentialImporterProcessTests
         const string secret = "synthetic-recovery-secret";
         byte[] source = Encoding.UTF8.GetBytes(
             $"MT5 Login: 12345678\nMT5 Password: {secret}\nMT5 Server: Broker-One\n");
-        await File.WriteAllBytesAsync(sourcePath, source);
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            source,
+            TestContext.Current.CancellationToken);
 
         ProcessResult initialize = await RunImporterAsync(
             FindImporterExecutable(),
@@ -109,7 +117,8 @@ public sealed class LocalCredentialImporterProcessTests
         Assert.Equal(0, initialize.ExitCode);
         await File.WriteAllBytesAsync(
             Path.Combine(vaultRoot, "orphan.yo4xcred.stage-interrupted"),
-            [0x01]);
+            [0x01],
+            TestContext.Current.CancellationToken);
 
         ProcessResult result = await RunImporterAsync(
             FindImporterExecutable(),
@@ -121,7 +130,9 @@ public sealed class LocalCredentialImporterProcessTests
         Assert.True(string.IsNullOrWhiteSpace(result.StandardOutput));
         Assert.Equal("credential_import_manual_recovery_required", result.StandardError.Trim());
         Assert.DoesNotContain(secret, result.StandardError, StringComparison.Ordinal);
-        Assert.Equal(source, await File.ReadAllBytesAsync(sourcePath));
+        Assert.Equal(
+            source,
+            await File.ReadAllBytesAsync(sourcePath, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -132,7 +143,10 @@ public sealed class LocalCredentialImporterProcessTests
         const string secret = "synthetic-digest-mismatch-secret";
         byte[] source = Encoding.UTF8.GetBytes(
             $"MT5 Login: 12345678\nMT5 Password: {secret}\nMT5 Server: Broker-One\n");
-        await File.WriteAllBytesAsync(sourcePath, source);
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            source,
+            TestContext.Current.CancellationToken);
 
         ProcessResult result = await RunImporterAsync(
             FindImporterExecutable(),
@@ -144,7 +158,9 @@ public sealed class LocalCredentialImporterProcessTests
         Assert.True(string.IsNullOrWhiteSpace(result.StandardOutput));
         Assert.Equal("credential_import_source_digest_mismatch", result.StandardError.Trim());
         Assert.DoesNotContain(secret, result.StandardError, StringComparison.Ordinal);
-        Assert.Equal(source, await File.ReadAllBytesAsync(sourcePath));
+        Assert.Equal(
+            source,
+            await File.ReadAllBytesAsync(sourcePath, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -156,7 +172,10 @@ public sealed class LocalCredentialImporterProcessTests
         const string secret = "synthetic-missing-rotation-secret";
         byte[] source = Encoding.UTF8.GetBytes(
             $"MT5 Login: 12345678\nMT5 Password: {secret}\nMT5 Server: Broker-One\n");
-        await File.WriteAllBytesAsync(sourcePath, source);
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            source,
+            TestContext.Current.CancellationToken);
 
         ProcessResult result = await RunImporterAsync(
             FindImporterExecutable(),

@@ -53,14 +53,6 @@ public sealed record TenantExecutionContext
         new(tenantId, actorId, Identifiers.NewId(), sessionId);
 }
 
-public static class TenantContextSettings
-{
-    public const string TenantId = "yo4x.tenant_id";
-    public const string ActorId = "yo4x.actor_id";
-    public const string CorrelationId = "yo4x.correlation_id";
-    public const string SessionId = "yo4x.session_id";
-}
-
 public sealed record TenantContextEntry(
     Guid Id,
     Guid TenantId,

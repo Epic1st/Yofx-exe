@@ -31,7 +31,7 @@ U0 is a technical proof, not a customer release.
 | Repeat connection/restart/reconciliation | NOT PROVEN | One successful login is not a soak or recovery proof |
 | Commercial local/cloud/SaaS rights | BLOCKED | Written vendor rights are not in the workspace |
 | Full-production vs trial artifact | BLOCKED | Must be proven by vendor/licence evidence and network testing |
-| Supplied MQ5/MQH corpus | STATIC INTAKE COMPLETE | 198 exact files inventoried and persisted; corpus SHA-256 `8052d74d395516aef01f221bf1a663b775ed02ccccbfa0476704d52112ee43b6` |
+| Supplied MQ5/MQH corpus | STATIC INTAKE COMPLETE | 198 exact byte-preserved files inventoried; the authenticated persistence path is integration-tested; corpus SHA-256 `9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47` |
 | Deterministic semantic strategy translation | BLOCKED | Static inventory is not semantic conversion; per-strategy mapping and reference evidence remain required |
 | Three-process runtime proof | BUILDABLE BOUNDARIES; END-TO-END PROOF OPEN | Supervisor, StrategyHost, and GatewayHost are isolated executables; broker/demo soak evidence remains required |
 | Crash/unknown-command reconciliation proof | NOT STARTED | Required before V1A |

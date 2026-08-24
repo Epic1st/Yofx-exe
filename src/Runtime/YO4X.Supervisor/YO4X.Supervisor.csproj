@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <ProjectReference Include="..\..\Application\YO4X.ControlPlane.Application\YO4X.ControlPlane.Application.csproj" />
     <ProjectReference Include="..\YO4X.Runtime.Contracts\YO4X.Runtime.Contracts.csproj" />
     <ProjectReference Include="..\YO4X.Strategy.Abstractions\YO4X.Strategy.Abstractions.csproj" />
     <ProjectReference Include="..\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />

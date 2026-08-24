@@ -19,14 +19,16 @@ The production build is created with `npm run build`.
 
 Copy `.env.example` to an untracked `.env.local` and configure only the IDs and projections that exist. Missing optional projections render explicit unavailable or empty states.
 
-- `VITE_YO4X_CONTROL_API_ORIGIN`: HTTPS ControlPlane origin; empty means same-origin.
+- `VITE_YO4X_CONTROL_API_ORIGIN`: canonical HTTPS ControlPlane origin with no path, query, fragment, or user information; empty means same-origin.
 - `VITE_YO4X_BROKER_ACCOUNT_ID`: optional selected demo account UUID.
 - `VITE_YO4X_DEPLOYMENT_ID`: optional selected deployment UUID.
-- `VITE_YO4X_STRATEGY_COMPATIBILITY_PATH`: optional same-origin ControlPlane read projection.
+- `VITE_YO4X_STRATEGY_CORPUS_ID`: optional tenant-owned source corpus UUID. When set, the frontend reads only `/v1/strategy-source-corpora/{corpusId}/compatibility`; the API binds the corpus to the authenticated tenant and user.
 - `VITE_YO4X_RUNTIME_READINESS_PATH`: optional same-origin ControlPlane read projection.
 - `VITE_YO4X_SIGN_IN_URL`: same-origin identity-provider entry point.
 
 Never put access tokens, broker credentials, login IDs, passwords, or server secrets in Vite environment variables. Values prefixed with `VITE_` are compiled for the browser.
+
+Compatibility data is a source-free static-inventory projection. It contains file identifiers, display names, source type, static disposition, and feature counts; it does not publish MQL source bodies, findings, verification documents, conversion evidence documents, or report artifacts. A compatibility result is not compile, semantic-conversion, parity, runtime, or trading permission evidence.
 
 ## Authentication boundary
 

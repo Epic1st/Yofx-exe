@@ -26,7 +26,32 @@ public static class PostgresIdempotencyRepository
             throw new ArgumentOutOfRangeException(nameof(expiresAt), "Expiry must follow creation time.");
         }
 
+        string normalizedOperation = operation.Trim();
+        DateTimeOffset authoritativeCreatedAt = createdAt.ToUniversalTime();
         Guid id = Identifiers.NewId();
+        await using (NpgsqlCommand retire = transaction.CreateCommand(
+            """
+            update control.idempotency_records
+            set retired_at = @created_at
+            where tenant_id = @tenant_id
+              and actor_id = @actor_id
+              and operation = @operation
+              and idempotency_key = @idempotency_key
+              and retired_at is null
+              and expires_at <= @created_at
+            """))
+        {
+            retire.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, transaction.Context.TenantId);
+            retire.Parameters.AddWithValue("actor_id", NpgsqlDbType.Uuid, transaction.Context.ActorId);
+            retire.Parameters.AddWithValue("operation", NpgsqlDbType.Text, normalizedOperation);
+            retire.Parameters.AddWithValue("idempotency_key", NpgsqlDbType.Text, idempotencyKey);
+            retire.Parameters.AddWithValue(
+                "created_at",
+                NpgsqlDbType.TimestampTz,
+                authoritativeCreatedAt);
+            await retire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         await using NpgsqlCommand command = transaction.CreateCommand(
             """
             insert into control.idempotency_records
@@ -51,16 +76,18 @@ public static class PostgresIdempotencyRepository
                 @created_at,
                 @expires_at
             )
-            on conflict (tenant_id, actor_id, operation, idempotency_key) do nothing
+            on conflict (tenant_id, actor_id, operation, idempotency_key)
+                where retired_at is null
+                do nothing
             returning id
             """);
         command.Parameters.AddWithValue("id", NpgsqlDbType.Uuid, id);
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, transaction.Context.TenantId);
         command.Parameters.AddWithValue("actor_id", NpgsqlDbType.Uuid, transaction.Context.ActorId);
-        command.Parameters.AddWithValue("operation", NpgsqlDbType.Text, operation.Trim());
+        command.Parameters.AddWithValue("operation", NpgsqlDbType.Text, normalizedOperation);
         command.Parameters.AddWithValue("idempotency_key", NpgsqlDbType.Text, idempotencyKey);
         command.Parameters.AddWithValue("request_sha256", NpgsqlDbType.Text, requestSha256);
-        command.Parameters.AddWithValue("created_at", NpgsqlDbType.TimestampTz, createdAt.ToUniversalTime());
+        command.Parameters.AddWithValue("created_at", NpgsqlDbType.TimestampTz, authoritativeCreatedAt);
         command.Parameters.AddWithValue("expires_at", NpgsqlDbType.TimestampTz, expiresAt.ToUniversalTime());
 
         object? acquiredId = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -79,11 +106,14 @@ public static class PostgresIdempotencyRepository
               and actor_id = @actor_id
               and operation = @operation
               and idempotency_key = @idempotency_key
+              and retired_at is null
+              and expires_at > @created_at
             """);
         existing.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, transaction.Context.TenantId);
         existing.Parameters.AddWithValue("actor_id", NpgsqlDbType.Uuid, transaction.Context.ActorId);
-        existing.Parameters.AddWithValue("operation", NpgsqlDbType.Text, operation.Trim());
+        existing.Parameters.AddWithValue("operation", NpgsqlDbType.Text, normalizedOperation);
         existing.Parameters.AddWithValue("idempotency_key", NpgsqlDbType.Text, idempotencyKey);
+        existing.Parameters.AddWithValue("created_at", NpgsqlDbType.TimestampTz, authoritativeCreatedAt);
         await using NpgsqlDataReader reader = await existing.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -125,6 +155,7 @@ public static class PostgresIdempotencyRepository
             where id = @id
               and tenant_id = @tenant_id
               and state = 'processing'
+              and retired_at is null
             """);
         command.Parameters.AddWithValue("response_status", NpgsqlDbType.Integer, statusCode);
         command.Parameters.AddWithValue("response_body", NpgsqlDbType.Jsonb, responseJson);

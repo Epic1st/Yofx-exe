@@ -1,10 +1,16 @@
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import {
+  hasSafeApiTransport,
+  parseCanonicalApiOrigin,
+  resolveSameOriginApiPath,
+} from '../../api/safeUrl';
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface RuntimeConfig {
   readonly apiOrigin: string;
   readonly brokerAccountId: string | null;
   readonly deploymentId: string | null;
-  readonly strategyCompatibilityPath: string | null;
+  readonly strategyCorpusId: string | null;
   readonly runtimeReadinessPath: string | null;
   readonly signInUrl: string;
 }
@@ -28,8 +34,10 @@ function optionalApiPath(value: string | undefined, variableName: string): strin
     return null;
   }
 
-  if (!normalized.startsWith('/') || normalized.startsWith('//')) {
-    throw new Error(`${variableName} must be a same-origin absolute path.`);
+  try {
+    resolveSameOriginApiPath(normalized, 'https://frontend-config.yo4x.invalid');
+  } catch {
+    throw new Error(`${variableName} must be a canonical same-origin absolute path.`);
   }
 
   return normalized;
@@ -37,16 +45,16 @@ function optionalApiPath(value: string | undefined, variableName: string): strin
 
 function apiOrigin(value: string | undefined): string {
   const normalized = value?.trim();
-  if (!normalized) {
-    return '';
+  const candidate = normalized || window.location.origin;
+
+  let parsed: URL;
+  try {
+    parsed = parseCanonicalApiOrigin(candidate);
+  } catch {
+    throw new Error('VITE_YO4X_CONTROL_API_ORIGIN must contain only a trusted origin.');
   }
 
-  const parsed = new URL(normalized);
-  const developmentLoopback = import.meta.env.DEV
-    && parsed.protocol === 'http:'
-    && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost');
-
-  if (parsed.protocol !== 'https:' && !developmentLoopback) {
+  if (!hasSafeApiTransport(parsed, import.meta.env.DEV)) {
     throw new Error('VITE_YO4X_CONTROL_API_ORIGIN must use HTTPS outside loopback development.');
   }
 
@@ -64,9 +72,9 @@ export function readRuntimeConfig(): RuntimeConfig {
       import.meta.env.VITE_YO4X_DEPLOYMENT_ID,
       'VITE_YO4X_DEPLOYMENT_ID',
     ),
-    strategyCompatibilityPath: optionalApiPath(
-      import.meta.env.VITE_YO4X_STRATEGY_COMPATIBILITY_PATH,
-      'VITE_YO4X_STRATEGY_COMPATIBILITY_PATH',
+    strategyCorpusId: optionalUuid(
+      import.meta.env.VITE_YO4X_STRATEGY_CORPUS_ID,
+      'VITE_YO4X_STRATEGY_CORPUS_ID',
     ),
     runtimeReadinessPath: optionalApiPath(
       import.meta.env.VITE_YO4X_RUNTIME_READINESS_PATH,

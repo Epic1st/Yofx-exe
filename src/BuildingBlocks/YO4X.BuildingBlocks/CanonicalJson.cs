@@ -22,7 +22,14 @@ public static class CanonicalJson
     public static string Sha256<T>(T value)
     {
         byte[] bytes = Encoding.UTF8.GetBytes(Serialize(value));
-        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        try
+        {
+            return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
     }
 
     private static JsonNode? Normalize(JsonNode? node) => node switch

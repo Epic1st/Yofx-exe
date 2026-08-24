@@ -279,12 +279,19 @@ if (Microsoft.PowerShell.Management\Test-Path -LiteralPath $vendorRoot -PathType
         Microsoft.PowerShell.Utility\Sort-Object)
 }
 
+$vendorExamplePresent = Microsoft.PowerShell.Management\Test-Path -LiteralPath $vendorExample -PathType Leaf
 $credentialLikeExampleLines = 0
+$credentialConstructorTupleCount = 0
 $orderSendReferences = 0
-if (Microsoft.PowerShell.Management\Test-Path -LiteralPath $vendorExample -PathType Leaf) {
+if ($vendorExamplePresent) {
     $vendorExample = Resolve-LocalInspectionPath $vendorExample $true $false
     $credentialLikeExampleLines = @(Microsoft.PowerShell.Utility\Select-String -LiteralPath $vendorExample `
         -Pattern '(?i)(password|passwd|secret|token)\s*[:=]' -AllMatches).Count
+    $credentialTupleMatches = @(Microsoft.PowerShell.Utility\Select-String -LiteralPath $vendorExample `
+        -Pattern '(?i)new\s+MT5API\s*\(\s*\d+\s*,\s*"[^"\r\n]+"\s*,\s*"[^"\r\n]+"' -AllMatches)
+    $credentialConstructorTupleCount = [int](($credentialTupleMatches |
+        Microsoft.PowerShell.Core\ForEach-Object { $_.Matches.Count } |
+        Microsoft.PowerShell.Utility\Measure-Object -Sum).Sum)
     $orderSendMatches = @(Microsoft.PowerShell.Utility\Select-String -LiteralPath $vendorExample `
         -Pattern '(?i)OrderSend' -AllMatches)
     $orderSendReferences = [int](($orderSendMatches |
@@ -397,7 +404,7 @@ $serverFeatures = @('Hyper-V', 'Containers') |
 $wsl = Get-WslEvidence
 
 $evidence = [ordered]@{
-    SchemaVersion = 'yo4x.mt5-toolchain-isolation-evidence.v3'
+    SchemaVersion = 'yo4x.mt5-toolchain-isolation-evidence.v4'
     EvidenceAuthority = 'unsigned-local-observation'
     CryptographicallyAttested = $false
     GeneratedAtUtc = [DateTimeOffset]::UtcNow.ToString(
@@ -421,7 +428,9 @@ $evidence = [ordered]@{
         Dll = Get-SignatureEvidence $vendorDll
         TopLevelLicenseOrNoticeFileCount = $licenseNames.Count
         TopLevelLicenseOrNoticeFileNames = $licenseNames
+        ExampleSourcePresent = [bool]$vendorExamplePresent
         ExampleCredentialLikeLineCount = $credentialLikeExampleLines
+        ExampleCredentialConstructorTupleCount = $credentialConstructorTupleCount
         ExampleOrderSendReferenceCount = $orderSendReferences
         ExampleValuesRendered = $false
     }

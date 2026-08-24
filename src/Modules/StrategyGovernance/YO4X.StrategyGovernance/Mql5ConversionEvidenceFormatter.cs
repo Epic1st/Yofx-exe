@@ -11,7 +11,7 @@ public static class Mql5ConversionEvidenceFormatter
     public static string ToJson(Mql5ConversionCorpusEvidence evidence)
     {
         ArgumentNullException.ThrowIfNull(evidence);
-        return JsonSerializer.Serialize(evidence, JsonOptions) + "\n";
+        return NormalizeLineEndings(JsonSerializer.Serialize(evidence, JsonOptions)) + "\n";
     }
 
     public static string ToMarkdown(Mql5ConversionCorpusEvidence evidence)
@@ -59,7 +59,7 @@ public static class Mql5ConversionEvidenceFormatter
                      .GroupBy(static file => file.TextEncoding, StringComparer.Ordinal)
                      .OrderBy(static group => group.Key, StringComparer.Ordinal))
         {
-            report.Append("| ").Append(Escape(group.Key))
+            report.Append("| ").Append(Mql5MarkdownEscaper.EscapeTableCell(group.Key))
                 .Append(" | ").Append(group.Count())
                 .AppendLine(" |");
         }
@@ -114,7 +114,7 @@ public static class Mql5ConversionEvidenceFormatter
                      .GroupBy(static feature => (feature.Code, feature.Support))
                      .OrderBy(static group => group.Key.Code, StringComparer.Ordinal))
         {
-            report.Append("| ").Append(Escape(group.Key.Code))
+            report.Append("| ").Append(Mql5MarkdownEscaper.EscapeTableCell(group.Key.Code))
                 .Append(" | ").Append(group.Key.Support)
                 .Append(" | ").Append(group.Count())
                 .Append(" | ").Append(group.Sum(static feature => feature.OccurrenceCount))
@@ -130,8 +130,8 @@ public static class Mql5ConversionEvidenceFormatter
             .AppendLine("|---|---|---|---|---|---:|---:|---:|---:|---|");
         foreach (Mql5ConversionFileEvidence file in evidence.Files)
         {
-            report.Append("| ").Append(Escape(file.RelativePath))
-                .Append(" | ").Append(Escape(file.TextEncoding))
+            report.Append("| ").Append(Mql5MarkdownEscaper.EscapeTableCell(file.RelativePath))
+                .Append(" | ").Append(Mql5MarkdownEscaper.EscapeTableCell(file.TextEncoding))
                 .Append(" | `").Append(file.SourceSha256).Append('`')
                 .Append(" | `").Append(file.DependencyClosureSha256).Append('`')
                 .Append(" | `").Append(file.EvidenceSha256).Append('`')
@@ -152,8 +152,12 @@ public static class Mql5ConversionEvidenceFormatter
             .AppendLine("4. Lower only explicitly supported, type-checked constructs into a versioned restricted IR and reject every unknown construct.")
             .AppendLine("5. Bind MetaEditor compile, deterministic simulation, reference trace, review, and demo-runtime evidence before deployment.");
 
-        return report.ToString().Replace("\r\n", "\n", StringComparison.Ordinal);
+        return NormalizeLineEndings(report.ToString());
     }
+
+    private static string NormalizeLineEndings(string value) => value
+        .Replace("\r\n", "\n", StringComparison.Ordinal)
+        .Replace('\r', '\n');
 
     private static JsonSerializerOptions CreateJsonOptions()
     {
@@ -168,12 +172,4 @@ public static class Mql5ConversionEvidenceFormatter
         return options;
     }
 
-    private static string Escape(string value)
-    {
-        return value
-            .Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("|", "\\|", StringComparison.Ordinal)
-            .Replace("\r", " ", StringComparison.Ordinal)
-            .Replace("\n", " ", StringComparison.Ordinal);
-    }
 }

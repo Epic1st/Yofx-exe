@@ -133,7 +133,10 @@ public sealed class LocalCredentialBoundaryTests
         using var scope = new TemporaryVaultScope();
         string sourcePath = Path.Combine(scope.Workspace, "credentials.txt");
         byte[] source = CredentialSource((12345678UL, "Broker-Demo", "test-only-password"));
-        await File.WriteAllBytesAsync(sourcePath, source);
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            source,
+            TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<CredentialSourceIntegrityException>(() =>
             Mt5CredentialFileParser.ParseFileAsync(
@@ -147,7 +150,10 @@ public sealed class LocalCredentialBoundaryTests
     {
         using var scope = new TemporaryVaultScope();
         string sourcePath = Path.Combine(scope.Workspace, "oversized-credentials.txt");
-        await File.WriteAllBytesAsync(sourcePath, new byte[Mt5CredentialFileParser.MaximumSourceBytes + 1]);
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            new byte[Mt5CredentialFileParser.MaximumSourceBytes + 1],
+            TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<InvalidDataException>(() => Mt5CredentialFileParser.ParseFileAsync(
             sourcePath,
@@ -223,14 +229,16 @@ public sealed class LocalCredentialBoundaryTests
             Assert.False(disposeReturned.IsSet);
             return password.SequenceEqual("parallel-lifecycle-password"u8);
         }));
-        Assert.True(callbackEntered.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(callbackEntered.Wait(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken));
 
         Task dispose = Task.Run(() =>
         {
             disposeAttempted.Set();
             credential.Dispose();
             disposeReturned.Set();
-        });
+        }, TestContext.Current.CancellationToken);
 
         Assert.True(await read);
         await dispose;
@@ -271,7 +279,9 @@ public sealed class LocalCredentialBoundaryTests
 
         Assert.Equal(LocalCredentialWriteDisposition.Created, write.Disposition);
         string protectedPath = Path.Combine(scope.Root, credential.CredentialKey + ".yo4xcred");
-        byte[] protectedBytes = await File.ReadAllBytesAsync(protectedPath);
+        byte[] protectedBytes = await File.ReadAllBytesAsync(
+            protectedPath,
+            TestContext.Current.CancellationToken);
         Assert.False(ContainsSequence(protectedBytes, "unique-plaintext-marker-4815"u8));
 
         using LocalMt5Credential? loaded = await vault.OpenAsync(
@@ -662,7 +672,9 @@ public sealed class LocalCredentialBoundaryTests
         string journalPath = Assert.Single(
             RecoveryArtifacts(scope.Root),
             path => Path.GetFileName(path).StartsWith(".yo4x-vault.recovery-", StringComparison.Ordinal));
-        string journalJson = await File.ReadAllTextAsync(journalPath);
+        string journalJson = await File.ReadAllTextAsync(
+            journalPath,
+            TestContext.Current.CancellationToken);
         Assert.DoesNotContain(secret, journalJson, StringComparison.Ordinal);
         Assert.DoesNotContain("Broker-Demo", journalJson, StringComparison.Ordinal);
         Assert.DoesNotContain("12345678", journalJson, StringComparison.Ordinal);
@@ -723,7 +735,9 @@ public sealed class LocalCredentialBoundaryTests
         string journalPath = Assert.Single(
             RecoveryArtifacts(scope.Root),
             path => Path.GetFileName(path).StartsWith(".yo4x-vault.recovery-", StringComparison.Ordinal));
-        using JsonDocument journal = JsonDocument.Parse(await File.ReadAllTextAsync(journalPath));
+        using JsonDocument journal = JsonDocument.Parse(await File.ReadAllTextAsync(
+            journalPath,
+            TestContext.Current.CancellationToken));
         JsonElement entry = Assert.Single(
             journal.RootElement.GetProperty("entries").EnumerateArray());
         Assert.True(entry.GetProperty("hadOriginal").GetBoolean());
@@ -826,9 +840,14 @@ public sealed class LocalCredentialBoundaryTests
         using LocalMt5Credential credential = Credential("tamper-test-password");
         await vault.StoreAsync(credential, LocalCredentialWriteMode.CreateOrVerify, CancellationToken.None);
         string protectedPath = Path.Combine(scope.Root, credential.CredentialKey + ".yo4xcred");
-        byte[] protectedBytes = await File.ReadAllBytesAsync(protectedPath);
+        byte[] protectedBytes = await File.ReadAllBytesAsync(
+            protectedPath,
+            TestContext.Current.CancellationToken);
         protectedBytes[^1] ^= 0xff;
-        await File.WriteAllBytesAsync(protectedPath, protectedBytes);
+        await File.WriteAllBytesAsync(
+            protectedPath,
+            protectedBytes,
+            TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<LocalCredentialVaultCorruptException>(() =>
             vault.OpenAsync(credential.CredentialKey, CancellationToken.None));
@@ -842,7 +861,10 @@ public sealed class LocalCredentialBoundaryTests
         using LocalMt5Credential credential = Credential("bounded-read-test-password");
         await vault.StoreAsync(credential, LocalCredentialWriteMode.CreateOrVerify, CancellationToken.None);
         string protectedPath = Path.Combine(scope.Root, credential.CredentialKey + ".yo4xcred");
-        await File.WriteAllBytesAsync(protectedPath, new byte[(16 * 1024) + 1]);
+        await File.WriteAllBytesAsync(
+            protectedPath,
+            new byte[(16 * 1024) + 1],
+            TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAsync<LocalCredentialVaultCorruptException>(() =>
             vault.OpenAsync(credential.CredentialKey, CancellationToken.None));
@@ -897,7 +919,10 @@ public sealed class LocalCredentialBoundaryTests
         byte[] source = CredentialSource(
             (12345678UL, "Broker-Demo", "first-import-password"),
             (87654321UL, "Other-Demo", "second-import-password"));
-        await File.WriteAllBytesAsync(sourcePath, source);
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            source,
+            TestContext.Current.CancellationToken);
         string digest = Convert.ToHexString(SHA256.HashData(source)).ToLowerInvariant();
         var service = new LocalCredentialImportService(new DpapiLocalMt5CredentialVault(scope.Root));
 
@@ -912,7 +937,9 @@ public sealed class LocalCredentialBoundaryTests
             Assert.Equal(LocalCredentialWriteDisposition.Created, write.Disposition));
         Assert.DoesNotContain("first-import-password", result.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("second-import-password", result.ToString(), StringComparison.Ordinal);
-        Assert.Equal(source, await File.ReadAllBytesAsync(sourcePath));
+        Assert.Equal(
+            source,
+            await File.ReadAllBytesAsync(sourcePath, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -930,7 +957,10 @@ public sealed class LocalCredentialBoundaryTests
         byte[] source = CredentialSource(
             (12345678UL, "Broker-Demo", "first-import-password"),
             (87654321UL, "Other-Demo", "conflicting-import-password"));
-        await File.WriteAllBytesAsync(sourcePath, source);
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            source,
+            TestContext.Current.CancellationToken);
         var service = new LocalCredentialImportService(vault);
 
         await Assert.ThrowsAsync<LocalCredentialConflictException>(() => service.ImportAsync(
@@ -1007,7 +1037,10 @@ public sealed class LocalCredentialBoundaryTests
         Directory.CreateDirectory(existingDirectory);
         string sentinelPath = Path.Combine(existingDirectory, "sentinel.txt");
         byte[] sentinel = "must-remain-unchanged"u8.ToArray();
-        await File.WriteAllBytesAsync(sentinelPath, sentinel);
+        await File.WriteAllBytesAsync(
+            sentinelPath,
+            sentinel,
+            TestContext.Current.CancellationToken);
         const AccessControlSections comparedSections =
             AccessControlSections.Owner | AccessControlSections.Access;
         string aclBefore = new DirectoryInfo(existingDirectory)
@@ -1025,7 +1058,9 @@ public sealed class LocalCredentialBoundaryTests
             .GetAccessControl(comparedSections)
             .GetSecurityDescriptorSddlForm(comparedSections);
         Assert.Equal(aclBefore, aclAfter);
-        Assert.Equal(sentinel, await File.ReadAllBytesAsync(sentinelPath));
+        Assert.Equal(
+            sentinel,
+            await File.ReadAllBytesAsync(sentinelPath, TestContext.Current.CancellationToken));
         Assert.DoesNotContain(
             Directory.EnumerateFileSystemEntries(existingDirectory),
             path => Path.GetFileName(path).StartsWith(".yo4x-", StringComparison.Ordinal));

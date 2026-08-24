@@ -50,6 +50,9 @@ public sealed class UnavailableControlPlaneApplication : IControlPlaneApplicatio
     public Task<IReadOnlyList<ActivityView>> GetDeploymentActivityAsync(UserActor actor, Guid deploymentId, int limit, Guid? before, CancellationToken cancellationToken) =>
         Unavailable<IReadOnlyList<ActivityView>>();
 
+    public Task<StrategyCompatibilityProjection?> GetStrategyCompatibilityAsync(UserActor actor, Guid corpusId, CancellationToken cancellationToken) =>
+        Unavailable<StrategyCompatibilityProjection?>();
+
     private static Task Unavailable() => Task.FromException(new BackendCapabilityUnavailableException("control_plane_postgres"));
 
     private static Task<T> Unavailable<T>() => Task.FromException<T>(new BackendCapabilityUnavailableException("control_plane_postgres"));

@@ -23,7 +23,7 @@ it does not establish publisher identity, provenance, licensing rights, or safet
 |---|---:|---|---|
 | `mt5api.dll` | 500736 | `EB238C958A4D9F80C8A3EEACA07636AE53BC5A78A093BC3FE63923FA50A309C6` | Unsigned managed vendor assembly; compile-time reference only |
 | `mt5api.xml` | 124327 | `D3A9FCD88F0CF24C0D5E05B1E12BB6951C405D3920AC3FADFF81C80826FF5829` | XML API documentation; 482 documented members |
-| `Examples.cs` | 71463 | `9E2B955E635EFED933CEF91C1E880C4244F58C95ACDDC5860F73DE2155D031EB` | Excluded credential-bearing sample source; never compiled or copied |
+| `Examples.cs` (quarantined) | 71463 | `9E2B955E635EFED933CEF91C1E880C4244F58C95ACDDC5860F73DE2155D031EB` | Removed from the working tree after credential-like constructor tuples were detected; never compiled or copied |
 
 DLL file version: `5.3677.1.2`.
 
@@ -33,6 +33,9 @@ DLL product version:
 Any credential-like values present in the vendor example must be treated as
 compromised. Their owners should revoke or rotate them, and the values must never be
 copied into source, logs, tests, documentation, configuration, or evidence packages.
+The historical blob remains recoverable from the current Git history; removing it
+from the working tree is not a substitute for rotation or an explicitly authorized,
+coordinated history rewrite.
 
 ## Compiled narrow surface
 
@@ -54,6 +57,14 @@ client and never calls connect, disconnect, subscription, quote request, history
 order, close, or modification APIs. `Mt5ProofOnlyGateway.SendAsync` remains
 unconditionally `SubmissionDisabled`.
 
+GatewayHost is composed with this proof-only gateway. Its coordinator option
+`SubmissionEnabled` is false by default and is deliberately not configurable by the
+host. Production broker-command authorization also fails closed before SQL with
+`BROKER_COMMAND_RISK_AUTHORITY_UNAVAILABLE`. The gateway-runtime database role may
+execute only the durable lifecycle functions; it cannot authorize a command or read
+the underlying authority/evidence tables. These independent gates mean that the
+presence of the vendor assembly cannot cause a login or order.
+
 ## Deliberately unmapped or disabled
 
 - No network call or broker authentication.
@@ -74,15 +85,30 @@ unconditionally `SubmissionDisabled`.
 - Representative broker/account bundle and isolated demo credentials.
 - Broker capability and account-mode evidence.
 - Server timezone and quote/history timestamp specification.
-- Risk, ownership/fencing, idempotency, and UNKNOWN-result reconciliation proofs.
+- A trusted risk-authority component that derives immutable broker-dependent inputs;
+  production broker-command authorization is currently hard-disabled.
+- Authenticated broker-observation provenance. The production durable authority does
+  not accept a conclusive terminal reconciliation result.
+- Risk, ownership/fencing, idempotency, and `UNKNOWN`-result reconciliation proofs.
+- An isolated vendor-adapter process and authenticated IPC protocol. An in-process
+  synchronous vendor call can block before it returns a `Task`, so cancellation or a
+  managed timeout cannot provide a hard containment boundary.
 - Network-egress inventory, containment testing, compatibility testing, and demo soak.
 
 Until every relevant blocker is closed with immutable evidence, the adapter remains a
 non-connecting, no-order U0 boundary.
 
-The read-only host observation at
-`artifacts/verification/toolchain/mt5-toolchain-isolation.v2.json` records the
-exact vendor and installed MetaQuotes binary hashes without loading them. It
-finds no configured safe isolated runner and therefore explicitly reports both
-untrusted compilation and supplied-MQL execution unsafe on this host. The
-observation is unsigned and is evidence of this probe only, not attestation.
+The current read-only host observation is
+`artifacts/verification/toolchain/mt5-toolchain-isolation.v4.json` (artifact file
+SHA-256 `ddbc576a9dc1c3efb0c7716f0ae5b7063bfb322a543bfd7b416a259472a2760a`).
+V4 binds the exact probe-script bytes and a deterministic evidence content hash. It
+records the exact vendor DLL and installed MetaQuotes binary hashes without loading
+them, reports valid MetaQuotes signatures for MetaEditor, Terminal, and MetaTester
+build 6140, reports the vendor DLL `NotSigned`, and confirms that the probe launched
+no executable and observed no related process. It also records that `Examples.cs` is
+absent and all non-rendering example credential/order-reference counters are zero.
+It finds no configured safe isolated
+runner and fails closed with `isolated_runner_not_configured`; both untrusted
+compilation and supplied-MQL execution remain unsafe on this host. The observation
+is unsigned local evidence of this probe only, not attestation, licence evidence, or
+permission to execute. The v2 and v3 observations are retained as legacy evidence only.

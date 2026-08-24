@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
 using YO4X.Conversion.Worker;
@@ -115,9 +116,41 @@ public sealed class Mql5StaticInventoryTests
         string report = Mql5InventoryFormatter.ToMarkdown(corpus);
         string manifest = Mql5InventoryFormatter.ToJson(corpus);
 
+        Assert.DoesNotContain('\r', report);
+        Assert.DoesNotContain('\r', manifest);
+        Assert.EndsWith("\n", manifest, StringComparison.Ordinal);
+
         Assert.Equal("utf-16le", Assert.Single(corpus.Files).TextEncoding);
         Assert.DoesNotContain("PRIVATE_ALPHA_LOGIC", report, StringComparison.Ordinal);
         Assert.DoesNotContain("PRIVATE_ALPHA_LOGIC", manifest, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StaticReportRendersHostileMetadataAsInertTableText()
+    {
+        const string HostilePath =
+            "nested/[click](javascript-alert)<img src=x>`tick`&name|row.mq5";
+        Mql5CorpusManifest baseline = Analyze(("main.mq5", "void OnTick() {}"));
+        Mql5CorpusManifest corpus = baseline with
+        {
+            Files =
+            [
+                baseline.Files[0] with { RelativePath = HostilePath }
+            ]
+        };
+
+        string report = Mql5InventoryFormatter.ToMarkdown(corpus);
+
+        Assert.DoesNotContain("[click](javascript-alert)", report, StringComparison.Ordinal);
+        Assert.DoesNotContain("<img", report, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("`tick`", report, StringComparison.Ordinal);
+        Assert.DoesNotContain("name|row", report, StringComparison.Ordinal);
+        Assert.Contains(
+            "&#91;click&#93;&#40;javascript-alert&#41;",
+            report,
+            StringComparison.Ordinal);
+        Assert.Contains("&lt;img src=x&gt;", report, StringComparison.Ordinal);
+        Assert.Contains("&#96;tick&#96;&amp;name&#124;row.mq5", report, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -290,11 +323,19 @@ public sealed class Mql5StaticInventoryTests
         Directory.CreateDirectory(root);
         try
         {
-            await File.WriteAllTextAsync(Path.Combine(root, "strategy.mq5"), "void OnTick() {}");
-            await File.WriteAllTextAsync(Path.Combine(root, "credentials.txt"), "SYNTHETIC_SECRET_MUST_NOT_APPEAR");
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "strategy.mq5"),
+                "void OnTick() {}",
+                TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "credentials.txt"),
+                "SYNTHETIC_SECRET_MUST_NOT_APPEAR",
+                TestContext.Current.CancellationToken);
             var job = new Mql5CorpusInventoryJob(new Mql5StaticInventoryAnalyzer());
 
-            Mql5CorpusManifest corpus = await job.AnalyzeDirectoryAsync(root);
+            Mql5CorpusManifest corpus = await job.AnalyzeDirectoryAsync(
+                root,
+                TestContext.Current.CancellationToken);
             string serialized = Mql5InventoryFormatter.ToJson(corpus);
 
             Assert.Equal(1, corpus.FileCount);
@@ -309,18 +350,73 @@ public sealed class Mql5StaticInventoryTests
     }
 
     [Fact]
+    public async Task DirectoryJobRejectsHighConfidenceSecretBeforeAnalyzerWithoutEchoingIt()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "yo4x-mql5-secret-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string syntheticToken = string.Concat("123456789", ":", new string('A', 35));
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "strategy.mq5"),
+                "void OnTick() {}\ninput string TelegramBotToken = \"" + syntheticToken + "\";\n",
+                TestContext.Current.CancellationToken);
+            var analyzer = new CountingAnalyzer();
+            var job = new Mql5CorpusInventoryJob(analyzer);
+
+            Mql5SourceSecretException error = await Assert.ThrowsAsync<Mql5SourceSecretException>(
+                () => job.AnalyzeDirectoryForPersistenceAsync(
+                    root,
+                    TestContext.Current.CancellationToken));
+
+            Assert.False(analyzer.WasCalled);
+            Assert.Equal("strategy.mq5", error.RelativePath);
+            Assert.Equal(2, error.Line);
+            Assert.Equal("MQL5_SECRET_TELEGRAM_BOT_TOKEN", error.RuleCode);
+            Assert.DoesNotContain(syntheticToken, error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void StaticAnalyzerRejectsPrivateKeyMarkerAndAcceptsExplicitPlaceholder()
+    {
+        string privateKeyMarker = string.Join(' ', "-----BEGIN", "PRIVATE", "KEY-----");
+        var secretDocument = new Mql5SourceDocument(
+            "secret.mqh",
+            Encoding.UTF8.GetBytes("// " + privateKeyMarker));
+
+        Mql5SourceSecretException error = Assert.Throws<Mql5SourceSecretException>(
+            () => new Mql5StaticInventoryAnalyzer().Analyze([secretDocument]));
+
+        Assert.Equal("MQL5_SECRET_PRIVATE_KEY", error.RuleCode);
+        Assert.DoesNotContain(privateKeyMarker, error.Message, StringComparison.Ordinal);
+        Mql5CorpusManifest accepted = Analyze(
+            ("placeholder.mq5", "input string OpenAI_API_Key = \"YOUR_OPENAI_API_KEY\";\nvoid OnTick() {}"));
+        Assert.Single(accepted.Files);
+    }
+
+    [Fact]
     public async Task DirectoryJobZeroesRetainedSourceWhenAnalysisFails()
     {
         string root = Path.Combine(Path.GetTempPath(), "yo4x-mql5-failure-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {
-            await File.WriteAllTextAsync(Path.Combine(root, "strategy.mq5"), "void OnTick() {}");
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "strategy.mq5"),
+                "void OnTick() {}",
+                TestContext.Current.CancellationToken);
             var analyzer = new CapturingFailingAnalyzer();
             var job = new Mql5CorpusInventoryJob(analyzer);
 
             await Assert.ThrowsAsync<InvalidDataException>(
-                () => job.AnalyzeDirectoryForPersistenceAsync(root));
+                () => job.AnalyzeDirectoryForPersistenceAsync(
+                    root,
+                    TestContext.Current.CancellationToken));
 
             Assert.NotNull(analyzer.CapturedContent);
             Assert.All(analyzer.CapturedContent!, static value => Assert.Equal(0, value));
@@ -328,6 +424,89 @@ public sealed class Mql5StaticInventoryTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DirectoryJobRejectsReparseSourceRootOrAncestor(bool rootIsLink)
+    {
+        string testRoot = Path.Combine(
+            Path.GetTempPath(),
+            "yo4x-mql5-reparse-root-" + Guid.NewGuid().ToString("N"));
+        string target = Path.Combine(testRoot, "target");
+        string targetChild = Path.Combine(target, "child");
+        string link = Path.Combine(testRoot, "linked-root");
+        Directory.CreateDirectory(targetChild);
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(rootIsLink ? target : targetChild, "strategy.mq5"),
+                "void OnTick() {}",
+                TestContext.Current.CancellationToken);
+            CreateDirectoryJunction(link, target);
+            string sourceRoot = rootIsLink ? link : Path.Combine(link, "child");
+            var job = new Mql5CorpusInventoryJob(new Mql5StaticInventoryAnalyzer());
+
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+                () => job.AnalyzeDirectoryForPersistenceAsync(
+                    sourceRoot,
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(
+                "The MQL5 source root and its ancestors must not be reparse points.",
+                error.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(link))
+            {
+                Directory.Delete(link);
+            }
+
+            Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task BoundedReadRejectsAllowedExtensionReparseFile()
+    {
+        string testRoot = Path.Combine(
+            Path.GetTempPath(),
+            "yo4x-mql5-reparse-file-" + Guid.NewGuid().ToString("N"));
+        string sourceRoot = Path.Combine(testRoot, "source");
+        string targetDirectory = Path.Combine(testRoot, "target");
+        string target = Path.Combine(targetDirectory, "linked.mq5");
+        string linkDirectory = Path.Combine(sourceRoot, "linked-directory");
+        string linkedFile = Path.Combine(linkDirectory, "linked.mq5");
+        Directory.CreateDirectory(sourceRoot);
+        Directory.CreateDirectory(targetDirectory);
+        try
+        {
+            await File.WriteAllTextAsync(
+                target,
+                "void OnTick() {}",
+                TestContext.Current.CancellationToken);
+            CreateDirectoryJunction(linkDirectory, targetDirectory);
+
+            InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(
+                () => Mql5CorpusInventoryJob.ReadBoundedFileAsync(
+                    new FileInfo(linkedFile),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(
+                "The MQL5 source root and its ancestors must not be reparse points.",
+                error.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(linkDirectory))
+            {
+                Directory.Delete(linkDirectory);
+            }
+
+            Directory.Delete(testRoot, recursive: true);
         }
     }
 
@@ -351,11 +530,13 @@ public sealed class Mql5StaticInventoryTests
                 }
             }))
             .ToArray();
-        Task dispose = Task.Run(() =>
-        {
-            start.Wait();
-            request.Dispose();
-        });
+        Task dispose = Task.Run(
+            () =>
+            {
+                start.Wait();
+                request.Dispose();
+            },
+            TestContext.Current.CancellationToken);
 
         start.Set();
         await Task.WhenAll(attempts.Cast<Task>().Append(dispose));
@@ -371,6 +552,77 @@ public sealed class Mql5StaticInventoryTests
             Assert.Equal(expected, copy);
             CryptographicOperations.ZeroMemory(copy!);
         }
+    }
+
+    [Fact]
+    public void PersistenceRequestRejectsInvalidCapabilityBeforeRetainingIt()
+    {
+        Assert.Throws<ArgumentException>(
+            () => new Mql5CorpusPersistenceRequest(Guid.Empty, new byte[32]));
+        Assert.Throws<ArgumentException>(
+            () => new Mql5CorpusPersistenceRequest(Guid.NewGuid(), new byte[32]));
+        Assert.Throws<ArgumentException>(
+            () => new Mql5CorpusPersistenceRequest(Guid.NewGuid(), new byte[31]));
+        Assert.Throws<ArgumentException>(
+            () => new Mql5CorpusPersistenceRequest(Guid.NewGuid(), new byte[33]));
+    }
+
+    [Fact]
+    public void PersistenceSnapshotOwnsExactSourceBytes()
+    {
+        byte[] source = Encoding.UTF8.GetBytes("void OnTick() { int original = 7; }");
+        var document = new Mql5SourceDocument("main.mq5", source);
+        Mql5CorpusManifest manifest = new Mql5StaticInventoryAnalyzer().Analyze([document]);
+        using var callerCorpus = new Mql5AnalyzedCorpus(manifest, [document]);
+
+        using Mql5AnalyzedCorpus owned = PostgresMql5CorpusStore.SnapshotCorpus(callerCorpus);
+        byte[] expected = owned.Documents[0].Content.ToArray();
+        Array.Fill(source, (byte)0x5a);
+
+        Assert.Equal(expected, owned.Documents[0].Content);
+        Assert.NotSame(source, owned.Documents[0].Content);
+        CryptographicOperations.ZeroMemory(expected);
+    }
+
+    [Fact]
+    public void PersistenceSnapshotRejectsSecretEvenWhenCallerManifestWasBuiltFromSafeBytes()
+    {
+        byte[] safeBytes = Encoding.UTF8.GetBytes("void OnTick() {}");
+        var safeDocument = new Mql5SourceDocument("main.mq5", safeBytes);
+        Mql5CorpusManifest safeManifest = new Mql5StaticInventoryAnalyzer().Analyze([safeDocument]);
+        string syntheticToken = string.Concat("987654321", ":", new string('B', 35));
+        byte[] secretBytes = Encoding.UTF8.GetBytes("string access_token = \"" + syntheticToken + "\";");
+        var secretDocument = new Mql5SourceDocument("main.mq5", secretBytes);
+        using var callerCorpus = new Mql5AnalyzedCorpus(safeManifest, [secretDocument]);
+
+        Mql5SourceSecretException error = Assert.Throws<Mql5SourceSecretException>(
+            () => PostgresMql5CorpusStore.SnapshotCorpus(callerCorpus));
+
+        Assert.Equal("MQL5_SECRET_TELEGRAM_BOT_TOKEN", error.RuleCode);
+        Assert.DoesNotContain(syntheticToken, error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PersistenceSnapshotIgnoresCallerManifestAndRejectsThrowingDocumentCollection()
+    {
+        byte[] source = Encoding.UTF8.GetBytes("void OnTick() {}");
+        var document = new Mql5SourceDocument("main.mq5", source);
+        Mql5CorpusManifest trusted = new Mql5StaticInventoryAnalyzer().Analyze([document]);
+        Mql5CorpusManifest fabricated = trusted with
+        {
+            Files = [trusted.Files[0] with { Disposition = Mql5StaticDisposition.Rejected }]
+        };
+        using (var callerCorpus = new Mql5AnalyzedCorpus(fabricated, [document]))
+        using (Mql5AnalyzedCorpus owned = PostgresMql5CorpusStore.SnapshotCorpus(callerCorpus))
+        {
+            Assert.Equal(trusted.Files[0].Disposition, owned.Manifest.Files[0].Disposition);
+        }
+
+        var throwingDocuments = new ThrowingAfterFirstCountList(document);
+        using var throwingCorpus = new Mql5AnalyzedCorpus(trusted, throwingDocuments);
+        InvalidDataException rejected = Assert.Throws<InvalidDataException>(
+            () => PostgresMql5CorpusStore.SnapshotCorpus(throwingCorpus));
+        Assert.Contains("could not be bounded", rejected.Message);
     }
 
     [Fact]
@@ -394,12 +646,113 @@ public sealed class Mql5StaticInventoryTests
             error.Message);
     }
 
+    [Fact]
+    public void PostgresPersistenceKeepsJobAuthorizationAndEveryWriteInOneTransaction()
+    {
+        string source = ReadRepositoryFile(
+            "src",
+            "Apps",
+            "YO4X.Conversion.Worker",
+            "PostgresMql5CorpusStore.cs");
+        string persistence = Slice(
+            source,
+            "private async Task<Mql5CorpusPersistenceResult> PersistCoreAsync",
+            "private async Task<(TenantPostgresTransaction Transaction, StrategyImportReservation Reservation)>");
+        string begin = Slice(
+            source,
+            "private async Task<(TenantPostgresTransaction Transaction, StrategyImportReservation Reservation)>",
+            "private static async Task<StrategyImportReservation> ReadReservationUnderPersistenceLockAsync");
+
+        Assert.Equal(1, CountOccurrences(persistence, "await BeginStrategyImportTransactionAsync("));
+        Assert.DoesNotContain("BeginTenantTransactionAsync", persistence, StringComparison.Ordinal);
+        Assert.Contains("await using (transaction)", persistence, StringComparison.Ordinal);
+        Assert.Contains("AcquirePersistenceLockAsync(transaction", persistence, StringComparison.Ordinal);
+        Assert.Contains("insert into governance.strategy_source_corpora", persistence, StringComparison.Ordinal);
+        Assert.Contains("InsertFileAsync( transaction", CollapseWhitespace(persistence), StringComparison.Ordinal);
+        Assert.Contains("PersistClassificationAsync( transaction", CollapseWhitespace(persistence), StringComparison.Ordinal);
+        Assert.Contains("CompleteImportAsync( transaction", CollapseWhitespace(persistence), StringComparison.Ordinal);
+
+        Assert.Contains("database.OpenConnectionAsync", begin, StringComparison.Ordinal);
+        Assert.Contains("connection.BeginTransactionAsync", begin, StringComparison.Ordinal);
+        Assert.Contains("control.acquire_strategy_import_job", begin, StringComparison.Ordinal);
+        Assert.Contains("new TenantPostgresTransaction(connection, transaction, context)", begin, StringComparison.Ordinal);
+        Assert.Contains("VerifyActivatedContextAsync", begin, StringComparison.Ordinal);
+        Assert.DoesNotContain("CommitAsync", begin, StringComparison.Ordinal);
+
+        string command = ReadRepositoryFile(
+            "src",
+            "Apps",
+            "YO4X.Conversion.Worker",
+            "ConversionInventoryCommand.cs");
+        Assert.DoesNotContain("ContextIssuer", command, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "PostgresTenantContextCapabilityProvider",
+            command,
+            StringComparison.Ordinal);
+    }
+
     private static Mql5CorpusManifest Analyze(params (string Path, string Source)[] sources)
     {
         var analyzer = new Mql5StaticInventoryAnalyzer();
         return analyzer.Analyze(sources.Select(source => new Mql5SourceDocument(
             source.Path,
             Encoding.UTF8.GetBytes(source.Source))));
+    }
+
+    private static string ReadRepositoryFile(params string[] segments)
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null
+            && !File.Exists(Path.Combine(directory.FullName, "YO4X.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+        string path = Path.Combine([directory.FullName, .. segments]);
+        Assert.True(File.Exists(path), $"The repository contract file {path} was not found.");
+        return File.ReadAllText(path);
+    }
+
+    private static string Slice(string value, string startMarker, string endMarker)
+    {
+        int start = value.IndexOf(startMarker, StringComparison.Ordinal);
+        int end = value.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, $"Contract section {startMarker} was not found.");
+        return value[start..end];
+    }
+
+    private static int CountOccurrences(string value, string candidate) =>
+        value.Split(candidate, StringSplitOptions.None).Length - 1;
+
+    private static string CollapseWhitespace(string value) =>
+        string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    private static void CreateDirectoryJunction(string link, string target)
+    {
+        string command = $"mklink /J \"{link}\" \"{target}\"";
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                Arguments = $"/d /s /c \"{command}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }
+        };
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("Could not start the junction creation process.");
+        }
+
+        process.WaitForExit();
+        if (process.ExitCode != 0 || !Directory.Exists(link))
+        {
+            throw new InvalidOperationException("Could not create a disposable test reparse point.");
+        }
     }
 
     private sealed class CapturingFailingAnalyzer : IMql5StaticInventoryAnalyzer
@@ -411,5 +764,38 @@ public sealed class Mql5StaticInventoryTests
             CapturedContent = Assert.Single(sourceDocuments).Content;
             throw new InvalidDataException("Synthetic analyzer failure.");
         }
+    }
+
+    private sealed class CountingAnalyzer : IMql5StaticInventoryAnalyzer
+    {
+        public bool WasCalled { get; private set; }
+
+        public Mql5CorpusManifest Analyze(IEnumerable<Mql5SourceDocument> sourceDocuments)
+        {
+            WasCalled = true;
+            throw new InvalidOperationException("The secret gate must run before analysis.");
+        }
+    }
+
+    private sealed class ThrowingAfterFirstCountList(Mql5SourceDocument document)
+        : IReadOnlyList<Mql5SourceDocument>
+    {
+        private int countReads;
+
+        public int Count => Interlocked.Increment(ref countReads) == 1
+            ? 1
+            : throw new InvalidOperationException("Synthetic concurrent collection mutation.");
+
+        public Mql5SourceDocument this[int index] => index == 0
+            ? document
+            : throw new ArgumentOutOfRangeException(nameof(index));
+
+        public IEnumerator<Mql5SourceDocument> GetEnumerator()
+        {
+            yield return document;
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+            GetEnumerator();
     }
 }

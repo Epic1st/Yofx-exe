@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Docker.DotNet;
 using DotNet.Testcontainers.Configurations;
 
@@ -15,7 +16,10 @@ public sealed class PostgresFactAttribute : FactAttribute
         Probe,
         LazyThreadSafetyMode.ExecutionAndPublication);
 
-    public PostgresFactAttribute()
+    public PostgresFactAttribute(
+        [CallerFilePath] string? sourceFilePath = null,
+        [CallerLineNumber] int sourceLineNumber = -1)
+        : base(sourceFilePath, sourceLineNumber)
     {
         PostgresAvailability availability = Availability.Value;
         if (!availability.IsAvailable)

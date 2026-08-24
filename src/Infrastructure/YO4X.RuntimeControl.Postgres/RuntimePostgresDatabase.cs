@@ -11,10 +11,24 @@ public sealed class RuntimePostgresDatabase : IAsyncDisposable
 {
     private readonly PostgresDatabase database;
 
-    public RuntimePostgresDatabase(string connectionString)
+    public RuntimePostgresDatabase(
+        string connectionString,
+        ITenantContextCapabilityProvider? tenantContextCapabilityProvider = null,
+        bool allowInsecureLoopbackForDevelopment = false)
     {
-        database = new PostgresDatabase(connectionString, PostgresDatabaseUsage.Runtime);
+        database = new PostgresDatabase(
+            connectionString,
+            PostgresDatabaseUsage.Runtime,
+            tenantContextCapabilityProvider,
+            allowInsecureLoopbackForDevelopment);
     }
+
+    public bool HasTenantContextCapabilityProvider =>
+        database.HasTenantContextCapabilityProvider;
+
+    public bool UsesTenantContextCapabilityProvider(
+        ITenantContextCapabilityProvider provider) =>
+        database.UsesTenantContextCapabilityProvider(provider);
 
     public ValueTask<NpgsqlConnection> OpenConnectionAsync(CancellationToken cancellationToken = default) =>
         database.OpenConnectionAsync(cancellationToken);

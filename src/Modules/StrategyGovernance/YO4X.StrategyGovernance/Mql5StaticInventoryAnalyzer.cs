@@ -8,7 +8,7 @@ namespace YO4X.StrategyGovernance;
 public sealed partial class Mql5StaticInventoryAnalyzer : IMql5StaticInventoryAnalyzer
 {
     public const string SchemaVersion = "mql5-static-inventory.v1";
-    public const string AnalyzerVersion = "yo4x-mql5-static-analyzer.v2";
+    public const string AnalyzerVersion = "yo4x-mql5-static-analyzer.v3";
     private const int MaximumReportedLinesPerFeature = 32;
 
     private static readonly Mql5VerificationClaims StaticOnlyClaims = new(
@@ -117,7 +117,21 @@ public sealed partial class Mql5StaticInventoryAnalyzer : IMql5StaticInventoryAn
             throw new ArgumentException("Only .mq5 and .mqh source documents are accepted.", nameof(document));
         }
 
-        return document with { RelativePath = relativePath, Content = document.Content.ToArray() };
+        var snapshot = document with
+        {
+            RelativePath = relativePath,
+            Content = document.Content.ToArray()
+        };
+        try
+        {
+            Mql5SourceSecretScanner.EnsureNoHighConfidenceSecrets(snapshot);
+            return snapshot;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(snapshot.Content);
+            throw;
+        }
     }
 
     private static string NormalizeRelativePath(string path)

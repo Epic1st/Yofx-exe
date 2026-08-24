@@ -63,6 +63,33 @@ public sealed record ActivityView(
     IReadOnlyDictionary<string, string> Details,
     DateTimeOffset OccurredAt);
 
+public enum StrategyCompatibilityAnalysisState
+{
+    Analyzed,
+    ReviewRequired,
+    Unsupported,
+    Pending
+}
+
+public enum StrategyCompatibilitySourceType
+{
+    Mq5,
+    Mqh
+}
+
+public sealed record StrategyCompatibilityItem(
+    Guid StrategyId,
+    string Name,
+    StrategyCompatibilitySourceType SourceType,
+    StrategyCompatibilityAnalysisState AnalysisState,
+    int FeatureCount,
+    string? ReportPath);
+
+public sealed record StrategyCompatibilityProjection(
+    int AnalyzedFileCount,
+    int TotalFileCount,
+    IReadOnlyList<StrategyCompatibilityItem> Items);
+
 public sealed record AcceptedOperation(
     Guid CommandId,
     Uri StatusUrl,
@@ -245,5 +272,10 @@ public interface IControlPlaneApplication
         Guid deploymentId,
         int limit,
         Guid? before,
+        CancellationToken cancellationToken);
+
+    Task<StrategyCompatibilityProjection?> GetStrategyCompatibilityAsync(
+        UserActor actor,
+        Guid corpusId,
         CancellationToken cancellationToken);
 }

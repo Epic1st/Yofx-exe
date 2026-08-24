@@ -132,6 +132,10 @@ public sealed class ArchitectureBoundaryTests
     [Fact]
     public void CredentialBearingExamplesNeverEnterCompilationOrBuildOutputs()
     {
+        string vendorExamplePath = Path.Combine(
+            RepositoryRoot,
+            "mt5-net-api-full-binaries-main",
+            "Examples.cs");
         string projectPath = Path.Combine(
             RepositoryRoot,
             "src",
@@ -148,6 +152,9 @@ public sealed class ArchitectureBoundaryTests
         Assert.DoesNotContain(
             explicitIncludes,
             value => value.EndsWith("Examples.cs", StringComparison.OrdinalIgnoreCase));
+        Assert.False(
+            File.Exists(vendorExamplePath),
+            "Credential-bearing vendor examples must remain quarantined from the repository working tree.");
         AssertNoBuildOutputFile("Examples.cs");
     }
 
@@ -158,7 +165,7 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [Fact]
-    public void GatewayHostUsesTheAdapterWithoutReferencingTheVendorAssemblyDirectly()
+    public void GatewayHostUsesOnlyTheKillableProcessBoundary()
     {
         string projectPath = Path.Combine(
             RepositoryRoot,
@@ -173,13 +180,56 @@ public sealed class ArchitectureBoundaryTests
             .Select(value => Path.GetFileNameWithoutExtension(value!))
             .ToArray();
 
-        Assert.Contains("YO4X.Trading.Mt5", projectReferences, StringComparer.Ordinal);
+        Assert.Contains("YO4X.Trading.ProcessIsolation", projectReferences, StringComparer.Ordinal);
+        Assert.DoesNotContain("YO4X.Trading.Mt5", projectReferences, StringComparer.Ordinal);
         Assert.DoesNotContain(
             project.Descendants("Reference"),
             element => string.Equals(
                 element.Attribute("Include")?.Value,
                 "mt5api",
                 StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ProductionBrokerVendorBindingIsReachableOnlyFromTheWorkerProcess()
+    {
+        string gatewayProjectPath = Path.Combine(
+            RepositoryRoot,
+            "src",
+            "Runtime",
+            "YO4X.GatewayHost",
+            "YO4X.GatewayHost.csproj");
+        string workerProjectPath = Path.Combine(
+            RepositoryRoot,
+            "src",
+            "Runtime",
+            "YO4X.Mt5.WorkerHost",
+            "YO4X.Mt5.WorkerHost.csproj");
+        string gatewayProgramPath = Path.Combine(
+            RepositoryRoot,
+            "src",
+            "Runtime",
+            "YO4X.GatewayHost",
+            "Program.cs");
+        string processClientPath = Path.Combine(
+            RepositoryRoot,
+            "src",
+            "Runtime",
+            "YO4X.Trading.ProcessIsolation",
+            "BrokerProcessClient.cs");
+
+        string gatewayProject = File.ReadAllText(gatewayProjectPath);
+        string workerProject = File.ReadAllText(workerProjectPath);
+        string gatewayProgram = File.ReadAllText(gatewayProgramPath);
+        string processClient = File.ReadAllText(processClientPath);
+
+        Assert.DoesNotContain("YO4X.Trading.Mt5", gatewayProject, StringComparison.Ordinal);
+        Assert.Contains("YO4X.Trading.Mt5", workerProject, StringComparison.Ordinal);
+        Assert.Contains("AddMt5ProcessBoundary", gatewayProgram, StringComparison.Ordinal);
+        Assert.DoesNotContain("Mt5ProofOnlyGateway", gatewayProgram, StringComparison.Ordinal);
+        Assert.Contains("RedirectStandardInput = true", processClient, StringComparison.Ordinal);
+        Assert.Contains("RedirectStandardOutput = true", processClient, StringComparison.Ordinal);
+        Assert.Contains("Kill(entireProcessTree: true)", processClient, StringComparison.Ordinal);
     }
 
     [Fact]

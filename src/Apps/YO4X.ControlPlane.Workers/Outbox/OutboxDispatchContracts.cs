@@ -4,6 +4,10 @@ public interface IPostgresOutboxStore
 {
     ValueTask<bool> IsAvailableAsync(CancellationToken cancellationToken);
 
+    ValueTask<bool> IsScanProgressHealthyAsync(
+        TimeSpan maximumRotationAge,
+        CancellationToken cancellationToken);
+
     ValueTask<IReadOnlyList<ClaimedOutboxItem>> ClaimAsync(
         OutboxClaimRequest request,
         CancellationToken cancellationToken);

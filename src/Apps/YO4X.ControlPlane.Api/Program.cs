@@ -1,10 +1,12 @@
-using System.Security.Claims;
 using System.Net;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using YO4X.Api;
 using YO4X.ControlPlane.Api;
 using YO4X.ControlPlane.Application;
+using YO4X.ControlPlane.Postgres;
 using YO4X.Deployments;
 using YO4X.Identity;
 
@@ -17,6 +19,11 @@ builder.WebHost.ConfigureKestrel(options =>
 });
 builder.Services.AddYo4xApiFoundation(options =>
     options.ErrorTypeBase = builder.Configuration["Api:ErrorTypeBase"] ?? "https://errors.yo4x.invalid");
+builder.Services.AddRequestTimeouts(options =>
+    options.DefaultPolicy = new RequestTimeoutPolicy
+    {
+        Timeout = ControlPlanePostgresOptions.ProofKeyReplayRequestSafetyMargin
+    });
 builder.Services.AddYo4xUserAndWorkloadAuthentication(builder.Configuration);
 builder.Services.TryAddControlPlanePostgres(builder.Configuration, builder.Environment);
 builder.Services.TryAddRuntimeControlPostgres(builder.Configuration, builder.Environment);
@@ -28,6 +35,7 @@ WebApplication app = builder.Build();
 app.UseYo4xApiFoundation();
 app.UseYo4xHttpsOnly();
 app.UseYo4xProblemStatusCodes();
+app.UseRequestTimeouts();
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -179,6 +187,8 @@ user.MapPost("/broker-accounts/{brokerAccountId:guid}/credential-rotation-sessio
             request.ClientOrigin),
         ToMetadata(context),
         cancellationToken);
+    context.Response.Headers.CacheControl = "no-store";
+    context.Response.Headers.Pragma = "no-cache";
     return Results.Created($"/v1/cloud-credential-ingestion-sessions/{session.GrantId}", session);
 }).AddEndpointFilter(new MutationPreconditionFilter(requireExpectedVersion: true));
 MapBrokerAction(user, "/broker-accounts/{brokerAccountId:guid}/disable-cloud-use", BrokerAccountAction.DisableCloudUse, requireVersion: true);
@@ -234,6 +244,19 @@ user.MapGet("/deployments/{deploymentId:guid}/activity", async (
     int boundedLimit = Math.Clamp(limit ?? 50, 1, 100);
     return Results.Ok(await application.GetDeploymentActivityAsync(
         ToUserActor(context.User), deploymentId, boundedLimit, before, cancellationToken));
+});
+
+user.MapGet("/strategy-source-corpora/{corpusId:guid}/compatibility", async (
+    Guid corpusId,
+    HttpContext context,
+    IControlPlaneApplication application,
+    CancellationToken cancellationToken) =>
+{
+    StrategyCompatibilityProjection? projection = await application.GetStrategyCompatibilityAsync(
+        ToUserActor(context.User), corpusId, cancellationToken);
+    return projection is null
+        ? ApiProblems.Create(context, StatusCodes.Status404NotFound, "RESOURCE_NOT_FOUND", "The resource was not found.")
+        : Results.Ok(projection);
 });
 
 user.MapGet("/operations/{operationId:guid}", async (
@@ -335,6 +358,20 @@ runtime.MapPost("/broker-accounts/{brokerAccountId:guid}/operation-results", asy
     Results.Accepted(value: await application.RecordBrokerUserOperationResultAsync(
         ToWorkloadActor(context.User),
         brokerAccountId,
+        request,
+        ToMetadata(context),
+        cancellationToken)))
+    .AddEndpointFilter(new MutationPreconditionFilter());
+
+runtime.MapPost("/deployments/{deploymentId:guid}/operation-results", async (
+    Guid deploymentId,
+    DeploymentUserOperationResultInput request,
+    HttpContext context,
+    IRuntimeControlPlaneApplication application,
+    CancellationToken cancellationToken) =>
+    Results.Accepted(value: await application.RecordDeploymentUserOperationResultAsync(
+        ToWorkloadActor(context.User),
+        deploymentId,
         request,
         ToMetadata(context),
         cancellationToken)))

@@ -10,59 +10,67 @@ public enum OutboxReadinessCondition
     StoreOperationFailed,
     DestinationOperationFailed,
     StoreContractViolation,
+    ScanProgressLagging,
     Stopped
 }
 
 public sealed class OutboxWorkerReadiness
 {
-    private const string ContractVersion = "worker-health.v1";
-    private const string Role = "control-plane-workers";
-    private int _condition = (int)OutboxReadinessCondition.Starting;
-    private int _started;
+    private readonly WorkerReadiness _aggregate;
+
+    public OutboxWorkerReadiness(WorkerReadiness aggregate)
+    {
+        ArgumentNullException.ThrowIfNull(aggregate);
+        _aggregate = aggregate;
+    }
 
     public OutboxReadinessCondition Condition =>
-        (OutboxReadinessCondition)Volatile.Read(ref _condition);
-
-    public WorkerHealthSnapshot GetLive() =>
-        new(ContractVersion, Role, true, "live", "process_live");
-
-    public WorkerHealthSnapshot GetStartup()
-    {
-        bool started = Volatile.Read(ref _started) == 1;
-        return started
-            ? new WorkerHealthSnapshot(ContractVersion, Role, true, "started", "startup_complete")
-            : new WorkerHealthSnapshot(ContractVersion, Role, false, "starting", "startup_incomplete");
-    }
-
-    public WorkerHealthSnapshot GetReady()
-    {
-        OutboxReadinessCondition condition = Condition;
-        return condition == OutboxReadinessCondition.Ready
-            ? new WorkerHealthSnapshot(ContractVersion, Role, true, "ready", "dispatch_dependencies_ready")
-            : new WorkerHealthSnapshot(ContractVersion, Role, false, "not-ready", PublicCode(condition));
-    }
+        (OutboxReadinessCondition)_aggregate.GetDetailCondition(RequiredWorkerWorkstream.OutboxDispatch);
 
     public void MarkStarted()
     {
-        Volatile.Write(ref _started, 1);
-        Volatile.Write(ref _condition, (int)OutboxReadinessCondition.DependenciesUnverified);
+        _aggregate.MarkStarted(
+            RequiredWorkerWorkstream.OutboxDispatch,
+            (int)OutboxReadinessCondition.DependenciesUnverified,
+            PublicCode(OutboxReadinessCondition.DependenciesUnverified));
     }
 
-    public void MarkReady() =>
-        Volatile.Write(ref _condition, (int)OutboxReadinessCondition.Ready);
+    public void MarkReady()
+    {
+        _aggregate.MarkReady(
+            RequiredWorkerWorkstream.OutboxDispatch,
+            (int)OutboxReadinessCondition.Ready,
+            "dispatch_dependencies_ready");
+    }
 
     public void MarkNotReady(OutboxReadinessCondition condition)
     {
-        if (condition is OutboxReadinessCondition.Ready or OutboxReadinessCondition.Starting)
+        if (condition is OutboxReadinessCondition.Ready or
+            OutboxReadinessCondition.Starting or
+            OutboxReadinessCondition.DependenciesUnverified or
+            OutboxReadinessCondition.Stopped)
         {
             throw new ArgumentOutOfRangeException(nameof(condition), "A failure condition is required.");
         }
 
-        Volatile.Write(ref _condition, (int)condition);
+        RequiredWorkstreamState state = condition is
+            OutboxReadinessCondition.PostgresUnavailable or
+            OutboxReadinessCondition.DestinationUnavailable
+                ? RequiredWorkstreamState.DependencyUnavailable
+                : RequiredWorkstreamState.Degraded;
+        _aggregate.MarkNotReady(
+            RequiredWorkerWorkstream.OutboxDispatch,
+            state,
+            (int)condition,
+            PublicCode(condition));
     }
 
-    public void MarkStopped() =>
-        Volatile.Write(ref _condition, (int)OutboxReadinessCondition.Stopped);
+    public void MarkStopped()
+    {
+        _aggregate.MarkStopped(
+            RequiredWorkerWorkstream.OutboxDispatch,
+            (int)OutboxReadinessCondition.Stopped);
+    }
 
     private static string PublicCode(OutboxReadinessCondition condition) => condition switch
     {
@@ -73,6 +81,7 @@ public sealed class OutboxWorkerReadiness
         OutboxReadinessCondition.StoreOperationFailed or
         OutboxReadinessCondition.DestinationOperationFailed or
         OutboxReadinessCondition.StoreContractViolation => "dispatch_degraded",
+        OutboxReadinessCondition.ScanProgressLagging => "tenant_scan_rotation_stale",
         OutboxReadinessCondition.Stopped => "worker_stopped",
         _ => "not_ready"
     };

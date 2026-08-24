@@ -16,7 +16,8 @@ namespace YO4X.ControlPlane.Postgres;
 public sealed partial class PostgresControlPlaneApplication
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
-    private static readonly TimeSpan IdempotencyLifetime = TimeSpan.FromHours(24);
+    private static readonly TimeSpan IdempotencyLifetime =
+        ControlPlanePostgresOptions.IdempotencyReplayLifetime;
 
     private static async Task<MutationLease<TResponse>> BeginMutationAsync<TRequest, TResponse>(
         TenantPostgresTransaction transaction,

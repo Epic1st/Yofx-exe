@@ -20,44 +20,81 @@ internal static class SecretIngestionPostgresRegistration
             || !TryReadRuntimeConnectionString(
                 configuration.GetConnectionString("Postgres"),
                 out string connectionString)
+            || !PostgresDatabaseEndpoint.TryParse(
+                connectionString,
+                out PostgresDatabaseEndpoint? runtimeEndpoint)
             || !TryReadExactHttpsOrigin(
                 configuration["SecretIngestion:ApprovedClientOrigin"],
-                out Uri? approvedClientOrigin))
+                out Uri? approvedClientOrigin)
+            || !TryAddTenantContextCapabilityProvider(
+                services,
+                configuration,
+                runtimeEndpoint!))
         {
             return services;
         }
 
-        PostgresDatabase? database = null;
         try
         {
-            database = new PostgresDatabase(connectionString, PostgresDatabaseUsage.Runtime);
-            PostgresDatabase registeredDatabase = database;
             var options = new SecretIngestionPostgresOptions(
                 RequiredRole,
                 approvedClientOrigin!,
                 RequireTls: true);
 
-            services.TryAddSingleton(_ => registeredDatabase);
+            services.TryAddSingleton(serviceProvider => new PostgresDatabase(
+                connectionString,
+                PostgresDatabaseUsage.Runtime,
+                serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>()));
             services.TryAddSingleton(options);
             services.TryAddSingleton<PostgresCredentialIngestionGrantStore>();
             services.TryAddSingleton<RoleBoundCredentialIngestionGrantStore>();
             services.TryAddSingleton<ICredentialIngestionGrantStore>(serviceProvider =>
                 serviceProvider.GetRequiredService<RoleBoundCredentialIngestionGrantStore>());
             services.TryAddScoped<ICredentialIngestionProcessor, CredentialIngestionProcessor>();
-            database = null;
             return services;
         }
         catch (ArgumentException)
         {
             return services;
         }
-        finally
+    }
+
+    private static bool TryAddTenantContextCapabilityProvider(
+        IServiceCollection services,
+        IConfiguration configuration,
+        PostgresDatabaseEndpoint requiredEndpoint)
+    {
+        ServiceDescriptor? existing = services.FirstOrDefault(static descriptor =>
+            descriptor.ServiceType == typeof(ITenantContextCapabilityProvider));
+        if (existing?.ImplementationInstance is ITenantContextCapabilityProvider provider)
         {
-            if (database is not null)
-            {
-                database.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            }
+            return provider.Endpoint == requiredEndpoint;
         }
+
+        if (existing is not null)
+        {
+            return true;
+        }
+
+        if (!PostgresTenantContextCapabilityProvider.TryNormalizeIssuerConnectionString(
+                configuration.GetConnectionString("ContextIssuer"),
+                requireTls: true,
+                out string issuerConnectionString))
+        {
+            return false;
+        }
+
+        if (!PostgresDatabaseEndpoint.TryParse(
+                issuerConnectionString,
+                out PostgresDatabaseEndpoint? issuerEndpoint)
+            || issuerEndpoint != requiredEndpoint)
+        {
+            return false;
+        }
+
+        services.TryAddSingleton<ITenantContextCapabilityProvider>(_ =>
+            new PostgresTenantContextCapabilityProvider(issuerConnectionString));
+        return true;
     }
 
     internal static bool TryReadRuntimeConnectionString(
@@ -76,10 +113,10 @@ internal static class SecretIngestionPostgresRegistration
             if (string.IsNullOrWhiteSpace(builder.Host)
                 || string.IsNullOrWhiteSpace(builder.Database)
                 || !string.Equals(builder.Username, RequiredRole, StringComparison.Ordinal)
-                || builder.SslMode != SslMode.VerifyFull
-                || builder.IncludeErrorDetail
-                || !string.IsNullOrWhiteSpace(builder.Options)
-                || !string.IsNullOrWhiteSpace(builder.SearchPath))
+                || !PostgresRuntimeConnectionPolicy.HasSafeSessionConfiguration(builder)
+                || !PostgresRuntimeConnectionPolicy.HasRequiredTransport(
+                    builder,
+                    allowInsecureLoopbackForDevelopment: false))
             {
                 return false;
             }

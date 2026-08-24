@@ -113,9 +113,10 @@ public sealed record BrokerGatewaySubmissionDocument(
     string? BrokerRequestId,
     string? OrderId,
     string? DealId,
-    DateTimeOffset ObservedAtUtc);
+    DateTimeOffset ObservedAtUtc,
+    bool PreInvocationNotSentProven);
 
-public sealed record BrokerCommandReconciliationEvidenceDocument(
+internal sealed record BrokerCommandReconciliationEvidenceDocument(
     Guid CommandId,
     string AuthorizationSha256,
     string ScopeSha256,

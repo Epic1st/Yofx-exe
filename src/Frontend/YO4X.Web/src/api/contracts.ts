@@ -1,3 +1,5 @@
+import { isSafeSameOriginReference } from './safeUrl';
+
 export type UserSecurityState = 'INVITED' | 'ACTIVE' | 'LOCKED' | 'RECOVERY_REQUIRED' | 'DISABLED';
 export type AuthenticationAssurance = 'PASSWORD' | 'TOTP' | 'WEB_AUTHN' | 'HARDWARE_KEY';
 export type BrokerAccountEnvironment = 'DEMO' | 'LIVE';
@@ -160,7 +162,34 @@ function nullableStringField(source: JsonObject, field: string, contractName: st
 
 function nullableReportPath(source: JsonObject, field: string, contractName: string): string | null {
   const value = nullableStringField(source, field, contractName);
-  if (value !== null && (!value.startsWith('/') && !value.startsWith('#') || value.startsWith('//'))) {
+  if (value !== null && !isSafeSameOriginReference(value)) {
+    throw new ContractViolationError(contractName);
+  }
+  return value;
+}
+
+function boundedNonBlankStringField(
+  source: JsonObject,
+  field: string,
+  contractName: string,
+  maximumLength: number,
+): string {
+  const value = stringField(source, field, contractName);
+  if (value.length === 0 || value.length > maximumLength || value.trim() !== value) {
+    throw new ContractViolationError(contractName);
+  }
+  return value;
+}
+
+function boundedIntegerField(
+  source: JsonObject,
+  field: string,
+  contractName: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const value = integerField(source, field, contractName);
+  if (value < minimum || value > maximum) {
     throw new ContractViolationError(contractName);
   }
   return value;
@@ -202,6 +231,7 @@ const accountModes = ['HEDGING', 'NETTING'] as const;
 const credentialStates = ['ABSENT', 'INGESTION_PENDING', 'READY', 'DISABLED', 'ROTATION_PENDING', 'DELETION_PENDING', 'DELETED'] as const;
 const deploymentStates = ['DRAFT', 'VALIDATING', 'READY', 'STARTING', 'RECONCILING', 'RUNNING', 'CLOSE_ONLY', 'STOP_AFTER_FLAT', 'STOPPING', 'STOPPED', 'FAULTED', 'FENCED', 'EXPIRED', 'REVOKED'] as const;
 const compatibilityStates = ['ANALYZED', 'REVIEW_REQUIRED', 'UNSUPPORTED', 'PENDING'] as const;
+const compatibilityIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const runtimeStates = ['HEALTHY', 'DEGRADED', 'NOT_CONFIGURED', 'UNAVAILABLE'] as const;
 const runtimeComponents = ['CONTROL_API', 'SUPERVISOR', 'STRATEGY_HOST', 'GATEWAY_HOST', 'POSTGRESQL'] as const;
 
@@ -295,20 +325,46 @@ export function decodeStrategyCompatibility(value: unknown): StrategyCompatibili
   if (!Array.isArray(source.items)) {
     throw new ContractViolationError('StrategyCompatibilityProjection');
   }
+  const analyzedFileCount = boundedIntegerField(
+    source,
+    'analyzedFileCount',
+    'StrategyCompatibilityProjection',
+    0,
+    10_000,
+  );
+  const totalFileCount = boundedIntegerField(
+    source,
+    'totalFileCount',
+    'StrategyCompatibilityProjection',
+    0,
+    10_000,
+  );
+  if (analyzedFileCount > totalFileCount || source.items.length !== totalFileCount) {
+    throw new ContractViolationError('StrategyCompatibilityProjection');
+  }
+
+  const strategyIds = new Set<string>();
   const items = source.items.map((item) => {
     const row = object(item, 'StrategyCompatibilityItem');
+    const strategyId = boundedNonBlankStringField(row, 'strategyId', 'StrategyCompatibilityItem', 128);
+    const strategyIdentityKey = strategyId.toLowerCase();
+    if (!compatibilityIdPattern.test(strategyId) || strategyIds.has(strategyIdentityKey)) {
+      throw new ContractViolationError('StrategyCompatibilityProjection');
+    }
+    strategyIds.add(strategyIdentityKey);
+
     return {
-      strategyId: stringField(row, 'strategyId', 'StrategyCompatibilityItem'),
-      name: stringField(row, 'name', 'StrategyCompatibilityItem'),
+      strategyId,
+      name: boundedNonBlankStringField(row, 'name', 'StrategyCompatibilityItem', 2_000),
       sourceType: enumField(row, 'sourceType', ['MQ5', 'MQH'] as const, 'StrategyCompatibilityItem'),
       analysisState: enumField(row, 'analysisState', compatibilityStates, 'StrategyCompatibilityItem'),
-      featureCount: integerField(row, 'featureCount', 'StrategyCompatibilityItem'),
+      featureCount: boundedIntegerField(row, 'featureCount', 'StrategyCompatibilityItem', 0, 128),
       reportPath: nullableReportPath(row, 'reportPath', 'StrategyCompatibilityItem'),
     } satisfies StrategyCompatibilityItem;
   });
   return {
-    analyzedFileCount: integerField(source, 'analyzedFileCount', 'StrategyCompatibilityProjection'),
-    totalFileCount: integerField(source, 'totalFileCount', 'StrategyCompatibilityProjection'),
+    analyzedFileCount,
+    totalFileCount,
     items,
   };
 }
@@ -318,14 +374,23 @@ export function decodeRuntimeReadiness(value: unknown): RuntimeReadinessProjecti
   if (!Array.isArray(source.items)) {
     throw new ContractViolationError('RuntimeReadinessProjection');
   }
+  const components = new Set<RuntimeComponentReadiness['component']>();
+  const items = source.items.map((item) => {
+    const row = object(item, 'RuntimeComponentReadiness');
+    const component = enumField(row, 'component', runtimeComponents, 'RuntimeComponentReadiness');
+    if (components.has(component)) {
+      throw new ContractViolationError('RuntimeReadinessProjection');
+    }
+    components.add(component);
+
+    return {
+      component,
+      state: enumField(row, 'state', runtimeStates, 'RuntimeComponentReadiness'),
+      details: stringField(row, 'details', 'RuntimeComponentReadiness'),
+    };
+  });
+
   return {
-    items: source.items.map((item) => {
-      const row = object(item, 'RuntimeComponentReadiness');
-      return {
-        component: enumField(row, 'component', runtimeComponents, 'RuntimeComponentReadiness'),
-        state: enumField(row, 'state', runtimeStates, 'RuntimeComponentReadiness'),
-        details: stringField(row, 'details', 'RuntimeComponentReadiness'),
-      };
-    }),
+    items,
   };
 }

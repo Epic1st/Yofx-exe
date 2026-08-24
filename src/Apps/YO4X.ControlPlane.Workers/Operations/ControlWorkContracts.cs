@@ -4,7 +4,9 @@ public sealed record ControlWorkCycleResult(
     int TenantsVisited,
     int ItemsExamined,
     int ItemsChanged,
-    int ItemsFailed);
+    int ItemsFailed,
+    bool ScanRotationHealthy,
+    bool OperationBacklogHealthy = true);
 
 public interface IUserOperationWorkStore
 {
@@ -38,7 +40,7 @@ public sealed class UnavailableUserOperationWorkStore : IUserOperationWorkStore
     public ValueTask<bool> IsAvailableAsync(CancellationToken cancellationToken) => ValueTask.FromResult(false);
 
     public Task<ControlWorkCycleResult> RunCycleAsync(DateTimeOffset now, CancellationToken cancellationToken) =>
-        Task.FromResult(new ControlWorkCycleResult(0, 0, 0, 0));
+        Task.FromResult(new ControlWorkCycleResult(0, 0, 0, 0, false));
 }
 
 public sealed class UnavailableCredentialGrantExpiryStore : ICredentialGrantExpiryStore
@@ -46,7 +48,7 @@ public sealed class UnavailableCredentialGrantExpiryStore : ICredentialGrantExpi
     public ValueTask<bool> IsAvailableAsync(CancellationToken cancellationToken) => ValueTask.FromResult(false);
 
     public Task<ControlWorkCycleResult> RunCycleAsync(DateTimeOffset now, CancellationToken cancellationToken) =>
-        Task.FromResult(new ControlWorkCycleResult(0, 0, 0, 0));
+        Task.FromResult(new ControlWorkCycleResult(0, 0, 0, 0, false));
 }
 
 public sealed class UnavailableDeploymentProjectionStore : IDeploymentProjectionStore
@@ -54,5 +56,5 @@ public sealed class UnavailableDeploymentProjectionStore : IDeploymentProjection
     public ValueTask<bool> IsAvailableAsync(CancellationToken cancellationToken) => ValueTask.FromResult(false);
 
     public Task<ControlWorkCycleResult> RunCycleAsync(DateTimeOffset now, CancellationToken cancellationToken) =>
-        Task.FromResult(new ControlWorkCycleResult(0, 0, 0, 0));
+        Task.FromResult(new ControlWorkCycleResult(0, 0, 0, 0, false));
 }

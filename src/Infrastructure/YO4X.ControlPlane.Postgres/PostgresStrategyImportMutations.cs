@@ -50,7 +50,8 @@ public sealed partial class PostgresControlPlaneApplication
                     mutation.Replay.ImportJobId,
                     mutation.Replay.CorrelationId,
                     mutation.Replay.SourceLabel,
-                    mutation.Replay.ExpiresAt);
+                    mutation.Replay.ExpiresAt,
+                    mutation.Replay.ProofKeyId);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return ToStrategyImportSession(mutation.Replay, replayProof);
             }
@@ -59,13 +60,15 @@ public sealed partial class PostgresControlPlaneApplication
                 .ConfigureAwait(false);
             DateTimeOffset expiresAt = now.Add(options.StrategyImportJobLifetime);
             Guid importJobId = Guid.CreateVersion7();
+            string proofKeyId = issuer.CurrentKeyId;
             IssuedStrategyImportProof proof = issuer.Issue(
                 actor.TenantId,
                 actor.UserId,
                 importJobId,
                 metadata.CorrelationId,
                 request.SourceLabel,
-                expiresAt);
+                expiresAt,
+                proofKeyId);
             byte[] capabilitySha256 = StrategyImportProofIssuer.HashCapability(proof.Capability);
             try
             {
@@ -74,12 +77,12 @@ public sealed partial class PostgresControlPlaneApplication
                     insert into control.strategy_import_jobs
                     (
                         id, tenant_id, user_id, correlation_id, source_label,
-                        capability_sha256, expires_at
+                        capability_sha256, proof_key_id, expires_at
                     )
                     values
                     (
                         @id, @tenant_id, @user_id, @correlation_id, @source_label,
-                        @capability_sha256, @expires_at
+                        @capability_sha256, @proof_key_id, @expires_at
                     )
                     """);
                 AddUuid(insert, "id", importJobId);
@@ -88,6 +91,7 @@ public sealed partial class PostgresControlPlaneApplication
                 AddUuid(insert, "correlation_id", metadata.CorrelationId);
                 insert.Parameters.AddWithValue("source_label", NpgsqlDbType.Text, request.SourceLabel);
                 insert.Parameters.AddWithValue("capability_sha256", NpgsqlDbType.Bytea, capabilitySha256);
+                insert.Parameters.AddWithValue("proof_key_id", NpgsqlDbType.Text, proofKeyId);
                 insert.Parameters.AddWithValue("expires_at", NpgsqlDbType.TimestampTz, expiresAt);
                 await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -101,6 +105,7 @@ public sealed partial class PostgresControlPlaneApplication
                 metadata.CorrelationId,
                 request.SourceLabel,
                 expiresAt,
+                proofKeyId,
                 0);
             await AppendMutationEvidenceAsync(
                     transaction,
@@ -285,6 +290,7 @@ public sealed partial class PostgresControlPlaneApplication
         Guid CorrelationId,
         string SourceLabel,
         DateTimeOffset ExpiresAt,
+        string ProofKeyId,
         long Version);
 
     private sealed record StrategyImportRevocationRequest(Guid ImportJobId, long ExpectedVersion);

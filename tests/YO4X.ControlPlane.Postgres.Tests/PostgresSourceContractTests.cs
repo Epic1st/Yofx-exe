@@ -131,6 +131,54 @@ public sealed class PostgresSourceContractTests
     }
 
     [Fact]
+    public void StrategyCompatibilityReadIsTenantBoundSourceFreeAndCountExact()
+    {
+        string source = ReadSource("PostgresStrategyCompatibilityReads.cs");
+        string method = ExtractMethod(source, "GetStrategyCompatibilityAsync");
+        int authorization = method.IndexOf("BeginAuthorizedAsync(", StringComparison.Ordinal);
+        int query = method.IndexOf("from governance.strategy_source_corpora", StringComparison.Ordinal);
+        int commit = method.IndexOf("await transaction.CommitAsync", query, StringComparison.Ordinal);
+        int reader = method.IndexOf("await using NpgsqlDataReader", query, StringComparison.Ordinal);
+
+        Assert.True(authorization >= 0 && query > authorization,
+            "The authenticated tenant/user context must be established before reading a corpus.");
+        Assert.Contains("corpus.tenant_id = @tenant_id", method, StringComparison.Ordinal);
+        Assert.Contains("corpus.user_id = @user_id", method, StringComparison.Ordinal);
+        Assert.Contains("classification.tenant_id = corpus.tenant_id", method, StringComparison.Ordinal);
+        Assert.Contains("classification.user_id = corpus.user_id", method, StringComparison.Ordinal);
+        Assert.Contains("source_file.tenant_id = corpus.tenant_id", method, StringComparison.Ordinal);
+        Assert.Contains("source_file.user_id = corpus.user_id", method, StringComparison.Ordinal);
+        Assert.Contains("source_file.manifest_order", method, StringComparison.Ordinal);
+        Assert.Contains("manifestOrder != items.Count", method, StringComparison.Ordinal);
+        Assert.Contains("items.Count != expectedFileCount", method, StringComparison.Ordinal);
+        Assert.Contains("items.AsReadOnly()", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("corpusId == Guid.Empty", method, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("source_content", method, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("findings", method, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("verification", method, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("evidence_document", method, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("evidence_content", method, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("manifest_content", method, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("report_content", method, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(reader >= 0 && commit > reader && HasClosedLexicalScope(method, reader, commit),
+            "The compatibility reader must be disposed before its transaction commits.");
+        Assert.Contains(
+            "\"needs_semantic_validation\" => StrategyCompatibilityAnalysisState.ReviewRequired",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "\"unsupported\" or \"rejected\" => StrategyCompatibilityAnalysisState.Unsupported",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "=> StrategyCompatibilityAnalysisState.Analyzed",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ReadAuthorizationAvoidsU0SerializationWhileMutationsRevalidateUnderTheLock()
     {
         string source = ReadSource("PostgresControlPlaneApplication.cs");
@@ -222,7 +270,7 @@ public sealed class PostgresSourceContractTests
         string ingestionSection = Slice(
             roles,
             "-- Secret ingestion:",
-            "-- Authenticated broker-result ingress");
+            "-- Authenticated user-operation-result ingress");
         string normalizedIngestion = RemoveWhitespaceAroundLineBreaks(ingestionSection);
 
         Assert.Contains("on governance.compatibility_test_runs to yo4x_control_api", controlSection, StringComparison.Ordinal);
@@ -231,9 +279,67 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("control.release_credential_ingestion_grant", normalizedIngestion, StringComparison.Ordinal);
         Assert.Contains("control.complete_credential_ingestion_grant", normalizedIngestion, StringComparison.Ordinal);
         Assert.Contains("revoke all privileges on control.credential_ingestion_grants", normalizedIngestion, StringComparison.Ordinal);
-        Assert.DoesNotContain("grant select", ingestionSection, StringComparison.OrdinalIgnoreCase);
+        const string migrationRead =
+            "grant select (migration_id, sha256) on control.schema_migrations to yo4x_secret_ingestion;";
+        Assert.Contains(migrationRead, normalizedIngestion, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "grant select",
+            normalizedIngestion.Replace(migrationRead, string.Empty, StringComparison.Ordinal),
+            StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("grant update", ingestionSection, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("grant insert on audit.audit_events", ingestionSection, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ControlApiCompatibilityReadHasOnlyItsExactProjectionColumns()
+    {
+        string roles = ReadRepositoryFile(
+            "src",
+            "BuildingBlocks",
+            "YO4X.Persistence.Postgres",
+            "Security",
+            "least_privilege_roles.sql");
+        string controlSection = RemoveWhitespaceAroundLineBreaks(Slice(
+            roles,
+            "-- Tenant control API:",
+            "-- Admin BFF:"));
+
+        Assert.Contains(
+            "revoke all privileges on governance.strategy_source_corpora, governance.strategy_source_files, governance.strategy_conversion_classifications from yo4x_control_api",
+            controlSection,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "grant select (id, tenant_id, user_id, file_count, state) on governance.strategy_source_corpora to yo4x_control_api",
+            controlSection,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "grant select (tenant_id, corpus_id, user_id) on governance.strategy_conversion_classifications to yo4x_control_api",
+            controlSection,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "grant select (id, tenant_id, corpus_id, user_id, manifest_order, relative_path, source_kind, features, disposition) on governance.strategy_source_files to yo4x_control_api",
+            controlSection,
+            StringComparison.Ordinal);
+
+        string projectionGrants = Slice(
+            controlSection,
+            "grant select (id, tenant_id, user_id, file_count, state)",
+            "grant update (state, reservation_id");
+        foreach (string forbiddenColumn in new[]
+        {
+            "source_content",
+            "findings",
+            "verification",
+            "manifest_content",
+            "report_content",
+            "formatted_evidence_document",
+            "formatted_evidence_content",
+            "canonical_evidence_document",
+            "canonical_evidence_content"
+        })
+        {
+            Assert.DoesNotContain(forbiddenColumn, projectionGrants, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -258,8 +364,9 @@ public sealed class PostgresSourceContractTests
         string guard = RemoveWhitespaceAroundLineBreaks(Slice(
             migration,
             "create function control.enforce_credential_ingestion_grant_lifecycle",
-            "create function control.lock_u0_tenant_authority_mutation"));
+            "-- Secret ingestion receives only these capabilities."));
         string mutation = ReadSource("PostgresCredentialMutations.cs");
+        string proofIssuer = ReadSource("CredentialIngestionProofIssuer.cs");
         string normalizedMutation = RemoveWhitespaceAroundLineBreaks(mutation);
 
         Assert.Contains("state text not null default 'active'", table, StringComparison.Ordinal);
@@ -267,6 +374,7 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("created_at timestamptz not null default statement_timestamp()", table, StringComparison.Ordinal);
         Assert.Contains("updated_at timestamptz not null default statement_timestamp()", table, StringComparison.Ordinal);
         Assert.Contains("expires_at <= created_at + interval '10 minutes'", table, StringComparison.Ordinal);
+        Assert.Contains("proof_key_id text not null check (proof_key_id ~ '^[0-9a-f]{64}$')", table, StringComparison.Ordinal);
 
         Assert.Contains("security definer set search_path = ''", guard, StringComparison.Ordinal);
         Assert.Contains("session_user <> 'yo4x_control_api'", guard, StringComparison.Ordinal);
@@ -276,7 +384,8 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("new.created_at is distinct from statement_timestamp()", guard, StringComparison.Ordinal);
         Assert.Contains("new.expires_at <= statement_timestamp()", guard, StringComparison.Ordinal);
         Assert.Contains("new.expires_at > statement_timestamp() + interval '10 minutes'", guard, StringComparison.Ordinal);
-        Assert.Contains("perform control.acquire_u0_authority_lock()", guard, StringComparison.Ordinal);
+        Assert.DoesNotContain("perform control.acquire_u0_authority_lock()", guard, StringComparison.Ordinal);
+        Assert.Contains("create trigger credential_ingestion_grants_a_u0_authority_statement_lock", migration, StringComparison.Ordinal);
         Assert.Contains("account.user_id = control.current_actor_id()", guard, StringComparison.Ordinal);
         Assert.Contains("account.environment = 'demo'", guard, StringComparison.Ordinal);
         Assert.Contains("account.state in ('pending', 'active')", guard, StringComparison.Ordinal);
@@ -284,7 +393,7 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("tenant.state = 'active'", guard, StringComparison.Ordinal);
         Assert.Contains("new.operation = 'create' and account.state in ('pending', 'active') and account.credential_state = 'absent' and account.credential_reference is null", guard, StringComparison.Ordinal);
         Assert.Contains("new.operation = 'rotate' and account.state = 'active' and account.credential_state = 'ready' and account.credential_reference is not null", guard, StringComparison.Ordinal);
-        Assert.Contains("old.allowed_origin, old.bearer_hash, old.nonce_hash, old.expires_at, old.created_at", guard, StringComparison.Ordinal);
+        Assert.Contains("old.allowed_origin, old.bearer_hash, old.nonce_hash, old.proof_key_id, old.expires_at, old.created_at", guard, StringComparison.Ordinal);
         Assert.Contains("new.row_version <> old.row_version + 1", guard, StringComparison.Ordinal);
 
         Assert.Contains("session_user = 'yo4x_control_api' and old.state in ('active', 'reserved') and new.state in ('expired', 'revoked')", guard, StringComparison.Ordinal);
@@ -306,7 +415,7 @@ public sealed class PostgresSourceContractTests
             .Single(statement => statement.Contains("grant insert (", StringComparison.OrdinalIgnoreCase)
                 && statement.Contains("on control.credential_ingestion_grants to yo4x_control_api", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(
-            "grant insert (id, tenant_id, broker_account_id, operation, allowed_origin, bearer_hash, nonce_hash, expires_at)",
+            "grant insert (id, tenant_id, broker_account_id, operation, allowed_origin, bearer_hash, nonce_hash, proof_key_id, expires_at)",
             insertGrant,
             StringComparison.Ordinal);
         foreach (string forbidden in new[]
@@ -318,6 +427,18 @@ public sealed class PostgresSourceContractTests
             string insertColumns = Slice(insertGrant, "grant insert (", ") on control.credential_ingestion_grants");
             Assert.DoesNotContain(forbidden, insertColumns, StringComparison.OrdinalIgnoreCase);
         }
+
+        string selectGrant = roles.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            .Select(RemoveWhitespaceAroundLineBreaks)
+            .Single(statement => statement.Contains("grant select (", StringComparison.OrdinalIgnoreCase)
+                && statement.Contains("on control.credential_ingestion_grants to yo4x_control_api", StringComparison.OrdinalIgnoreCase));
+        string selectColumns = Slice(
+            selectGrant,
+            "grant select (",
+            ") on control.credential_ingestion_grants");
+        Assert.DoesNotContain("proof_key_id", selectColumns, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("bearer_hash", selectColumns, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("nonce_hash", selectColumns, StringComparison.OrdinalIgnoreCase);
 
         string updateGrant = roles.Split(';', StringSplitOptions.RemoveEmptyEntries)
             .Select(RemoveWhitespaceAroundLineBreaks)
@@ -337,7 +458,7 @@ public sealed class PostgresSourceContractTests
         Assert.DoesNotContain("expires_at", updateColumns, StringComparer.OrdinalIgnoreCase);
 
         Assert.Contains(
-            "id, tenant_id, broker_account_id, operation, allowed_origin, bearer_hash, nonce_hash, expires_at ) values",
+            "id, tenant_id, broker_account_id, operation, allowed_origin, bearer_hash, nonce_hash, proof_key_id, expires_at ) values",
             normalizedMutation,
             StringComparison.Ordinal);
         Assert.Contains("statement_timestamp() + @grant_lifetime", mutation, StringComparison.Ordinal);
@@ -347,6 +468,10 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("expires_at <= clock_timestamp()", mutation, StringComparison.Ordinal);
         Assert.Contains("expires_at > clock_timestamp()", mutation, StringComparison.Ordinal);
         Assert.Contains("updated_at = greatest(updated_at, clock_timestamp())", mutation, StringComparison.Ordinal);
+        Assert.Contains("credential-ingestion:v2:", proofIssuer, StringComparison.Ordinal);
+        Assert.Contains("{grantId:D}", proofIssuer, StringComparison.Ordinal);
+        Assert.Contains("{allowedOrigin.Length}:{allowedOrigin}", proofIssuer, StringComparison.Ordinal);
+        Assert.Contains("{idempotencyKey.Length}:{idempotencyKey}", proofIssuer, StringComparison.Ordinal);
 
         int recovery = mutation.IndexOf("recoveredCredentialState", StringComparison.Ordinal);
         int insert = mutation.IndexOf("insert into control.credential_ingestion_grants", StringComparison.Ordinal);
@@ -389,6 +514,19 @@ public sealed class PostgresSourceContractTests
 
         Assert.Contains("control.current_actor_id() is distinct from old.user_id", guard, StringComparison.Ordinal);
         Assert.Contains("ingestion_grant.state in ('active', 'reserved')", guard, StringComparison.Ordinal);
+        string controlInitiation = Slice(
+            guard,
+            "if session_user = 'yo4x_control_api'",
+            "elsif session_user = 'yo4x_secret_ingestion'");
+        Assert.Contains("ingestion_grant.tenant_id = old.tenant_id", controlInitiation, StringComparison.Ordinal);
+        Assert.Contains("ingestion_grant.broker_account_id = old.id", controlInitiation, StringComparison.Ordinal);
+        Assert.Contains("ingestion_grant.operation = 'create'", controlInitiation, StringComparison.Ordinal);
+        Assert.Contains("ingestion_grant.operation = 'rotate'", controlInitiation, StringComparison.Ordinal);
+        Assert.Contains("ingestion_grant.expires_at > lifecycle_now", controlInitiation, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ingestion_grant.id = control.current_correlation_id()",
+            controlInitiation,
+            StringComparison.Ordinal);
         Assert.Contains("old.credential_state = 'absent' and new.credential_state = 'ingestion_pending'", guard, StringComparison.Ordinal);
         Assert.Contains("old.credential_state = 'ready' and new.credential_state = 'rotation_pending'", guard, StringComparison.Ordinal);
         Assert.Contains("new.state = 'disabled' and not has_open_grant", guard, StringComparison.Ordinal);
@@ -421,7 +559,9 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("old.state = 'active' and new.state = 'active'", worker, StringComparison.Ordinal);
         Assert.Contains("old.credential_state = 'rotation_pending' and new.credential_state = 'ready'", worker, StringComparison.Ordinal);
 
-        int u0Trigger = migration.IndexOf("create trigger broker_accounts_u0_authority_lock", StringComparison.Ordinal);
+        int u0Trigger = migration.IndexOf(
+            "create trigger broker_accounts_a_u0_authority_statement_lock",
+            StringComparison.Ordinal);
         int runtimeTrigger = migration.IndexOf("create trigger broker_accounts_z_runtime_transition_guard", StringComparison.Ordinal);
         Assert.True(u0Trigger >= 0 && runtimeTrigger > u0Trigger,
             "The broker-account runtime guard must sort after the U0 trigger so authority is serialized first.");
@@ -457,25 +597,41 @@ public sealed class PostgresSourceContractTests
             "revoke all on function control.apply_confirmed_broker_operation_result"));
         string ingressRole = RemoveWhitespaceAroundLineBreaks(Slice(
             roles,
-            "-- Authenticated broker-result ingress",
+            "-- Authenticated user-operation-result ingress",
             "-- Conversion worker:"));
         string workerRole = RemoveWhitespaceAroundLineBreaks(Slice(
             roles,
             "-- Worker:",
             "commit;"));
 
-        Assert.Contains("outcome text not null check (outcome in ('succeeded', 'failed'))", resultTable, StringComparison.Ordinal);
+        Assert.Contains("outcome text not null check (outcome in ('succeeded', 'diverged', 'failed'))", resultTable, StringComparison.Ordinal);
         Assert.Contains("unique (tenant_id, operation_id, dispatch_message_id)", resultTable, StringComparison.Ordinal);
-        Assert.Contains("check (outcome <> 'succeeded' or broker_confirmed)", resultTable, StringComparison.Ordinal);
         Assert.Contains(
-            "check (outcome <> 'succeeded' or requested_target_state = account_state || ':' || credential_state)",
+            "requested_target_state text not null check (length(btrim(requested_target_state)) between 1 and 200)",
+            resultTable,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "outcome = 'succeeded' and not pre_invocation_not_sent_proven and gateway_invoked and broker_confirmed",
+            resultTable,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "proof_kind = 'state_observed_diverged' and error_code is not null",
+            resultTable,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "outcome = 'failed' and pre_invocation_not_sent_proven and not gateway_invoked and not broker_confirmed",
             resultTable,
             StringComparison.Ordinal);
 
         Assert.Contains(
-            "grant select, insert on operations.user_operation_results to yo4x_runtime_evidence",
+            "revoke execute on function control.record_broker_user_operation_result( uuid, uuid, uuid, uuid, text, uuid, bigint, text, text, text, text, boolean, boolean, boolean, text, text, text, text, text, timestamptz) from yo4x_runtime_evidence",
             ingressRole,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "grant execute on function control.record_user_operation_result_v5( uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, text, uuid, uuid, uuid, text, text, uuid, jsonb, bigint, text, text, text, text, text, timestamptz, text, uuid, uuid, uuid, bigint, text) to yo4x_runtime_evidence",
+            ingressRole,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("operations.user_operation_results to yo4x_runtime_evidence", ingressRole, StringComparison.Ordinal);
         Assert.DoesNotContain("apply_confirmed_broker_operation_result", ingressRole, StringComparison.Ordinal);
         Assert.DoesNotContain("credential_reference", ingressRole, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("grant update", ingressRole, StringComparison.OrdinalIgnoreCase);
@@ -717,10 +873,11 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("return SHA256.HashData(bytes)", capabilityHash, StringComparison.Ordinal);
         Assert.Contains("CryptographicOperations.ZeroMemory(bytes)", capabilityHash, StringComparison.Ordinal);
         Assert.Contains("capability_sha256 bytea not null check (octet_length(capability_sha256) = 32)", jobs, StringComparison.Ordinal);
+        Assert.Contains("proof_key_id text not null check (proof_key_id ~ '^[0-9a-f]{64}$')", jobs, StringComparison.Ordinal);
         Assert.DoesNotContain("capability text", jobs, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("capability bytea", jobs, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
-            "grant insert (id, tenant_id, user_id, correlation_id, source_label, capability_sha256, expires_at) on control.strategy_import_jobs to yo4x_control_api",
+            "grant insert (id, tenant_id, user_id, correlation_id, source_label, capability_sha256, proof_key_id, expires_at) on control.strategy_import_jobs to yo4x_control_api",
             controlRole,
             StringComparison.Ordinal);
         string importInsert = RemoveWhitespaceAroundLineBreaks(Slice(
@@ -728,7 +885,7 @@ public sealed class PostgresSourceContractTests
             "insert into control.strategy_import_jobs",
             "AddUuid(insert, \"id\""));
         Assert.Contains(
-            "id, tenant_id, user_id, correlation_id, source_label, capability_sha256, expires_at",
+            "id, tenant_id, user_id, correlation_id, source_label, capability_sha256, proof_key_id, expires_at",
             importInsert,
             StringComparison.Ordinal);
         Assert.DoesNotContain("state", importInsert, StringComparison.OrdinalIgnoreCase);
@@ -742,6 +899,7 @@ public sealed class PostgresSourceContractTests
             "grant select (id, tenant_id, user_id, state, row_version, expires_at, updated_at)",
             "on control.strategy_import_jobs to yo4x_control_api");
         Assert.DoesNotContain("capability_sha256", importJobReadGrant, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("proof_key_id", importJobReadGrant, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("source_label", importJobReadGrant, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("corpus_sha256", importJobReadGrant, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("correlation_id", importJobReadGrant, StringComparison.OrdinalIgnoreCase);
@@ -762,18 +920,24 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("new.created_at is distinct from statement_timestamp()", jobTransition, StringComparison.Ordinal);
         Assert.Contains("new.expires_at <= statement_timestamp()", jobTransition, StringComparison.Ordinal);
         Assert.Contains("new.expires_at > statement_timestamp() + interval '30 minutes'", jobTransition, StringComparison.Ordinal);
-        Assert.Contains("perform control.acquire_u0_authority_lock()", jobTransition, StringComparison.Ordinal);
+        Assert.DoesNotContain("perform control.acquire_u0_authority_lock()", jobTransition, StringComparison.Ordinal);
+        Assert.Contains("create trigger strategy_import_jobs_a_u0_authority_statement_lock", migration, StringComparison.Ordinal);
         Assert.Contains("identity.security_state = 'active'", jobTransition, StringComparison.Ordinal);
         Assert.Contains("tenant.state = 'active'", jobTransition, StringComparison.Ordinal);
         Assert.Contains("old.user_id is distinct from control.current_actor_id()", jobTransition, StringComparison.Ordinal);
         Assert.Contains("old.correlation_id is distinct from control.current_correlation_id()", jobTransition, StringComparison.Ordinal);
+        Assert.Contains("old.capability_sha256, old.proof_key_id, old.expires_at, old.created_at", jobTransition, StringComparison.Ordinal);
         Assert.Contains("new.row_version := old.row_version + 1", jobTransition, StringComparison.Ordinal);
         Assert.Contains("new.updated_at := greatest(old.updated_at, lifecycle_now)", jobTransition, StringComparison.Ordinal);
         Assert.Contains("old.reservation_expires_at > lifecycle_now", jobTransition, StringComparison.Ordinal);
         Assert.Contains("old.expires_at > lifecycle_now", jobTransition, StringComparison.Ordinal);
         Assert.Contains("before insert or update or delete on control.strategy_import_jobs", jobTransition, StringComparison.Ordinal);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "set_config('yo4x.correlation_id', locked_job.correlation_id::text, true)",
+            migration,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "perform control.bind_verified_strategy_import_tenant_context(",
             migration,
             StringComparison.Ordinal);
     }
@@ -870,8 +1034,9 @@ public sealed class PostgresSourceContractTests
         Assert.DoesNotContain("locked_job.capability_sha256 <> supplied_capability", acquire, StringComparison.Ordinal);
         Assert.Contains("perform control.acquire_u0_tenant_authority_lock(target_tenant_id)", acquire, StringComparison.Ordinal);
         Assert.Contains("for update", acquire, StringComparison.Ordinal);
-        Assert.Contains("perform set_config('yo4x.tenant_id', locked_job.tenant_id::text, true)", acquire, StringComparison.Ordinal);
-        Assert.Contains("perform set_config('yo4x.actor_id', locked_job.user_id::text, true)", acquire, StringComparison.Ordinal);
+        Assert.DoesNotContain("set_config('yo4x.tenant_id'", acquire, StringComparison.Ordinal);
+        Assert.DoesNotContain("set_config('yo4x.actor_id'", acquire, StringComparison.Ordinal);
+        Assert.Contains("perform control.bind_verified_strategy_import_tenant_context(", acquire, StringComparison.Ordinal);
         Assert.Contains("tenant.state = 'active'", acquire, StringComparison.Ordinal);
         Assert.Contains("identity.security_state = 'active'", acquire, StringComparison.Ordinal);
         Assert.Contains("authorization_now := clock_timestamp()", acquire, StringComparison.Ordinal);
@@ -904,7 +1069,10 @@ public sealed class PostgresSourceContractTests
         Assert.Contains("minimum_manifest_order <> 0", completion, StringComparison.Ordinal);
         Assert.Contains("maximum_manifest_order <> persisted_corpus.file_count - 1", completion, StringComparison.Ordinal);
         Assert.Contains("computed_corpus_sha256 <> persisted_corpus.corpus_sha256", completion, StringComparison.Ordinal);
-        Assert.Contains("computed_disposition_counts <> persisted_corpus.disposition_counts", completion, StringComparison.Ordinal);
+        Assert.Contains(
+            "computed_disposition_counts is distinct from persisted_corpus.disposition_counts",
+            completion,
+            StringComparison.Ordinal);
         Assert.Contains("completed_at := clock_timestamp()", completion, StringComparison.Ordinal);
         Assert.Contains("locked_job.reservation_expires_at <= completed_at", completion, StringComparison.Ordinal);
         Assert.Contains("locked_job.expires_at <= completed_at", completion, StringComparison.Ordinal);
@@ -936,7 +1104,7 @@ public sealed class PostgresSourceContractTests
             "YO4X.Persistence.Postgres",
             "Security",
             "least_privilege_roles.sql");
-        string conversionSection = Slice(roles, "-- Conversion worker:", "-- Worker:");
+        string conversionSection = Slice(roles, "-- Conversion worker:", "-- Supervisor runtime:");
         string normalized = RemoveWhitespaceAroundLineBreaks(conversionSection);
         string normalizedSchemaUsage = RemoveWhitespaceAroundLineBreaks(Slice(
             roles,
@@ -948,14 +1116,23 @@ public sealed class PostgresSourceContractTests
             "YO4X.Conversion.Worker",
             "PostgresMql5CorpusStore.cs");
 
-        Assert.Contains(
-            "revoke all on function control.acquire_strategy_import_job(uuid, bytea), control.acquire_strategy_import_persistence_lock(uuid), control.complete_strategy_import_job(uuid, uuid, uuid) from public",
+        const string PersistClassificationSignature =
+            "control.persist_strategy_conversion_classification( uuid, text, text, text, text, text, text, text, text, text, integer, bigint, jsonb, bytea, bytea, uuid, uuid)";
+        string revokedCapabilities = Slice(
             normalized,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "grant execute on function control.acquire_strategy_import_job(uuid, bytea), control.acquire_strategy_import_persistence_lock(uuid), control.complete_strategy_import_job(uuid, uuid, uuid) to yo4x_conversion_worker",
+            "revoke all on function control.acquire_strategy_import_job",
+            "from public");
+        string grantedCapabilities = Slice(
             normalized,
-            StringComparison.Ordinal);
+            "grant execute on function control.acquire_strategy_import_job",
+            "to yo4x_conversion_worker");
+        foreach (string capabilities in new[] { revokedCapabilities, grantedCapabilities })
+        {
+            Assert.Contains("control.acquire_strategy_import_job(uuid, bytea)", capabilities, StringComparison.Ordinal);
+            Assert.Contains("control.acquire_strategy_import_persistence_lock(uuid)", capabilities, StringComparison.Ordinal);
+            Assert.Contains(PersistClassificationSignature, capabilities, StringComparison.Ordinal);
+            Assert.Contains("control.complete_strategy_import_job(uuid, uuid, uuid)", capabilities, StringComparison.Ordinal);
+        }
         Assert.Contains("grant usage on schema control, governance to yo4x_conversion_worker", normalizedSchemaUsage, StringComparison.Ordinal);
         string corpusGrant = Slice(
             normalized,

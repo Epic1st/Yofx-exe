@@ -23,10 +23,10 @@ public sealed class Mt5ProofOnlyGatewayTests
             TimeSpan.FromSeconds(10));
 
         GatewayOperationResult<GatewayCapabilities> connected = await gateway
-            .ConnectAsync(request, default)
+            .ConnectAsync(request, TestContext.Current.CancellationToken)
             .ConfigureAwait(true);
         GatewayOperationResult<BrokerAccountSnapshot> account = await gateway
-            .GetAccountAsync(default)
+            .GetAccountAsync(TestContext.Current.CancellationToken)
             .ConfigureAwait(true);
 
         Assert.False(connected.IsSuccess);
@@ -41,7 +41,9 @@ public sealed class Mt5ProofOnlyGatewayTests
         var gateway = new Mt5ProofOnlyGateway();
         AuthorizedBrokerCommand command = AuthorizedCommand();
 
-        GatewaySendResult result = await gateway.SendAsync(command, default).ConfigureAwait(true);
+        GatewaySendResult result = await gateway
+            .SendAsync(command, TestContext.Current.CancellationToken)
+            .ConfigureAwait(true);
 
         Assert.Equal(GatewayCommandDisposition.SubmissionDisabled, result.Disposition);
         Assert.Equal(Mt5ProofOnlyGateway.ProofOnlyCode, result.Code);
@@ -56,19 +58,21 @@ public sealed class Mt5ProofOnlyGatewayTests
         var gateway = new Mt5ProofOnlyGateway();
 
         GatewayOperationResult<IReadOnlyList<BrokerQuoteSnapshot>> quotes = await gateway
-            .GetQuotesAsync(["EURUSD"], default)
+            .GetQuotesAsync(["EURUSD"], TestContext.Current.CancellationToken)
             .ConfigureAwait(true);
         GatewayOperationResult<IReadOnlyList<BrokerPositionSnapshot>> positions = await gateway
-            .GetPositionsAsync(default)
+            .GetPositionsAsync(TestContext.Current.CancellationToken)
             .ConfigureAwait(true);
         GatewayOperationResult<IReadOnlyList<BrokerOrderSnapshot>> orders = await gateway
-            .GetOrdersAsync(default)
+            .GetOrdersAsync(TestContext.Current.CancellationToken)
             .ConfigureAwait(true);
         GatewayOperationResult<IReadOnlyList<BrokerDealSnapshot>> deals = await gateway
-            .GetDealsAsync(Now.AddDays(-1), Now, default)
+            .GetDealsAsync(Now.AddDays(-1), Now, TestContext.Current.CancellationToken)
             .ConfigureAwait(true);
         GatewayOperationResult<BrokerReconciliationSnapshot> reconciliation = await gateway
-            .ReconcileAsync([Guid.Parse("75000000-0000-0000-0000-000000000001")], default)
+            .ReconcileAsync(
+                [Guid.Parse("75000000-0000-0000-0000-000000000001")],
+                TestContext.Current.CancellationToken)
             .ConfigureAwait(true);
 
         Assert.False(quotes.IsSuccess);

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Application\YO4X.ControlPlane.Application\YO4X.ControlPlane.Application.csproj" />
+    <ProjectReference Include="..\..\src\Application\YO4X.Trading.Application\YO4X.Trading.Application.csproj" />
+    <ProjectReference Include="..\..\src\Infrastructure\YO4X.Trading.Postgres\YO4X.Trading.Postgres.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.GatewayHost\YO4X.GatewayHost.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Supervisor\YO4X.Supervisor.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Trading.Mt5\YO4X.Trading.Mt5.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\YO4X.Trading.ProcessIsolation\YO4X.Trading.ProcessIsolation.csproj" />
+    <ProjectReference Include="..\YO4X.BrokerProcess.TestWorker\YO4X.BrokerProcess.TestWorker.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

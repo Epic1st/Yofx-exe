@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using YO4X.ControlPlane.Application;
+using YO4X.Persistence.Postgres;
 using YO4X.RuntimeControl.Postgres;
 
 namespace YO4X.ControlPlane.Api;
@@ -22,6 +23,13 @@ internal static class RuntimeControlPostgresRegistration
                 "yo4x_worker",
                 environment.IsDevelopment(),
                 out string connectionString)
+            || !PostgresDatabaseEndpoint.TryParse(
+                connectionString,
+                out PostgresDatabaseEndpoint? runtimeEndpoint)
+            || !TenantContextCapabilityRegistration.TryAdd(
+                services,
+                configuration,
+                runtimeEndpoint!)
             || !TryReadDuration(
                 configuration["RuntimePostgres:AssignmentLifetime"],
                 TimeSpan.FromMinutes(10),
@@ -69,16 +77,29 @@ internal static class RuntimeControlPostgresRegistration
             return services;
         }
 
-        var database = new RuntimePostgresDatabase(connectionString);
         services.TryAddSingleton(options);
-        services.TryAddSingleton(database);
+        services.TryAddSingleton(serviceProvider => new RuntimePostgresDatabase(
+            connectionString,
+            serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>(),
+            allowInsecureLoopbackForDevelopment: environment.IsDevelopment()));
+        bool allowInsecureLoopbackForDevelopment = environment.IsDevelopment();
         if (TryReadRuntimeConnectionString(
                 configuration.GetConnectionString("RuntimeEvidencePostgres"),
                 "yo4x_runtime_evidence",
-                environment.IsDevelopment(),
-                out string evidenceConnectionString))
+                allowInsecureLoopbackForDevelopment,
+                out string evidenceConnectionString)
+            && PostgresDatabaseEndpoint.TryParse(
+                evidenceConnectionString,
+                out PostgresDatabaseEndpoint? evidenceEndpoint)
+            && TenantContextCapabilityRegistration.TryAdd(
+                services,
+                configuration,
+                evidenceEndpoint!))
         {
-            services.TryAddSingleton(new RuntimeEvidencePostgresDatabase(evidenceConnectionString));
+            services.TryAddSingleton(serviceProvider => new RuntimeEvidencePostgresDatabase(
+                evidenceConnectionString,
+                serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>(),
+                allowInsecureLoopbackForDevelopment));
         }
 
         services.TryAddScoped<IRuntimeControlPlaneApplication, PostgresRuntimeControlPlaneApplication>();
@@ -103,10 +124,10 @@ internal static class RuntimeControlPostgresRegistration
             if (string.IsNullOrWhiteSpace(builder.Host)
                 || string.IsNullOrWhiteSpace(builder.Database)
                 || !string.Equals(builder.Username, requiredRole, StringComparison.Ordinal)
-                || builder.IncludeErrorDetail
-                || !string.IsNullOrWhiteSpace(builder.Options)
-                || !string.IsNullOrWhiteSpace(builder.SearchPath)
-                || !allowInsecureDevelopment && builder.SslMode != SslMode.VerifyFull)
+                || !PostgresRuntimeConnectionPolicy.HasSafeSessionConfiguration(builder)
+                || !PostgresRuntimeConnectionPolicy.HasRequiredTransport(
+                    builder,
+                    allowInsecureDevelopment))
             {
                 return false;
             }

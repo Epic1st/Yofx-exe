@@ -1,4 +1,5 @@
 using Npgsql;
+using YO4X.BuildingBlocks;
 using YO4X.Tenancy;
 
 namespace YO4X.Persistence.Postgres;
@@ -16,11 +17,25 @@ public enum PostgresDatabaseUsage
 public sealed class PostgresDatabase : IAsyncDisposable
 {
     private readonly NpgsqlDataSource _dataSource;
+    private readonly ITenantContextCapabilityProvider? _tenantContextCapabilityProvider;
     private readonly PostgresDatabaseUsage _usage;
+
+    public PostgresDatabaseEndpoint Endpoint { get; }
+
+    public bool HasTenantContextCapabilityProvider =>
+        _tenantContextCapabilityProvider is not null;
+
+    public bool UsesTenantContextCapabilityProvider(
+        ITenantContextCapabilityProvider provider) =>
+        ReferenceEquals(
+            _tenantContextCapabilityProvider,
+            provider ?? throw new ArgumentNullException(nameof(provider)));
 
     public PostgresDatabase(
         string connectionString,
-        PostgresDatabaseUsage usage = PostgresDatabaseUsage.Runtime)
+        PostgresDatabaseUsage usage = PostgresDatabaseUsage.Runtime,
+        ITenantContextCapabilityProvider? tenantContextCapabilityProvider = null,
+        bool allowInsecureLoopbackForDevelopment = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         if (!Enum.IsDefined(usage))
@@ -29,17 +44,42 @@ public sealed class PostgresDatabase : IAsyncDisposable
         }
 
         var connectionOptions = new NpgsqlConnectionStringBuilder(connectionString);
-        if (usage == PostgresDatabaseUsage.Runtime
-            && (connectionOptions.IncludeErrorDetail || connectionOptions.LogParameters))
+        Endpoint = PostgresDatabaseEndpoint.From(connectionOptions);
+        PostgresConnectionSafety.ValidateNoCallerControlledSessionState(
+            connectionOptions,
+            nameof(connectionString));
+        if (!PostgresRuntimeConnectionPolicy.HasRequiredTransport(
+                connectionOptions,
+                allowInsecureLoopbackForDevelopment))
         {
             throw new ArgumentException(
-                "Runtime PostgreSQL connections cannot expose error details or bind parameter values.",
+                "PostgreSQL security-boundary connections require verified TLS transport, or an explicit loopback endpoint while the insecure-development escape is enabled.",
                 nameof(connectionString));
+        }
+
+        connectionOptions.Enlist = false;
+        connectionOptions.PersistSecurityInfo = false;
+        if (usage == PostgresDatabaseUsage.Runtime)
+        {
+            if (tenantContextCapabilityProvider is not null
+                && tenantContextCapabilityProvider.Endpoint != Endpoint)
+            {
+                throw new ArgumentException(
+                    "The tenant-context capability provider must target the exact runtime PostgreSQL endpoint.",
+                    nameof(tenantContextCapabilityProvider));
+            }
+        }
+        else if (tenantContextCapabilityProvider is not null)
+        {
+            throw new ArgumentException(
+                "A migrator connection cannot use a runtime tenant-context capability provider.",
+                nameof(tenantContextCapabilityProvider));
         }
 
         var builder = new NpgsqlDataSourceBuilder(connectionOptions.ConnectionString);
         _dataSource = builder.Build();
         _usage = usage;
+        _tenantContextCapabilityProvider = tenantContextCapabilityProvider;
     }
 
     public async Task MigrateAsync(CancellationToken cancellationToken = default)
@@ -77,11 +117,27 @@ public sealed class PostgresDatabase : IAsyncDisposable
         }
     }
 
+    public ValueTask<bool> IsTenantContextCapabilityProviderReadyAsync(
+        CancellationToken cancellationToken = default) =>
+        _tenantContextCapabilityProvider is null
+            ? ValueTask.FromResult(false)
+            : _tenantContextCapabilityProvider.IsReadyAsync(cancellationToken);
+
     public async ValueTask<TenantPostgresTransaction> BeginTenantTransactionAsync(
         TenantExecutionContext context,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(context);
+        if (_usage != PostgresDatabaseUsage.Runtime)
+        {
+            throw new InvalidOperationException(
+                "Tenant transactions require a runtime PostgreSQL connection.");
+        }
+
+        ITenantContextCapabilityProvider capabilityProvider =
+            _tenantContextCapabilityProvider
+            ?? throw new BackendCapabilityUnavailableException(
+                "postgres-tenant-context-issuer");
 
         NpgsqlConnection connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -90,7 +146,24 @@ public sealed class PostgresDatabase : IAsyncDisposable
             try
             {
                 var session = new TenantPostgresTransaction(connection, transaction, context);
-                await session.ApplyContextAsync(cancellationToken).ConfigureAwait(false);
+                TenantContextTransactionBinding binding = await session
+                    .ReadTransactionBindingAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                using TenantContextCapability capability = await capabilityProvider
+                    .AcquireAsync(context, binding, cancellationToken)
+                    .ConfigureAwait(false);
+                if (capability is null)
+                {
+                    throw new BackendCapabilityUnavailableException(
+                        "postgres-tenant-context-issuer");
+                }
+
+                await session.ActivateContextAsync(
+                        capability,
+                        binding.RuntimeRole,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                await session.VerifyActivatedContextAsync(cancellationToken).ConfigureAwait(false);
                 return session;
             }
             catch

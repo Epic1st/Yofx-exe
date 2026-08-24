@@ -19,6 +19,11 @@ import {
   decodeUserView,
 } from './contracts';
 import { toApiProblem } from './problemDetails';
+import {
+  hasSafeApiTransport,
+  parseCanonicalApiOrigin,
+  resolveSameOriginApiPath,
+} from './safeUrl';
 
 type Decoder<T> = (payload: unknown) => T;
 type FetchImplementation = typeof fetch;
@@ -30,15 +35,16 @@ export interface ControlPlaneClient {
   getDeployment(deploymentId: string, signal?: AbortSignal): Promise<DeploymentView>;
   getDeploymentActivity(deploymentId: string, limit: number, signal?: AbortSignal): Promise<readonly ActivityView[]>;
   getReadiness(signal?: AbortSignal): Promise<HealthView>;
-  getStrategyCompatibility(path: string, signal?: AbortSignal): Promise<StrategyCompatibilityProjection>;
+  getStrategyCompatibility(corpusId: string, signal?: AbortSignal): Promise<StrategyCompatibilityProjection>;
   getRuntimeReadiness(path: string, signal?: AbortSignal): Promise<RuntimeReadinessProjection>;
 }
 
 export function createControlPlaneClient(
   apiOrigin: string,
   fetchImplementation: FetchImplementation = window.fetch.bind(window),
+  browserOrigin: string = window.location.origin,
 ): ControlPlaneClient {
-  const origin = apiOrigin || window.location.origin;
+  const originCandidate = apiOrigin || browserOrigin;
   let tokenRequest: Promise<string | null> | null = null;
 
   async function currentAccessToken(): Promise<string | null> {
@@ -62,6 +68,13 @@ export function createControlPlaneClient(
   }
 
   async function request<T>(path: string, decoder: Decoder<T>, signal?: AbortSignal): Promise<T> {
+    const parsedOrigin = parseCanonicalApiOrigin(originCandidate);
+    if (!hasSafeApiTransport(parsedOrigin, import.meta.env.DEV)) {
+      throw new Error('The control-plane API origin must use HTTPS outside loopback development.');
+    }
+
+    const origin = parsedOrigin.origin;
+    const requestUrl = resolveSameOriginApiPath(path, origin);
     const token = await currentAccessToken();
     const headers = new Headers({ Accept: 'application/json, application/problem+json' });
     if (token !== null) {
@@ -71,7 +84,7 @@ export function createControlPlaneClient(
       headers.set('Authorization', `Bearer ${token}`);
     }
 
-    const response = await fetchImplementation(new URL(path, origin), {
+    const response = await fetchImplementation(requestUrl, {
       method: 'GET',
       headers,
       credentials: 'include',
@@ -113,7 +126,11 @@ export function createControlPlaneClient(
       );
     },
     getReadiness: (signal) => request('/health/ready', decodeHealthView, signal),
-    getStrategyCompatibility: (path, signal) => request(path, decodeStrategyCompatibility, signal),
+    getStrategyCompatibility: (corpusId, signal) => request(
+      `/v1/strategy-source-corpora/${encodeURIComponent(corpusId)}/compatibility`,
+      decodeStrategyCompatibility,
+      signal,
+    ),
     getRuntimeReadiness: (path, signal) => request(path, decodeRuntimeReadiness, signal),
   };
 }

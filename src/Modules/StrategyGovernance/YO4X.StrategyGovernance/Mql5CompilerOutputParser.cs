@@ -11,6 +11,8 @@ namespace YO4X.StrategyGovernance;
 /// </summary>
 public static class Mql5CompilerOutputParser
 {
+    private const int MaximumRecordCharacters = 64 * 1024;
+    private const int MaximumRecordUtf8Bytes = MaximumRecordCharacters * 4;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly string[] RecordProperties =
     [
@@ -53,48 +55,109 @@ public static class Mql5CompilerOutputParser
             throw new Mql5CompilerOutputException("COMPILER_OUTPUT_LIMIT_EXCEEDED");
         }
 
-        string output;
-        try
-        {
-            output = StrictUtf8.GetString(outputUtf8);
-        }
-        catch (DecoderFallbackException)
-        {
-            throw new Mql5CompilerOutputException("COMPILER_OUTPUT_UTF8_INVALID");
-        }
-
-        if (output.Length == 0)
+        if (outputUtf8.Length == 0)
         {
             return [];
         }
 
-        string[] lines = output.Split('\n');
-        if (lines[^1].Length == 0)
-        {
-            lines = lines[..^1];
-        }
-
-        if (lines.Length > maximumRecords)
-        {
-            throw new Mql5CompilerOutputException("COMPILER_OUTPUT_RECORD_LIMIT_EXCEEDED");
-        }
-
-        var results = new List<Mql5FileCompileEvidence>(lines.Length);
+        int recordCount = PreflightRecords(outputUtf8, maximumRecords);
+        var results = new List<Mql5FileCompileEvidence>(recordCount);
         var paths = new HashSet<string>(StringComparer.Ordinal);
-        foreach (string rawLine in lines)
+        int recordStart = 0;
+        while (recordStart < outputUtf8.Length)
         {
-            string line = rawLine.EndsWith('\r') ? rawLine[..^1] : rawLine;
-            if (line.Length is < 2 or > 64 * 1024)
+            int relativeLineFeed = outputUtf8.AsSpan(recordStart).IndexOf((byte)'\n');
+            int recordEnd = relativeLineFeed < 0
+                ? outputUtf8.Length
+                : recordStart + relativeLineFeed;
+            int recordLength = recordEnd - recordStart;
+            if (recordLength > 0 && outputUtf8[recordEnd - 1] == (byte)'\r')
+            {
+                recordLength--;
+            }
+
+            string line;
+            try
+            {
+                line = StrictUtf8.GetString(outputUtf8, recordStart, recordLength);
+            }
+            catch (DecoderFallbackException)
+            {
+                throw new Mql5CompilerOutputException("COMPILER_OUTPUT_UTF8_INVALID");
+            }
+
+            if (line.Length is < 2 or > MaximumRecordCharacters)
             {
                 throw new Mql5CompilerOutputException("COMPILER_OUTPUT_RECORD_INVALID");
             }
 
             results.Add(ParseLine(line, paths));
+            if (relativeLineFeed < 0)
+            {
+                break;
+            }
+
+            recordStart = recordEnd + 1;
         }
 
         return results
             .OrderBy(static result => result.RelativePath, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private static int PreflightRecords(ReadOnlySpan<byte> output, int maximumRecords)
+    {
+        int recordCount = 0;
+        int recordStart = 0;
+        bool invalidRecordLength = false;
+        for (int index = 0; index < output.Length; index++)
+        {
+            if (output[index] != (byte)'\n')
+            {
+                continue;
+            }
+
+            recordCount++;
+            if (recordCount > maximumRecords)
+            {
+                throw new Mql5CompilerOutputException(
+                    "COMPILER_OUTPUT_RECORD_LIMIT_EXCEEDED");
+            }
+
+            int recordLength = index - recordStart;
+            if (recordLength > 0 && output[index - 1] == (byte)'\r')
+            {
+                recordLength--;
+            }
+
+            invalidRecordLength |= recordLength is < 2 or > MaximumRecordUtf8Bytes;
+            recordStart = index + 1;
+        }
+
+        if (recordStart < output.Length)
+        {
+            recordCount++;
+            if (recordCount > maximumRecords)
+            {
+                throw new Mql5CompilerOutputException(
+                    "COMPILER_OUTPUT_RECORD_LIMIT_EXCEEDED");
+            }
+
+            int recordLength = output.Length - recordStart;
+            if (recordLength > 0 && output[^1] == (byte)'\r')
+            {
+                recordLength--;
+            }
+
+            invalidRecordLength |= recordLength is < 2 or > MaximumRecordUtf8Bytes;
+        }
+
+        if (invalidRecordLength)
+        {
+            throw new Mql5CompilerOutputException("COMPILER_OUTPUT_RECORD_INVALID");
+        }
+
+        return recordCount;
     }
 
     private static Mql5FileCompileEvidence ParseLine(string line, HashSet<string> paths)
@@ -147,12 +210,6 @@ public static class Mql5CompilerOutputParser
                 _ => throw new Mql5CompilerOutputException("COMPILER_OUTPUT_STATUS_INVALID")
             };
 
-            if (status == Mql5FileCompileStatus.Succeeded
-                && (exitCode != 0 || artifactSha256 is null || repeatArtifactSha256 is null))
-            {
-                throw new Mql5CompilerOutputException("COMPILER_OUTPUT_SUCCESS_EVIDENCE_INVALID");
-            }
-
             JsonElement diagnosticsElement = root.GetProperty("diagnostics");
             if (diagnosticsElement.ValueKind != JsonValueKind.Array
                 || diagnosticsElement.GetArrayLength() > 200)
@@ -169,6 +226,29 @@ public static class Mql5CompilerOutputParser
                 .ThenBy(static diagnostic => diagnostic.Code, StringComparer.Ordinal)
                 .ThenBy(static diagnostic => diagnostic.MessageSha256, StringComparer.Ordinal)
                 .ToArray();
+
+            bool hasErrorDiagnostic = diagnostics.Any(
+                static diagnostic => string.Equals(
+                    diagnostic.Severity,
+                    "error",
+                    StringComparison.Ordinal));
+            if (status == Mql5FileCompileStatus.Succeeded
+                && (exitCode != 0
+                    || artifactSha256 is null
+                    || repeatArtifactSha256 is null
+                    || hasErrorDiagnostic))
+            {
+                throw new Mql5CompilerOutputException("COMPILER_OUTPUT_SUCCESS_EVIDENCE_INVALID");
+            }
+
+            if (status == Mql5FileCompileStatus.Failed
+                && (exitCode == 0
+                    || artifactSha256 is not null
+                    || repeatArtifactSha256 is not null
+                    || !hasErrorDiagnostic))
+            {
+                throw new Mql5CompilerOutputException("COMPILER_OUTPUT_FAILURE_EVIDENCE_INVALID");
+            }
 
             string evidenceSha256 = CanonicalJson.Sha256(new
             {

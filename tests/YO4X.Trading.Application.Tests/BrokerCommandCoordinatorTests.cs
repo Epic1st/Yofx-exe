@@ -7,10 +7,22 @@ namespace YO4X.Trading.Application.Tests;
 
 public sealed class BrokerCommandCoordinatorTests
 {
+    [Fact]
+    public void DefaultMutationTimingFitsTheDatabasePlaceAuthorityWindow()
+    {
+        var options = new BrokerCommandCoordinatorOptions();
+
+        options.Validate();
+
+        Assert.Equal(TimeSpan.FromMilliseconds(500), options.GatewaySendTimeout);
+        Assert.Equal(TimeSpan.FromMilliseconds(100), options.AuthoritySafetyMargin);
+        Assert.Equal(TimeSpan.FromMilliseconds(600), options.MinimumAuthorityWindow);
+    }
+
     [Theory]
     [InlineData(GatewayCommandDisposition.Accepted)]
     [InlineData(GatewayCommandDisposition.Unknown)]
-    public async Task AcceptedAndUnknownAreRecordedAndRequireReconciliation(
+    public async Task BrokerOutcomesWithExternalCommitmentAreRecordedAndRequireReconciliation(
         GatewayCommandDisposition disposition)
     {
         AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
@@ -23,23 +35,26 @@ public sealed class BrokerCommandCoordinatorTests
                 "request-1",
                 "order-1",
                 null,
-                BrokerCommandTestFixture.Now)
+                BrokerCommandTestFixture.Now,
+                true)
         };
         BrokerCommandCoordinator coordinator = Create(store, gateway);
 
         BrokerCommandDispatchResult result = await coordinator.DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
         Assert.Equal(1, gateway.SendCalls);
         Assert.Equal(1, store.RecordSubmissionCalls);
         Assert.Equal(disposition, store.Submission?.Disposition);
+        Assert.False(store.Submission?.PreInvocationNotSentProven);
         Assert.False(store.SubmissionTokenWasCancelled);
     }
 
     [Fact]
-    public async Task RejectedSubmissionIsDurablyTerminalWithoutReconciliationFlag()
+    public async Task ReturnedRejectedIsUnknownAndRequiresReconciliation()
     {
         AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
         var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command));
@@ -51,16 +66,76 @@ public sealed class BrokerCommandCoordinatorTests
                 "request-1",
                 null,
                 null,
-                BrokerCommandTestFixture.Now)
+                BrokerCommandTestFixture.Now,
+                false)
         };
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
-        Assert.Equal(BrokerCommandDispatchOutcome.SubmissionRecorded, result.Outcome);
-        Assert.False(result.RequiresReconciliation);
+        Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
+        Assert.Equal(GatewayCommandDisposition.Unknown, result.Disposition);
+        Assert.Equal("broker_command_gateway_outcome_unproven", result.Code);
         Assert.Equal(1, gateway.SendCalls);
+        Assert.False(store.Submission?.PreInvocationNotSentProven);
+    }
+
+    [Fact]
+    public async Task ReturnedSubmissionDisabledIsUnknownAndRequiresReconciliation()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command));
+        var gateway = new RecordingGateway
+        {
+            SendResult = new GatewaySendResult(
+                GatewayCommandDisposition.SubmissionDisabled,
+                "gateway_disabled_after_entry",
+                null,
+                null,
+                null,
+                BrokerCommandTestFixture.Now,
+                false)
+        };
+
+        BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
+            BrokerCommandTestFixture.Context(command),
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
+        Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
+        Assert.Equal(1, gateway.SendCalls);
+        Assert.False(store.Submission?.PreInvocationNotSentProven);
+    }
+
+    [Fact]
+    public async Task UndefinedGatewayDispositionIsNormalizedToUnknown()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command));
+        var gateway = new RecordingGateway
+        {
+            SendResult = new GatewaySendResult(
+                (GatewayCommandDisposition)999,
+                "undefined_disposition",
+                "request-1",
+                null,
+                null,
+                BrokerCommandTestFixture.Now,
+                true)
+        };
+
+        BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
+            BrokerCommandTestFixture.Context(command),
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
+        Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
+        Assert.Equal("broker_command_gateway_result_invalid", store.Submission?.Code);
+        Assert.False(store.Submission?.PreInvocationNotSentProven);
     }
 
     [Fact]
@@ -68,16 +143,23 @@ public sealed class BrokerCommandCoordinatorTests
     {
         AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
         var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command));
-        BrokerCommandCoordinator coordinator = Create(store, new Mt5ProofOnlyGateway());
+        BrokerCommandCoordinator coordinator = Create(
+            store,
+            new Mt5ProofOnlyGateway(),
+            submissionEnabled: false);
 
         BrokerCommandDispatchResult result = await coordinator.DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandDispatchOutcome.SubmissionRecorded, result.Outcome);
         Assert.Equal(GatewayCommandDisposition.SubmissionDisabled, result.Disposition);
-        Assert.Equal(Mt5ProofOnlyGateway.ProofOnlyCode, result.Code);
+        Assert.Equal("broker_command_gateway_entry_disabled", result.Code);
         Assert.Equal(GatewayCommandDisposition.SubmissionDisabled, store.Submission?.Disposition);
+        Assert.Equal("submission_disabled", result.DurableState);
+        Assert.False(result.GatewayInvoked);
+        Assert.True(store.Submission?.PreInvocationNotSentProven);
     }
 
     [Fact]
@@ -90,7 +172,8 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, gateway.SendCalls);
         Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
@@ -109,7 +192,8 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, gateway.SendCalls);
         Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
@@ -133,11 +217,133 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, gateway.SendCalls);
         Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
         Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
+    }
+
+    [Fact]
+    public async Task FreshDatabaseAuthorityIsRecheckedImmediatelyBeforeGatewayEntry()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        var clock = new ControllableTimeProvider(BrokerCommandTestFixture.Now);
+        var store = new RecordingStore(
+            BrokerCommandTestFixture.DispatchClaim(
+                command,
+                expiresAt: BrokerCommandTestFixture.Now.AddSeconds(1)));
+        var gateway = new RecordingGateway();
+
+        BrokerCommandDispatchResult result = await Create(
+                store,
+                gateway,
+                timeProvider: clock)
+            .DispatchAsync(
+                BrokerCommandTestFixture.Context(command),
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, gateway.SendCalls);
+        Assert.True(result.RequiresReconciliation);
+        Assert.False(store.Submission?.PreInvocationNotSentProven);
+    }
+
+    [Fact]
+    public async Task SubmissionEvidenceIsNormalizedOnceBeforePersistenceAndReceiptValidation()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandDispatchClaim claim = BrokerCommandTestFixture.DispatchClaim(command);
+        var time = new ControllableTimeProvider(BrokerCommandTestFixture.Now);
+        var store = new RecordingStore(claim);
+        var gateway = new RecordingGateway
+        {
+            SendResult = new GatewaySendResult(
+                GatewayCommandDisposition.Accepted,
+                "accepted",
+                "request-submicro",
+                "order-submicro",
+                null,
+                BrokerCommandTestFixture.Now.AddTicks(7),
+                false),
+            DuringSend = () => time.Advance(TimeSpan.FromTicks(7))
+        };
+
+        BrokerCommandDispatchResult result = await Create(
+                store,
+                gateway,
+                timeProvider: time)
+            .DispatchAsync(
+                BrokerCommandTestFixture.Context(command),
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
+        Assert.NotNull(store.Submission);
+        Assert.Equal(
+            0,
+            store.Submission.ObservedAtUtc.Ticks % TimeSpan.TicksPerMicrosecond);
+        Assert.Equal(BrokerCommandTestFixture.Now, store.Submission.ObservedAtUtc);
+    }
+
+    [Fact]
+    public async Task AuthorityThatBecomesTooShortBeforeGatewayEntryStaysUnknown()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        var clock = new ControllableTimeProvider(BrokerCommandTestFixture.Now);
+        var store = new RecordingStore(
+            BrokerCommandTestFixture.DispatchClaim(
+                command,
+                expiresAt: BrokerCommandTestFixture.Now.AddSeconds(1)))
+        {
+            AfterClaim = () => clock.Advance(TimeSpan.FromMilliseconds(500))
+        };
+        var gateway = new RecordingGateway();
+
+        BrokerCommandDispatchResult result = await Create(
+                store,
+                gateway,
+                timeProvider: clock)
+            .DispatchAsync(
+                BrokerCommandTestFixture.Context(command),
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, gateway.SendCalls);
+        Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
+        Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
+        Assert.False(store.Submission?.PreInvocationNotSentProven);
+    }
+
+    [Fact]
+    public async Task SynchronousGatewayOverrunIsPersistedUnknownEvenWhenItReturnsAccepted()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        var clock = new ControllableTimeProvider(BrokerCommandTestFixture.Now);
+        var store = new RecordingStore(
+            BrokerCommandTestFixture.DispatchClaim(
+                command,
+                expiresAt: BrokerCommandTestFixture.Now.AddSeconds(2)));
+        var gateway = new RecordingGateway
+        {
+            DuringSend = () => clock.Advance(TimeSpan.FromMilliseconds(600))
+        };
+
+        BrokerCommandDispatchResult result = await Create(
+                store,
+                gateway,
+                timeProvider: clock)
+            .DispatchAsync(
+                BrokerCommandTestFixture.Context(command),
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, gateway.SendCalls);
+        Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
+        Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
+        Assert.Equal("broker_command_gateway_timeout_unknown", store.Submission?.Code);
+        Assert.False(store.Submission?.PreInvocationNotSentProven);
     }
 
     [Fact]
@@ -152,7 +358,8 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandDispatchOutcome.DurableRecoveryRequired, result.Outcome);
         Assert.Equal("broker_command_claim_store_failed", result.Code);
@@ -173,10 +380,12 @@ public sealed class BrokerCommandCoordinatorTests
                 new FixedLeaseTrustVerifier(trusted: false))
             .DispatchAsync(
                 BrokerCommandTestFixture.Context(command),
-                BrokerCommandTestFixture.Reference(command));
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
 
         Assert.Equal(0, gateway.SendCalls);
         Assert.Equal(GatewayCommandDisposition.SubmissionDisabled, store.Submission?.Disposition);
+        Assert.True(store.Submission?.PreInvocationNotSentProven);
         Assert.Equal(BrokerCommandDispatchOutcome.SubmissionRecorded, result.Outcome);
     }
 
@@ -189,10 +398,12 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(1, gateway.SendCalls);
         Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
+        Assert.False(store.Submission?.PreInvocationNotSentProven);
         Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
     }
 
@@ -230,7 +441,8 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandDispatchOutcome.DurableRecoveryRequired, result.Outcome);
         Assert.Equal("send_in_progress", result.DurableState);
@@ -250,7 +462,8 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandDispatchOutcome.ReconciliationRequired, result.Outcome);
         Assert.Equal(0, store.ClaimCalls);
@@ -269,7 +482,29 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokerCommandDispatchOutcome.DurableRecoveryRequired, result.Outcome);
+        Assert.Equal("broker_command_recovery_receipt_invalid", result.Code);
+        Assert.Equal(0, store.ClaimCalls);
+        Assert.Equal(0, gateway.SendCalls);
+    }
+
+    [Fact]
+    public async Task RecoveryReceiptWithWrongWellFormedDigestIsRejected()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command))
+        {
+            Recovery = Receipt(command, "unknown", evidenceSha256: new string('f', 64))
+        };
+        var gateway = new RecordingGateway();
+
+        BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
+            BrokerCommandTestFixture.Context(command),
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandDispatchOutcome.DurableRecoveryRequired, result.Outcome);
         Assert.Equal("broker_command_recovery_receipt_invalid", result.Code);
@@ -290,15 +525,54 @@ public sealed class BrokerCommandCoordinatorTests
                 null,
                 null,
                 null,
-                BrokerCommandTestFixture.Now)
+                BrokerCommandTestFixture.Now,
+                false)
         };
 
         await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
         Assert.Equal("broker_command_gateway_result_invalid", store.Submission?.Code);
+    }
+
+    [Theory]
+    [InlineData("request\0id", null, null)]
+    [InlineData("request-1", "order\0id", null)]
+    [InlineData("request-1", null, "deal\0id")]
+    public async Task GatewayReceiptWithNonPersistableBrokerIdIsDowngradedBeforeStorage(
+        string? requestId,
+        string? orderId,
+        string? dealId)
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command));
+        var gateway = new RecordingGateway
+        {
+            SendResult = new GatewaySendResult(
+                GatewayCommandDisposition.Accepted,
+                "accepted",
+                requestId,
+                orderId,
+                dealId,
+                BrokerCommandTestFixture.Now,
+                false)
+        };
+
+        BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
+            BrokerCommandTestFixture.Context(command),
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.GatewayInvoked);
+        Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
+        Assert.Equal("broker_command_gateway_result_invalid", store.Submission?.Code);
+        Assert.Null(store.Submission?.BrokerRequestId);
+        Assert.Null(store.Submission?.OrderId);
+        Assert.Null(store.Submission?.DealId);
+        Assert.Equal(1, store.RecordSubmissionCalls);
     }
 
     [Fact]
@@ -315,12 +589,14 @@ public sealed class BrokerCommandCoordinatorTests
                 "request-1",
                 "different-order",
                 null,
-                BrokerCommandTestFixture.Now)
+                BrokerCommandTestFixture.Now,
+                false)
         };
 
         await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(GatewayCommandDisposition.Unknown, store.Submission?.Disposition);
         Assert.Equal("broker_command_gateway_result_invalid", store.Submission?.Code);
@@ -338,12 +614,65 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandDispatchOutcome.DurableRecoveryRequired, result.Outcome);
         Assert.Equal("broker_command_submission_receipt_invalid", result.Code);
         Assert.Equal(1, gateway.SendCalls);
         Assert.Equal(1, store.RecordSubmissionCalls);
+    }
+
+    [Fact]
+    public async Task SubmissionReceiptWithWrongWellFormedDigestIsDurableAmbiguity()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command))
+        {
+            SubmissionReceipt = Receipt(
+                command,
+                "acknowledged",
+                commandVersion: 3,
+                evidenceSha256: new string('f', 64))
+        };
+        var gateway = new RecordingGateway();
+
+        BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
+            BrokerCommandTestFixture.Context(command),
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokerCommandDispatchOutcome.DurableRecoveryRequired, result.Outcome);
+        Assert.Equal("broker_command_submission_receipt_invalid", result.Code);
+        Assert.Equal(1, gateway.SendCalls);
+        Assert.Equal(1, store.RecordSubmissionCalls);
+    }
+
+    [Fact]
+    public async Task SubmissionReceiptMustBeTheExactNextVersionWithinClaimTime()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandDispatchClaim claim = BrokerCommandTestFixture.DispatchClaim(command);
+        var gateway = new RecordingGateway();
+        GatewaySendResult normalized = BrokerCommandLifecycleEvidence.NormalizeSubmission(
+            gateway.SendResult);
+        var store = new RecordingStore(claim)
+        {
+            SubmissionReceipt = Receipt(
+                command,
+                "acknowledged",
+                claim.CommandVersion + 2,
+                BrokerCommandLifecycleEvidence.Submission(normalized).Sha256,
+                claim.ClaimExpiresAtUtc.AddTicks(1))
+        };
+
+        BrokerCommandDispatchResult result = await Create(store, gateway).DispatchAsync(
+            BrokerCommandTestFixture.Context(command),
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokerCommandDispatchOutcome.DurableRecoveryRequired, result.Outcome);
+        Assert.Equal("broker_command_submission_receipt_invalid", result.Code);
     }
 
     [Fact]
@@ -360,7 +689,8 @@ public sealed class BrokerCommandCoordinatorTests
                 new Mt5ProofOnlyGateway())
             .ReconcileAsync(
                 BrokerCommandTestFixture.Context(command),
-                BrokerCommandTestFixture.Reference(command));
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandReconciliationOutcome.InconclusiveRetryable, result.Outcome);
         Assert.Equal(BrokerReconciliationMatch.Inconclusive, store.Reconciliation?.Match);
@@ -369,7 +699,7 @@ public sealed class BrokerCommandCoordinatorTests
     }
 
     [Fact]
-    public async Task CompleteAtomicSnapshotWithNewSourceSequenceCanBecomeTerminal()
+    public async Task CompleteAtomicSnapshotRemainsRetryableWithoutAuthenticatedBrokerEvidence()
     {
         AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
         BrokerCommandReconciliationClaim claim =
@@ -382,11 +712,68 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandReconciliationResult result = await Create(store, gateway).ReconcileAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
-        Assert.Equal(BrokerCommandReconciliationOutcome.Completed, result.Outcome);
-        Assert.Equal(BrokerReconciliationMatch.Acknowledged, store.Reconciliation?.Match);
-        Assert.Equal("broker_reconciliation_snapshot_proven", store.Reconciliation?.ReasonCode);
+        Assert.Equal(BrokerCommandReconciliationOutcome.InconclusiveRetryable, result.Outcome);
+        Assert.Equal(BrokerReconciliationMatch.Inconclusive, store.Reconciliation?.Match);
+        Assert.Equal(
+            "broker_reconciliation_terminal_authority_unavailable",
+            store.Reconciliation?.ReasonCode);
+        Assert.Null(store.Reconciliation?.SourceSequence);
+        Assert.Null(store.Reconciliation?.Snapshot);
+    }
+
+    [Fact]
+    public async Task ReconciliationSourceIsNormalizedBeforeItsDigestAndPersistenceEvidence()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        BrokerReconciliationSnapshot baseline = Snapshot(command, claim);
+        DateTimeOffset submicro = claim.StartedAtUtc.AddMilliseconds(1).AddTicks(7);
+        BrokerReconciliationSnapshot snapshot = baseline with
+        {
+            QueryWindowEndUtc = submicro,
+            CompletedAtUtc = submicro,
+            Account = baseline.Account with { ObservedAtUtc = submicro },
+            Orders = baseline.Orders
+                .Select(order => order with { ObservedAtUtc = submicro })
+                .ToArray(),
+            CommandResults = baseline.CommandResults
+                .Select(result => result with { ReconciledAtUtc = submicro })
+                .ToArray()
+        };
+        var time = new ControllableTimeProvider(BrokerCommandTestFixture.Now);
+        var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command))
+        {
+            ReconciliationClaim = claim
+        };
+        var gateway = new RecordingGateway
+        {
+            ReconciliationSnapshot = snapshot,
+            DuringReconcile = () => time.Advance(TimeSpan.FromMilliseconds(2).Add(
+                TimeSpan.FromTicks(7)))
+        };
+
+        BrokerCommandReconciliationResult result = await Create(
+                store,
+                gateway,
+                timeProvider: time)
+            .ReconcileAsync(
+                BrokerCommandTestFixture.Context(command),
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokerCommandReconciliationOutcome.InconclusiveRetryable, result.Outcome);
+        Assert.NotNull(store.Reconciliation);
+        Assert.Equal(
+            0,
+            store.Reconciliation.ObservedAtUtc.Ticks % TimeSpan.TicksPerMicrosecond);
+        Assert.Equal(store.Reconciliation.WindowEndUtc, store.Reconciliation.ObservedAtUtc);
+        Assert.Equal(
+            claim.StartedAtUtc.AddMilliseconds(1),
+            store.Reconciliation.ObservedAtUtc);
     }
 
     [Fact]
@@ -405,7 +792,8 @@ public sealed class BrokerCommandCoordinatorTests
                 new FixedLeaseTrustVerifier(trusted: false))
             .ReconcileAsync(
                 BrokerCommandTestFixture.Context(command),
-                BrokerCommandTestFixture.Reference(command));
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
 
         Assert.Equal(0, gateway.ReconcileCalls);
         Assert.Equal(BrokerCommandReconciliationOutcome.InconclusiveRetryable, result.Outcome);
@@ -428,7 +816,8 @@ public sealed class BrokerCommandCoordinatorTests
 
         BrokerCommandReconciliationResult result = await Create(store, gateway).ReconcileAsync(
             BrokerCommandTestFixture.Context(command),
-            BrokerCommandTestFixture.Reference(command));
+            BrokerCommandTestFixture.Reference(command),
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(0, gateway.ReconcileCalls);
         Assert.Equal(BrokerCommandReconciliationOutcome.InconclusiveRetryable, result.Outcome);
@@ -449,7 +838,8 @@ public sealed class BrokerCommandCoordinatorTests
                 new Mt5ProofOnlyGateway())
             .ReconcileAsync(
                 BrokerCommandTestFixture.Context(command),
-                BrokerCommandTestFixture.Reference(command));
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandReconciliationOutcome.DurableRecoveryRequired, result.Outcome);
         Assert.True(result.GatewayInvoked);
@@ -470,7 +860,37 @@ public sealed class BrokerCommandCoordinatorTests
                 new Mt5ProofOnlyGateway())
             .ReconcileAsync(
                 BrokerCommandTestFixture.Context(command),
-                BrokerCommandTestFixture.Reference(command));
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokerCommandReconciliationOutcome.DurableRecoveryRequired, result.Outcome);
+        Assert.Equal("broker_reconciliation_receipt_invalid", result.Code);
+    }
+
+    [Fact]
+    public async Task ReconciliationReceiptWithWrongWellFormedDigestIsDurableAmbiguity()
+    {
+        AuthorizedBrokerCommand command = BrokerCommandTestFixture.Authorized();
+        BrokerCommandReconciliationClaim claim =
+            BrokerCommandTestFixture.ReconciliationClaim(command);
+        var store = new RecordingStore(BrokerCommandTestFixture.DispatchClaim(command))
+        {
+            ReconciliationClaim = claim,
+            ReconciliationReceipt = Receipt(
+                command,
+                "unknown",
+                claim.CommandVersion + 1,
+                new string('f', 64),
+                claim.StartedAtUtc)
+        };
+
+        BrokerCommandReconciliationResult result = await Create(
+                store,
+                new Mt5ProofOnlyGateway())
+            .ReconcileAsync(
+                BrokerCommandTestFixture.Context(command),
+                BrokerCommandTestFixture.Reference(command),
+                TestContext.Current.CancellationToken);
 
         Assert.Equal(BrokerCommandReconciliationOutcome.DurableRecoveryRequired, result.Outcome);
         Assert.Equal("broker_reconciliation_receipt_invalid", result.Code);
@@ -506,23 +926,30 @@ public sealed class BrokerCommandCoordinatorTests
     private static BrokerCommandCoordinator Create(
         RecordingStore store,
         IMt5Gateway gateway,
-        IExecutionLeaseTrustVerifier? trust = null) => new(
+        IExecutionLeaseTrustVerifier? trust = null,
+        bool submissionEnabled = true,
+        TimeProvider? timeProvider = null) => new(
             store,
             gateway,
             trust ?? new FixedLeaseTrustVerifier(),
-            new BrokerCommandCoordinatorOptions(),
-            new FixedTimeProvider(BrokerCommandTestFixture.Now),
+            new BrokerCommandCoordinatorOptions
+            {
+                SubmissionEnabled = submissionEnabled
+            },
+            timeProvider ?? new FixedTimeProvider(BrokerCommandTestFixture.Now),
             new SequenceIdentifierSource());
 
     private static BrokerCommandLifecycleReceipt Receipt(
         AuthorizedBrokerCommand command,
         string state,
-        long commandVersion = 3) => new(
+        long commandVersion = 3,
+        string? evidenceSha256 = null,
+        DateTimeOffset? recordedAtUtc = null) => new(
             command.Command.CommandId,
             state,
-            new string('1', 64),
+            evidenceSha256 ?? command.AuthorizationSha256,
             commandVersion,
-            BrokerCommandTestFixture.Now,
+            recordedAtUtc ?? BrokerCommandTestFixture.Now,
             false);
 
     private static BrokerReconciliationSnapshot Snapshot(
@@ -649,9 +1076,16 @@ public sealed class BrokerCommandCoordinatorTests
             {
                 GatewayCommandDisposition.Accepted => "acknowledged",
                 GatewayCommandDisposition.Unknown => "unknown",
-                _ => "rejected"
+                GatewayCommandDisposition.Rejected => "rejected",
+                GatewayCommandDisposition.SubmissionDisabled => "submission_disabled",
+                _ => throw new ArgumentOutOfRangeException(nameof(result))
             };
-            return Task.FromResult(SubmissionReceipt ?? Receipt(claim.Command, state));
+            return Task.FromResult(SubmissionReceipt ?? Receipt(
+                claim.Command,
+                state,
+                claim.CommandVersion + 1,
+                BrokerCommandLifecycleEvidence.Submission(result).Sha256,
+                result.ObservedAtUtc));
         }
 
         public Task<BrokerCommandLifecycleReceipt?> RecoverExpiredLifecycleAsync(
@@ -689,7 +1123,9 @@ public sealed class BrokerCommandCoordinatorTests
             return Task.FromResult(ReconciliationReceipt ?? Receipt(
                 dispatchClaim.Command,
                 evidence.IsConclusive ? "reconciled" : "unknown",
-                (ReconciliationClaim?.CommandVersion ?? dispatchClaim.CommandVersion) + 1));
+                (ReconciliationClaim?.CommandVersion ?? dispatchClaim.CommandVersion) + 1,
+                BrokerCommandLifecycleEvidence.Reconciliation(evidence).Sha256,
+                evidence.ObservedAtUtc));
         }
     }
 
@@ -703,9 +1139,14 @@ public sealed class BrokerCommandCoordinatorTests
             "request-1",
             "order-1",
             null,
-            BrokerCommandTestFixture.Now);
+            BrokerCommandTestFixture.Now,
+            false);
 
         public Exception? SendException { get; init; }
+
+        public Action? DuringSend { get; init; }
+
+        public Action? DuringReconcile { get; init; }
 
         public BrokerReconciliationSnapshot? ReconciliationSnapshot { get; init; }
 
@@ -718,6 +1159,7 @@ public sealed class BrokerCommandCoordinatorTests
             CancellationToken cancellationToken)
         {
             SendCalls++;
+            DuringSend?.Invoke();
             return SendException is null
                 ? Task.FromResult(SendResult)
                 : Task.FromException<GatewaySendResult>(SendException);
@@ -728,6 +1170,7 @@ public sealed class BrokerCommandCoordinatorTests
             CancellationToken cancellationToken)
         {
             ReconcileCalls++;
+            DuringReconcile?.Invoke();
             return Task.FromResult(
                 ReconciliationSnapshot is null
                     ? new GatewayOperationResult<BrokerReconciliationSnapshot>(

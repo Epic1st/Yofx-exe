@@ -34,6 +34,7 @@ public static class PostgresOutboxRepository
             message.id,
             message.tenant_id,
             message.message_type,
+            message.schema_version,
             message.aggregate_type,
             message.aggregate_id,
             message.payload::text,
@@ -100,17 +101,18 @@ public static class PostgresOutboxRepository
                 reader.GetGuid(0),
                 reader.GetGuid(1),
                 reader.GetString(2),
-                reader.GetString(3),
+                reader.GetInt16(3),
                 reader.GetString(4),
                 reader.GetString(5),
                 reader.GetString(6),
-                reader.GetGuid(7),
-                reader.IsDBNull(8) ? null : reader.GetGuid(8),
-                reader.GetFieldValue<DateTimeOffset>(9),
+                reader.GetString(7),
+                reader.GetGuid(8),
+                reader.IsDBNull(9) ? null : reader.GetGuid(9),
                 reader.GetFieldValue<DateTimeOffset>(10),
-                reader.GetInt32(11),
-                reader.GetString(12),
-                reader.GetFieldValue<DateTimeOffset>(13)));
+                reader.GetFieldValue<DateTimeOffset>(11),
+                reader.GetInt32(12),
+                reader.GetString(13),
+                reader.GetFieldValue<DateTimeOffset>(14)));
         }
 
         return messages;

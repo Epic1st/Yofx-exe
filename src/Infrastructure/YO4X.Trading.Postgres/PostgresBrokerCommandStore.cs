@@ -10,6 +10,7 @@ using YO4X.Risk;
 using YO4X.Runtime.Contracts;
 using YO4X.Tenancy;
 using YO4X.Trading.Abstractions;
+using YO4X.Trading.Application;
 
 namespace YO4X.Trading.Postgres;
 
@@ -37,7 +38,31 @@ public sealed class PostgresBrokerCommandStore
             ?? throw new ArgumentNullException(nameof(executionLeaseTrustVerifier));
     }
 
-    public async Task<BrokerCommandAuthorizationReceipt> AuthorizeAsync(
+    /// <summary>
+    /// Production authorization remains unavailable until a trusted factory can
+    /// verify a signed gateway snapshot, derive broker-dependent risk input,
+    /// bind authoritative risk-day/order-rate state, verify the signed policy,
+    /// and run the numeric evaluator over those exact immutable facts.
+    /// </summary>
+    public Task<BrokerCommandAuthorizationReceipt> AuthorizeAsync(
+        TenantExecutionContext context,
+        BrokerCommandAuthorizationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(request);
+        GC.KeepAlive(authorizerDatabase);
+        return Task.FromException<BrokerCommandAuthorizationReceipt>(
+            new DomainException(
+                "BROKER_COMMAND_RISK_AUTHORITY_UNAVAILABLE",
+                "Broker-command authorization is disabled until trusted risk authority is available."));
+    }
+
+    // This preserves end-to-end durability proofs without exposing the
+    // caller-supplied risk model as a production authorization capability. The
+    // production role script revokes SQL EXECUTE; the integration fixture must
+    // explicitly grant the exact function in its disposable database.
+    internal async Task<BrokerCommandAuthorizationReceipt> AuthorizeProofOnlyForIntegrationAsync(
         TenantExecutionContext context,
         BrokerCommandAuthorizationRequest request,
         CancellationToken cancellationToken = default)
@@ -332,14 +357,9 @@ public sealed class PostgresBrokerCommandStore
         RequireNonEmpty(auditEventId, nameof(auditEventId));
 
         string disposition = ToStorage(result.Disposition);
-        var document = new BrokerGatewaySubmissionDocument(
-            disposition,
-            result.Code,
-            result.BrokerRequestId,
-            result.OrderId,
-            result.DealId,
-            result.ObservedAtUtc.ToUniversalTime());
-        byte[] content = CanonicalBytes(document);
+        BrokerCommandCanonicalEvidence evidence =
+            BrokerCommandLifecycleEvidence.Submission(result);
+        byte[] content = Encoding.UTF8.GetBytes(evidence.CanonicalJson);
         try
         {
             await using TenantPostgresTransaction transaction =
@@ -350,6 +370,7 @@ public sealed class PostgresBrokerCommandStore
                 select *
                 from control.record_broker_command_submission(
                     @command_id, @authorization_sha256, @claim_token, @disposition,
+                    @pre_invocation_not_sent_proven,
                     @result_code, @broker_request_id, @broker_order_id, @broker_deal_id,
                     @result_content, @observed_at, @audit_event_id)
                 """);
@@ -360,6 +381,10 @@ public sealed class PostgresBrokerCommandStore
                 claim.Command.AuthorizationSha256);
             AddUuid(command, "claim_token", claim.ClaimToken);
             command.Parameters.AddWithValue("disposition", NpgsqlDbType.Text, disposition);
+            command.Parameters.AddWithValue(
+                "pre_invocation_not_sent_proven",
+                NpgsqlDbType.Boolean,
+                result.PreInvocationNotSentProven);
             command.Parameters.AddWithValue("result_code", NpgsqlDbType.Text, result.Code);
             AddNullableText(command, "broker_request_id", result.BrokerRequestId);
             AddNullableText(command, "broker_order_id", result.OrderId);
@@ -368,7 +393,7 @@ public sealed class PostgresBrokerCommandStore
             command.Parameters.AddWithValue(
                 "observed_at",
                 NpgsqlDbType.TimestampTz,
-                result.ObservedAtUtc.ToUniversalTime());
+                result.ObservedAtUtc);
             AddUuid(command, "audit_event_id", auditEventId);
             BrokerCommandMutationReceipt receipt = await ReadMutationReceiptAsync(
                     command,
@@ -532,22 +557,49 @@ public sealed class PostgresBrokerCommandStore
         }
     }
 
-    public async Task<BrokerCommandMutationReceipt> CompleteReconciliationAsync(
+    internal Task<BrokerCommandMutationReceipt> CompleteReconciliationAsync(
         TenantExecutionContext context,
         string authorizationSha256,
         Guid reconciliationClaimToken,
         Guid reconciliationId,
         BrokerCommandReconciliationEvidenceDocument evidence,
         Guid auditEventId,
+        CancellationToken cancellationToken = default) =>
+        CompleteReconciliationAsync(
+            context,
+            authorizationSha256,
+            reconciliationClaimToken,
+            reconciliationId,
+            evidence,
+            CanonicalJson.Serialize(evidence),
+            auditEventId,
+            cancellationToken);
+
+    internal async Task<BrokerCommandMutationReceipt> CompleteReconciliationAsync(
+        TenantExecutionContext context,
+        string authorizationSha256,
+        Guid reconciliationClaimToken,
+        Guid reconciliationId,
+        BrokerCommandReconciliationEvidenceDocument evidence,
+        string canonicalJson,
+        Guid auditEventId,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(evidence);
+        ArgumentException.ThrowIfNullOrWhiteSpace(canonicalJson);
         RequireNonEmpty(reconciliationClaimToken, nameof(reconciliationClaimToken));
         RequireNonEmpty(reconciliationId, nameof(reconciliationId));
         RequireNonEmpty(auditEventId, nameof(auditEventId));
 
-        byte[] content = CanonicalBytes(evidence);
+        string mappedJson = CanonicalJson.Serialize(evidence);
+        if (!FixedTimeEquals(mappedJson, canonicalJson))
+        {
+            throw new InvalidOperationException(
+                "The application reconciliation evidence contract does not match its durable fields.");
+        }
+
+        byte[] content = Encoding.UTF8.GetBytes(canonicalJson);
         try
         {
             await using TenantPostgresTransaction transaction =
@@ -570,7 +622,10 @@ public sealed class PostgresBrokerCommandStore
             AddUuid(command, "claim_token", reconciliationClaimToken);
             AddUuid(command, "reconciliation_id", reconciliationId);
             command.Parameters.AddWithValue("match", NpgsqlDbType.Text, evidence.Match);
-            command.Parameters.AddWithValue("reason_code", NpgsqlDbType.Text, evidence.ReasonCode);
+            command.Parameters.AddWithValue(
+                "reason_code",
+                NpgsqlDbType.Text,
+                evidence.ReasonCode);
             command.Parameters.AddWithValue(
                 "source_evidence_sha256",
                 NpgsqlDbType.Text,
@@ -581,7 +636,7 @@ public sealed class PostgresBrokerCommandStore
             command.Parameters.AddWithValue(
                 "observed_at",
                 NpgsqlDbType.TimestampTz,
-                evidence.ObservedAtUtc.ToUniversalTime());
+                evidence.ObservedAtUtc);
             AddUuid(command, "audit_event_id", auditEventId);
             BrokerCommandMutationReceipt receipt = await ReadMutationReceiptAsync(
                     command,
@@ -1082,7 +1137,17 @@ public sealed class PostgresBrokerCommandStore
         command.Parameters.AddWithValue(name, NpgsqlDbType.Uuid, value);
 
     private static void AddTimestamp(NpgsqlCommand command, string name, DateTimeOffset value) =>
-        command.Parameters.AddWithValue(name, NpgsqlDbType.TimestampTz, value.ToUniversalTime());
+        command.Parameters.AddWithValue(
+            name,
+            NpgsqlDbType.TimestampTz,
+            ToPostgresMicrosecond(value));
+
+    private static DateTimeOffset ToPostgresMicrosecond(DateTimeOffset value)
+    {
+        DateTimeOffset utc = value.ToUniversalTime();
+        long ticks = utc.Ticks - (utc.Ticks % TimeSpan.TicksPerMicrosecond);
+        return new DateTimeOffset(ticks, TimeSpan.Zero);
+    }
 
     private static void AddNullableText(NpgsqlCommand command, string name, string? value) =>
         command.Parameters.AddWithValue(

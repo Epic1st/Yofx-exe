@@ -93,6 +93,14 @@ authorized rotations target the same binding, the later serialized request is
 the final value. The current CLI does not carry an expected-generation token,
 so it does not provide optimistic compare-and-swap semantics.
 
+Control-plane credential-ingestion proof keys use the bounded current/previous
+rotation procedure in [PROOF_KEY_ROTATION.md](./PROOF_KEY_ROTATION.md). Exact
+idempotent replay selects the persisted non-secret key identifier and never
+falls back to whichever key is current. Each proof also binds the generated
+grant ID, requested operation, canonical approved client origin, tenant, actor,
+broker account, and idempotency key; a later reuse of the idempotency key cannot
+reissue the captured proof for a different grant.
+
 ## Plaintext source lifecycle
 
 Import intentionally does not delete, move, truncate, quarantine, or otherwise
@@ -163,12 +171,13 @@ It requires a fixed-local, non-reparse workspace; statically hashes and checks
 signatures without loading vendor assemblies; inspects examples only for
 counts; queries Windows isolation controls; and never starts MetaTrader,
 MetaEditor, MetaTester, WSL, a VM/container command, or supplied MQL. WSL state
-is read from the user registry rather than a PATH-resolved executable. Its v3
+is read from the user registry rather than a PATH-resolved executable. Its v4
 JSON is also explicitly an unsigned, non-attested local observation, and its
 verdict remains fail closed until an isolated runner is actually configured.
-V3 binds the probe script bytes and carries a deterministic evidence content
+V4 binds the probe script bytes, records the vendor example as absent with zero
+non-rendering credential/order-reference counters, and carries a deterministic evidence content
 hash. The checked observation is retained at
-`artifacts/verification/toolchain/mt5-toolchain-isolation.v3.json`; the v2 file
-is legacy. Direct and fixed-system `powershell.exe -NoProfile -File`
+`artifacts/verification/toolchain/mt5-toolchain-isolation.v4.json`; the v2 and v3 files
+are legacy. Direct and fixed-system `powershell.exe -NoProfile -File`
 invocations must return the same invariant verdict without starting any
 MetaTrader process.

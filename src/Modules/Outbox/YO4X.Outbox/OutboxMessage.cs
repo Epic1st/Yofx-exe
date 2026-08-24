@@ -16,6 +16,7 @@ public sealed record OutboxMessage
         Guid id,
         Guid tenantId,
         string messageType,
+        int schemaVersion,
         string aggregateType,
         string aggregateId,
         string payloadJson,
@@ -28,6 +29,7 @@ public sealed record OutboxMessage
         Id = id;
         TenantId = tenantId;
         MessageType = messageType;
+        SchemaVersion = schemaVersion;
         AggregateType = aggregateType;
         AggregateId = aggregateId;
         PayloadJson = payloadJson;
@@ -43,6 +45,8 @@ public sealed record OutboxMessage
     public Guid TenantId { get; }
 
     public string MessageType { get; }
+
+    public int SchemaVersion { get; }
 
     public string AggregateType { get; }
 
@@ -103,6 +107,7 @@ public sealed record OutboxMessage
             Identifiers.NewId(),
             tenantId,
             messageType.Trim(),
+            OutboxSchemaVersion.ResolveForNewMessage(messageType.Trim()),
             aggregateType.Trim(),
             aggregateId.Trim(),
             CanonicalJson.Serialize(payload),
@@ -126,6 +131,7 @@ public sealed record ClaimedOutboxMessage(
     Guid Id,
     Guid TenantId,
     string MessageType,
+    int SchemaVersion,
     string AggregateType,
     string AggregateId,
     string PayloadJson,

@@ -185,7 +185,8 @@ public sealed record GatewaySendResult(
     string? BrokerRequestId,
     string? OrderId,
     string? DealId,
-    DateTimeOffset ObservedAtUtc);
+    DateTimeOffset ObservedAtUtc,
+    bool PreInvocationNotSentProven);
 
 public enum BrokerReconciliationMatch
 {

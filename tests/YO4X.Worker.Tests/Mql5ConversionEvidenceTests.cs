@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Text;
+using System.Text.Json.Nodes;
 using YO4X.Conversion.Worker;
 using YO4X.StrategyGovernance;
 
@@ -133,6 +135,10 @@ public sealed class Mql5ConversionEvidenceTests
         string reverseJson = Mql5ConversionEvidenceFormatter.ToJson(reverse);
         string report = Mql5ConversionEvidenceFormatter.ToMarkdown(forward);
 
+        Assert.DoesNotContain('\r', forwardJson);
+        Assert.DoesNotContain('\r', report);
+        Assert.EndsWith("\n", forwardJson, StringComparison.Ordinal);
+
         Assert.Equal(forward.EvidenceSha256, reverse.EvidenceSha256);
         Assert.Equal(forward.DependencyGraphSha256, reverse.DependencyGraphSha256);
         Assert.Equal(forwardJson, reverseJson);
@@ -152,6 +158,34 @@ public sealed class Mql5ConversionEvidenceTests
                 Mql5EvidenceStageName.RestrictedIrLowering,
                 Mql5EvidenceStageStatus.Blocked);
         });
+    }
+
+    [Fact]
+    public void ConversionReportRendersHostileMetadataAsInertTableText()
+    {
+        const string HostilePath =
+            "nested/[click](javascript-alert)<img src=x>`tick`&name|row.mq5";
+        Mql5ConversionCorpusEvidence baseline = Analyze(("main.mq5", "void OnTick() {}"));
+        Mql5ConversionCorpusEvidence evidence = baseline with
+        {
+            Files =
+            [
+                baseline.Files[0] with { RelativePath = HostilePath }
+            ]
+        };
+
+        string report = Mql5ConversionEvidenceFormatter.ToMarkdown(evidence);
+
+        Assert.DoesNotContain("[click](javascript-alert)", report, StringComparison.Ordinal);
+        Assert.DoesNotContain("<img", report, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("`tick`", report, StringComparison.Ordinal);
+        Assert.DoesNotContain("name|row", report, StringComparison.Ordinal);
+        Assert.Contains(
+            "&#91;click&#93;&#40;javascript-alert&#41;",
+            report,
+            StringComparison.Ordinal);
+        Assert.Contains("&lt;img src=x&gt;", report, StringComparison.Ordinal);
+        Assert.Contains("&#96;tick&#96;&amp;name&#124;row.mq5", report, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -213,7 +247,8 @@ public sealed class Mql5ConversionEvidenceTests
             Directory.CreateDirectory(sourceRoot);
             await File.WriteAllTextAsync(
                 Path.Combine(sourceRoot, "main.mq5"),
-                "void OnTick() {}");
+                "void OnTick() {}",
+                TestContext.Current.CancellationToken);
             string staticJson = Path.Combine(root, "static.json");
             string staticReport = Path.Combine(root, "static.md");
             string evidenceJson = Path.Combine(root, "evidence.json");
@@ -225,7 +260,7 @@ public sealed class Mql5ConversionEvidenceTests
                 "--manifest-output", staticJson,
                 "--report-output", staticReport,
                 "--conversion-evidence-output", evidenceJson
-            ]);
+            ], TestContext.Current.CancellationToken);
 
             Assert.Equal(2, exitCode);
             Assert.False(File.Exists(staticJson));
@@ -239,27 +274,332 @@ public sealed class Mql5ConversionEvidenceTests
     }
 
     [Fact]
+    public async Task CommandWritesDeterministicMetadataOnlyCompilePackagePlan()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "yo4x-compile-plan-cli-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string sourceRoot = Path.Combine(root, "source");
+            Directory.CreateDirectory(sourceRoot);
+            await File.WriteAllTextAsync(
+                Path.Combine(sourceRoot, "main.mq5"),
+                "void OnTick() {}",
+                TestContext.Current.CancellationToken);
+            string staticJson = Path.Combine(root, "static.json");
+            string staticReport = Path.Combine(root, "static.md");
+            string compilePlan = Path.Combine(root, "compile-plan.json");
+
+            int exitCode = await ConversionInventoryCommand.RunAsync(
+            [
+                "--static-inventory",
+                "--source-root", sourceRoot,
+                "--manifest-output", staticJson,
+                "--report-output", staticReport,
+                "--compile-package-plan-output", compilePlan
+            ], TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, exitCode);
+            Assert.True(File.Exists(staticJson));
+            Assert.True(File.Exists(staticReport));
+            string planJson = await File.ReadAllTextAsync(
+                compilePlan,
+                TestContext.Current.CancellationToken);
+            JsonObject plan = Assert.IsType<JsonObject>(JsonNode.Parse(planJson));
+            Assert.Single(Assert.IsType<JsonArray>(plan["targets"]));
+            Assert.DoesNotContain("void OnTick", planJson, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CommandRejectsSecretBeforeWritingAnyArtifact()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "yo4x-secret-cli-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string syntheticToken = string.Concat("246813579", ":", new string('C', 35));
+        try
+        {
+            string sourceRoot = Path.Combine(root, "source");
+            Directory.CreateDirectory(sourceRoot);
+            await File.WriteAllTextAsync(
+                Path.Combine(sourceRoot, "main.mq5"),
+                "input string TelegramBotToken = \"" + syntheticToken + "\";",
+                TestContext.Current.CancellationToken);
+            string[] outputs =
+            [
+                Path.Combine(root, "static.json"),
+                Path.Combine(root, "static.md"),
+                Path.Combine(root, "conversion.json"),
+                Path.Combine(root, "conversion.md"),
+                Path.Combine(root, "compile-plan.json")
+            ];
+
+            int exitCode = await ConversionInventoryCommand.RunAsync(
+            [
+                "--static-inventory",
+                "--source-root", sourceRoot,
+                "--manifest-output", outputs[0],
+                "--report-output", outputs[1],
+                "--conversion-evidence-output", outputs[2],
+                "--conversion-evidence-report-output", outputs[3],
+                "--compile-package-plan-output", outputs[4]
+            ], TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, exitCode);
+            Assert.All(outputs, static output => Assert.False(File.Exists(output)));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0, "main.mq5")]
+    [InlineData(1, "nested/report.md")]
+    [InlineData(2, "case-alias/evidence.json")]
+    [InlineData(3, "nested/evidence.md")]
+    [InlineData(4, "nested/compile-plan.json")]
+    public async Task StaticInventoryCommandRejectsEveryOutputInsideSourceRoot(
+        int hostileOutputIndex,
+        string relativeHostileOutput)
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "yo4x-evidence-output-boundary-" + Guid.NewGuid().ToString("N"));
+        string sourceRoot = Path.Combine(root, "Source");
+        Directory.CreateDirectory(sourceRoot);
+        try
+        {
+            string sourcePath = Path.Combine(sourceRoot, "main.mq5");
+            const string Source = "void OnTick() {}";
+            await File.WriteAllTextAsync(
+                sourcePath,
+                Source,
+                TestContext.Current.CancellationToken);
+            string[] outputs =
+            [
+                Path.Combine(root, "static.json"),
+                Path.Combine(root, "static.md"),
+                Path.Combine(root, "evidence.json"),
+                Path.Combine(root, "evidence.md"),
+                Path.Combine(root, "compile-plan.json")
+            ];
+            string aliasedSourceRoot = hostileOutputIndex == 2
+                ? Path.Combine(root, "sOURCE")
+                : sourceRoot;
+            outputs[hostileOutputIndex] = Path.Combine(
+                aliasedSourceRoot,
+                relativeHostileOutput.Replace('/', Path.DirectorySeparatorChar));
+
+            int exitCode = await ConversionInventoryCommand.RunAsync(
+            [
+                "--static-inventory",
+                "--source-root", sourceRoot,
+                "--manifest-output", outputs[0],
+                "--report-output", outputs[1],
+                "--conversion-evidence-output", outputs[2],
+                "--conversion-evidence-report-output", outputs[3],
+                "--compile-package-plan-output", outputs[4]
+            ], TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, exitCode);
+            Assert.Equal(Source, await File.ReadAllTextAsync(
+                sourcePath,
+                TestContext.Current.CancellationToken));
+            Assert.False(File.Exists(Path.Combine(root, "static.json")));
+            Assert.False(File.Exists(Path.Combine(root, "static.md")));
+            Assert.False(File.Exists(Path.Combine(root, "evidence.json")));
+            Assert.False(File.Exists(Path.Combine(root, "evidence.md")));
+            Assert.False(File.Exists(Path.Combine(root, "compile-plan.json")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ArtifactOutputGuardRejectsAReparsePointAncestor()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "yo4x-evidence-output-reparse-" + Guid.NewGuid().ToString("N"));
+        string sourceRoot = Path.Combine(root, "source");
+        string targetRoot = Path.Combine(root, "target");
+        string linkRoot = Path.Combine(root, "linked-output");
+        Directory.CreateDirectory(sourceRoot);
+        Directory.CreateDirectory(targetRoot);
+        try
+        {
+            CreateDirectoryJunction(linkRoot, targetRoot);
+
+            IOException error = Assert.Throws<IOException>(() =>
+                Mql5ArtifactOutputGuard.Resolve(
+                    sourceRoot,
+                    Path.Combine(linkRoot, "manifest.json"),
+                    Path.Combine(root, "report.md")));
+
+            Assert.Equal(
+                "Artifact paths and their existing ancestors cannot be reparse points.",
+                error.Message);
+        }
+        finally
+        {
+            if (Directory.Exists(linkRoot))
+            {
+                Directory.Delete(linkRoot);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ArtifactOutputGuardRejectsWindowsNamespaceAndDosShortNameAliases()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "yo4x-evidence-output-alias-" + Guid.NewGuid().ToString("N"));
+        string sourceRoot = Path.Combine(root, "SourceDirectory");
+        Directory.CreateDirectory(sourceRoot);
+        try
+        {
+            string sourcePath = Path.Combine(sourceRoot, "main.mq5");
+            File.WriteAllText(sourcePath, "void OnTick() {}");
+
+            Assert.Throws<ArgumentException>(() => Mql5ArtifactOutputGuard.Resolve(
+                sourceRoot,
+                @"\\?\" + sourcePath,
+                Path.Combine(root, "report.md")));
+            Assert.Throws<ArgumentException>(() => Mql5ArtifactOutputGuard.Resolve(
+                sourceRoot,
+                Path.Combine(root, "SOURCE~1", "manifest.json"),
+                Path.Combine(root, "report.md")));
+            Assert.Equal("void OnTick() {}", File.ReadAllText(sourcePath));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ArtifactOutputGuardRejectsASecondDriveAliasForTheSourceRoot()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "yo4x-evidence-output-drive-alias-" + Guid.NewGuid().ToString("N"));
+        string sourceRoot = Path.Combine(root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        string drive = Enumerable.Range('D', 'Z' - 'D' + 1)
+            .Reverse()
+            .Select(static code => $"{(char)code}:")
+            .First(static candidate => !Directory.Exists(candidate + Path.DirectorySeparatorChar));
+        bool driveMapped = false;
+        try
+        {
+            RunSubst(drive, sourceRoot);
+            driveMapped = true;
+
+            Assert.Throws<ArgumentException>(() => Mql5ArtifactOutputGuard.Resolve(
+                sourceRoot,
+                Path.Combine(drive + Path.DirectorySeparatorChar, "manifest.json"),
+                Path.Combine(root, "report.md")));
+        }
+        finally
+        {
+            if (driveMapped)
+            {
+                RunSubst(drive, target: null);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ArtifactOutputGuardRejectsTwoOutputsThatResolveToTheSamePhysicalPath()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "yo4x-evidence-output-duplicate-alias-" + Guid.NewGuid().ToString("N"));
+        string sourceRoot = Path.Combine(root, "source");
+        string outputRoot = Path.Combine(root, "output");
+        Directory.CreateDirectory(sourceRoot);
+        Directory.CreateDirectory(outputRoot);
+        string drive = Enumerable.Range('D', 'Z' - 'D' + 1)
+            .Reverse()
+            .Select(static code => $"{(char)code}:")
+            .First(static candidate => !Directory.Exists(candidate + Path.DirectorySeparatorChar));
+        bool driveMapped = false;
+        try
+        {
+            RunSubst(drive, outputRoot);
+            driveMapped = true;
+
+            ArgumentException error = Assert.Throws<ArgumentException>(() =>
+                Mql5ArtifactOutputGuard.Resolve(
+                    sourceRoot,
+                    Path.Combine(outputRoot, "artifact.json"),
+                    Path.Combine(drive + Path.DirectorySeparatorChar, "artifact.json")));
+
+            Assert.Contains("different physical path", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (driveMapped)
+            {
+                RunSubst(drive, target: null);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ExactWorkspaceCorpusHasOneFailClosedEvidenceRecordPerSourceFile()
     {
         string repositoryRoot = FindRepositoryRoot();
         string sourceRoot = Path.Combine(repositoryRoot, "Testing", "Mq5");
         var job = new Mql5CorpusInventoryJob(new Mql5StaticInventoryAnalyzer());
-        using Mql5AnalyzedCorpus corpus = await job.AnalyzeDirectoryForPersistenceAsync(sourceRoot);
+        using Mql5AnalyzedCorpus corpus = await job.AnalyzeDirectoryForPersistenceAsync(
+            sourceRoot,
+            TestContext.Current.CancellationToken);
         Mql5ConversionCorpusEvidence evidence = new Mql5ConversionEvidenceAnalyzer()
             .Analyze(corpus.Documents);
 
         Assert.Equal(198, evidence.FileCount);
         Assert.Equal(166, evidence.Files.Count(static file => file.Kind == Mql5SourceKind.ExpertOrProgram));
         Assert.Equal(32, evidence.Files.Count(static file => file.Kind == Mql5SourceKind.Header));
-        Assert.Equal(13_100_995, evidence.TotalBytes);
+        Assert.Equal(12_979_438, evidence.TotalBytes);
         Assert.Equal(
-            "8052d74d395516aef01f221bf1a663b775ed02ccccbfa0476704d52112ee43b6",
+            "9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47",
             evidence.InputCorpusSha256);
         Assert.Equal(
             "c463d3a6de0eaef29b912cfb9af5bd949c0591b26896d866acb2c088943ba10a",
             evidence.DependencyGraphSha256);
         Assert.Equal(
-            "6d4a18038f8b10ee8e4c68de55e96966d60293aa4d5186723e1363fae07537b1",
+            "e191d8a5b1e572f08b16d420edfef5a8f386b003dbc0e2b122ae201a16c065b7",
             evidence.EvidenceSha256);
         Assert.Equal(
             corpus.Manifest.Files.Select(static file => file.RelativePath),
@@ -421,5 +761,67 @@ public sealed class Mql5ConversionEvidenceTests
         }
 
         throw new DirectoryNotFoundException("The YO4X repository root was not found.");
+    }
+
+    private static void CreateDirectoryJunction(string link, string target)
+    {
+        string command = $"mklink /J \"{link}\" \"{target}\"";
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                Arguments = $"/d /s /c \"{command}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }
+        };
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("Could not start the junction creation process.");
+        }
+
+        process.WaitForExit();
+        if (process.ExitCode != 0 || !Directory.Exists(link))
+        {
+            throw new InvalidOperationException("Could not create a disposable test reparse point.");
+        }
+    }
+
+    private static void RunSubst(string drive, string? target)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "subst.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }
+        };
+        process.StartInfo.ArgumentList.Add(drive);
+        if (target is null)
+        {
+            process.StartInfo.ArgumentList.Add("/D");
+        }
+        else
+        {
+            process.StartInfo.ArgumentList.Add(target);
+        }
+
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("Could not start the disposable drive-alias command.");
+        }
+
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException("Could not update the disposable drive alias.");
+        }
     }
 }

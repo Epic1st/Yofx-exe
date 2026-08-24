@@ -10,29 +10,44 @@ namespace YO4X.ControlPlane.Api;
 
 internal static class ControlPlanePostgresRegistration
 {
-    private const int CredentialProofKeyBytes = 32;
+    private const int ProofKeyBytes = 32;
+    private static readonly TimeSpan PreviousProofKeyMinimumRetention =
+        ControlPlanePostgresOptions.PreviousProofKeyMinimumStartupRetention;
 
     public static IServiceCollection TryAddControlPlanePostgres(
         this IServiceCollection services,
         IConfiguration configuration,
-        IHostEnvironment? environment = null)
+        IHostEnvironment? environment = null) =>
+        TryAddControlPlanePostgres(
+            services,
+            configuration,
+            environment,
+            TimeProvider.System);
+
+    internal static IServiceCollection TryAddControlPlanePostgres(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        IHostEnvironment? environment,
+        TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(timeProvider);
 
         byte[]? proofKeyBytes = null;
+        byte[]? previousProofKeyBytes = null;
         byte[]? strategyImportKeyBytes = null;
+        byte[]? previousStrategyImportKeyBytes = null;
         Dictionary<string, byte[]>? policyPublicKeys = null;
-        PostgresDatabase? database = null;
-        CredentialProofKey? proofKey = null;
-        StrategyImportProofKey? strategyImportKey = null;
+        CredentialProofKeyRing? proofKeyRing = null;
+        StrategyImportProofKeyRing? strategyImportKeyRing = null;
         PolicySignatureTrustStore? policyTrustStore = null;
         try
         {
             string? proofKeyBase64 = configuration["SecretIngestion:CredentialProofKeyBase64"];
             if (!TryReadRuntimeConnectionString(
                     configuration.GetConnectionString("Postgres"),
-                    environment?.IsDevelopment() ?? true,
+                    environment?.IsDevelopment() ?? false,
                     out string connectionString)
                 || string.IsNullOrWhiteSpace(proofKeyBase64)
                 || !TryReadExactHttpsOrigin(configuration["SecretIngestion:Origin"], out Uri? ingestionOrigin)
@@ -68,38 +83,41 @@ internal static class ControlPlanePostgresRegistration
                 return services;
             }
 
-            try
-            {
-                proofKeyBytes = Convert.FromBase64String(proofKeyBase64);
-            }
-            catch (FormatException)
-            {
-                return services;
-            }
-
-            if (proofKeyBytes.Length != CredentialProofKeyBytes
-                || proofKeyBytes.All(static value => value == 0))
+            if (!TryReadProofKey(proofKeyBase64, out proofKeyBytes))
             {
                 return services;
             }
 
             string? strategyImportKeyBase64 = configuration["Conversion:ImportProofKeyBase64"];
-            if (!string.IsNullOrWhiteSpace(strategyImportKeyBase64))
+            if (string.IsNullOrWhiteSpace(strategyImportKeyBase64))
             {
-                try
-                {
-                    strategyImportKeyBytes = Convert.FromBase64String(strategyImportKeyBase64);
-                }
-                catch (FormatException)
-                {
-                    return services;
-                }
+                return services;
+            }
 
-                if (strategyImportKeyBytes.Length != CredentialProofKeyBytes
-                    || strategyImportKeyBytes.All(static value => value == 0))
-                {
-                    return services;
-                }
+            if (!TryReadProofKey(strategyImportKeyBase64, out strategyImportKeyBytes))
+            {
+                return services;
+            }
+
+            DateTimeOffset startupNow = timeProvider.GetUtcNow().ToUniversalTime();
+            if (!TryReadPreviousProofKey(
+                    configuration,
+                    "SecretIngestion:PreviousCredentialProofKeyBase64",
+                    "SecretIngestion:PreviousCredentialProofKeyRetainUntilUtc",
+                    startupNow,
+                    PreviousProofKeyMinimumRetention,
+                    out previousProofKeyBytes,
+                    out DateTimeOffset? previousProofKeyRetainUntil)
+                || !TryReadPreviousProofKey(
+                    configuration,
+                    "Conversion:PreviousImportProofKeyBase64",
+                    "Conversion:PreviousImportProofKeyRetainUntilUtc",
+                    startupNow,
+                    PreviousProofKeyMinimumRetention,
+                    out previousStrategyImportKeyBytes,
+                    out DateTimeOffset? previousStrategyImportKeyRetainUntil))
+            {
+                return services;
             }
 
             var options = new ControlPlanePostgresOptions
@@ -119,33 +137,47 @@ internal static class ControlPlanePostgresRegistration
             };
             options.Validate();
 
-            database = new PostgresDatabase(connectionString, PostgresDatabaseUsage.Runtime);
-            proofKey = new CredentialProofKey(proofKeyBytes);
-            if (strategyImportKeyBytes is not null)
+            if (!PostgresDatabaseEndpoint.TryParse(
+                    connectionString,
+                    out PostgresDatabaseEndpoint? runtimeEndpoint)
+                || !TenantContextCapabilityRegistration.TryAdd(
+                    services,
+                    configuration,
+                    runtimeEndpoint!))
             {
-                strategyImportKey = new StrategyImportProofKey(strategyImportKeyBytes);
+                return services;
             }
+
+            proofKeyRing = new CredentialProofKeyRing(
+                proofKeyBytes,
+                previousProofKeyBytes,
+                previousProofKeyRetainUntil,
+                timeProvider);
+            strategyImportKeyRing = new StrategyImportProofKeyRing(
+                strategyImportKeyBytes,
+                previousStrategyImportKeyBytes,
+                previousStrategyImportKeyRetainUntil,
+                timeProvider);
             policyTrustStore = new PolicySignatureTrustStore(policyPublicKeys);
 
-            PostgresDatabase registeredDatabase = database;
-            CredentialProofKey registeredProofKey = proofKey;
-            StrategyImportProofKey? registeredStrategyImportKey = strategyImportKey;
+            CredentialProofKeyRing registeredProofKeyRing = proofKeyRing;
+            StrategyImportProofKeyRing registeredStrategyImportKeyRing = strategyImportKeyRing;
             PolicySignatureTrustStore registeredPolicyTrustStore = policyTrustStore;
-            services.TryAddSingleton(_ => registeredDatabase);
+            services.TryAddSingleton(serviceProvider => new PostgresDatabase(
+                connectionString,
+                PostgresDatabaseUsage.Runtime,
+                serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>(),
+                allowInsecureLoopbackForDevelopment: environment?.IsDevelopment() ?? false));
             services.TryAddSingleton(options);
-            services.TryAddSingleton(_ => registeredProofKey);
+            services.TryAddSingleton(_ => registeredProofKeyRing);
             services.TryAddSingleton(_ => registeredPolicyTrustStore);
             services.TryAddSingleton<CredentialIngestionProofIssuer>();
-            if (registeredStrategyImportKey is not null)
-            {
-                services.TryAddSingleton(_ => registeredStrategyImportKey);
-                services.TryAddSingleton<StrategyImportProofIssuer>();
-            }
+            services.TryAddSingleton(_ => registeredStrategyImportKeyRing);
+            services.TryAddSingleton<StrategyImportProofIssuer>();
             services.TryAddScoped<IControlPlaneApplication, PostgresControlPlaneApplication>();
 
-            database = null;
-            proofKey = null;
-            strategyImportKey = null;
+            proofKeyRing = null;
+            strategyImportKeyRing = null;
             policyTrustStore = null;
             return services;
         }
@@ -173,6 +205,16 @@ internal static class ControlPlanePostgresRegistration
                 CryptographicOperations.ZeroMemory(strategyImportKeyBytes);
             }
 
+            if (previousProofKeyBytes is not null)
+            {
+                CryptographicOperations.ZeroMemory(previousProofKeyBytes);
+            }
+
+            if (previousStrategyImportKeyBytes is not null)
+            {
+                CryptographicOperations.ZeroMemory(previousStrategyImportKeyBytes);
+            }
+
             if (policyPublicKeys is not null)
             {
                 foreach (byte[] encodedKey in policyPublicKeys.Values)
@@ -181,14 +223,78 @@ internal static class ControlPlanePostgresRegistration
                 }
             }
 
-            proofKey?.Dispose();
-            strategyImportKey?.Dispose();
+            proofKeyRing?.Dispose();
+            strategyImportKeyRing?.Dispose();
             policyTrustStore?.Dispose();
-            if (database is not null)
-            {
-                database.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            }
         }
+    }
+
+    private static bool TryReadProofKey(string? value, out byte[] keyBytes)
+    {
+        keyBytes = [];
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        try
+        {
+            keyBytes = Convert.FromBase64String(value);
+            if (keyBytes.Length != ProofKeyBytes
+                || keyBytes.All(static item => item == 0))
+            {
+                CryptographicOperations.ZeroMemory(keyBytes);
+                keyBytes = [];
+                return false;
+            }
+
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadPreviousProofKey(
+        IConfiguration configuration,
+        string keyConfigurationName,
+        string retainUntilConfigurationName,
+        DateTimeOffset startupNow,
+        TimeSpan minimumRequiredRetention,
+        out byte[]? keyBytes,
+        out DateTimeOffset? retainUntil)
+    {
+        keyBytes = null;
+        retainUntil = null;
+        string? encodedKey = configuration[keyConfigurationName];
+        string? retainUntilText = configuration[retainUntilConfigurationName];
+        bool hasKey = !string.IsNullOrWhiteSpace(encodedKey);
+        bool hasRetainUntil = !string.IsNullOrWhiteSpace(retainUntilText);
+        if (!hasKey && !hasRetainUntil)
+        {
+            return true;
+        }
+
+        if (!hasKey
+            || !hasRetainUntil
+            || retainUntilText!.Length > 64
+            || !string.Equals(retainUntilText, retainUntilText.Trim(), StringComparison.Ordinal)
+            || !DateTimeOffset.TryParse(
+                retainUntilText,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out DateTimeOffset parsedRetainUntil)
+            || parsedRetainUntil.Offset != TimeSpan.Zero
+            || parsedRetainUntil <= startupNow.Add(minimumRequiredRetention)
+            || !TryReadProofKey(encodedKey, out byte[] parsedKey))
+        {
+            return false;
+        }
+
+        keyBytes = parsedKey;
+        retainUntil = parsedRetainUntil;
+        return true;
     }
 
     private static bool TryReadRuntimeConnectionString(
@@ -208,10 +314,10 @@ internal static class ControlPlanePostgresRegistration
             if (string.IsNullOrWhiteSpace(builder.Host)
                 || string.IsNullOrWhiteSpace(builder.Database)
                 || !string.Equals(builder.Username, "yo4x_control_api", StringComparison.Ordinal)
-                || builder.IncludeErrorDetail
-                || !string.IsNullOrWhiteSpace(builder.Options)
-                || !string.IsNullOrWhiteSpace(builder.SearchPath)
-                || !allowInsecureDevelopment && builder.SslMode != SslMode.VerifyFull)
+                || !PostgresRuntimeConnectionPolicy.HasSafeSessionConfiguration(builder)
+                || !PostgresRuntimeConnectionPolicy.HasRequiredTransport(
+                    builder,
+                    allowInsecureDevelopment))
             {
                 return false;
             }

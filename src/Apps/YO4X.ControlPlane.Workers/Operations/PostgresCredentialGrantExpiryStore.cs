@@ -20,17 +20,29 @@ internal sealed class PostgresCredentialGrantExpiryStore(
     {
         if (!await IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
-            return new ControlWorkCycleResult(0, 0, 0, 0);
+            return new ControlWorkCycleResult(0, 0, 0, 0, false);
         }
 
         _ = now.ToUniversalTime();
-        IReadOnlyList<Guid> tenantIds = await tenantCatalog.GetTenantIdsAsync(cancellationToken)
+        await using WorkerTenantScanLease tenantScan = await tenantCatalog.BeginScanAsync(
+                WorkerTenantScanConsumer.CredentialGrantExpiry,
+                cancellationToken)
             .ConfigureAwait(false);
+        int tenantsVisited = 0;
         int examined = 0;
         int changed = 0;
         int failed = 0;
-        foreach (Guid tenantId in tenantIds)
+        while (true)
         {
+            WorkerTenantScanStep? step = await tenantScan.TryBeginNextAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (step is not { } tenantStep)
+            {
+                break;
+            }
+
+            Guid tenantId = tenantStep.TenantId;
+            tenantsVisited++;
             IReadOnlyList<GrantCandidate> candidates = await ReadCandidatesAsync(
                 tenantId,
                 cancellationToken).ConfigureAwait(false);
@@ -62,7 +74,17 @@ internal sealed class PostgresCredentialGrantExpiryStore(
             }
         }
 
-        return new ControlWorkCycleResult(tenantIds.Count, examined, changed, failed);
+        bool scanRotationHealthy = await tenantCatalog.IsScanProgressHealthyAsync(
+                WorkerTenantScanConsumer.CredentialGrantExpiry,
+                options.MaximumTenantScanRotationAge,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return new ControlWorkCycleResult(
+            tenantsVisited,
+            examined,
+            changed,
+            failed,
+            scanRotationHealthy);
     }
 
     private async Task<IReadOnlyList<GrantCandidate>> ReadCandidatesAsync(

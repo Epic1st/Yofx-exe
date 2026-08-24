@@ -12,12 +12,20 @@ ControlWorkOptions controlWorkOptions = builder.Configuration
     .GetSection(ControlWorkOptions.SectionName)
     .Get<ControlWorkOptions>() ?? new ControlWorkOptions();
 controlWorkOptions.Validate();
+WorkerReadinessOptions readinessOptions = builder.Configuration
+    .GetSection(WorkerReadinessOptions.SectionName)
+    .Get<WorkerReadinessOptions>() ?? new WorkerReadinessOptions();
+readinessOptions.Validate();
 
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(controlWorkOptions);
+builder.Services.AddSingleton(readinessOptions);
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddControlPlaneWorkerFailStopPolicy();
 builder.Services.AddSingleton<OutboxWorkerIdentity>(_ => OutboxWorkerIdentity.Create());
+builder.Services.AddSingleton<WorkerReadiness>();
 builder.Services.AddSingleton<OutboxWorkerReadiness>();
+builder.Services.AddSingleton<ControlWorkReadiness>();
 builder.Services.TryAddWorkerPostgres(builder.Configuration);
 builder.Services.TryAddSingleton<IPostgresOutboxStore, UnavailablePostgresOutboxStore>();
 builder.Services.TryAddSingleton<IOutboxDestination, UnavailableOutboxDestination>();
@@ -31,21 +39,9 @@ builder.Services.AddHostedService<ControlWorkBackgroundService>();
 
 var app = builder.Build();
 
-app.MapGet("/health/live", (OutboxWorkerReadiness readiness) =>
-    ToHealthResult(readiness.GetLive()));
-app.MapGet("/health/startup", (OutboxWorkerReadiness readiness) =>
-    ToHealthResult(readiness.GetStartup()));
-app.MapGet("/health/ready", (OutboxWorkerReadiness readiness) =>
-    ToHealthResult(readiness.GetReady()));
+app.MapControlPlaneWorkerHealthEndpoints();
 
 app.Run();
-
-static IResult ToHealthResult(WorkerHealthSnapshot snapshot) =>
-    Results.Json(
-        snapshot,
-        statusCode: snapshot.Healthy
-            ? StatusCodes.Status200OK
-            : StatusCodes.Status503ServiceUnavailable);
 
 public partial class Program
 {

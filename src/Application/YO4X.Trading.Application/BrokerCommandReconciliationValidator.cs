@@ -5,10 +5,10 @@ namespace YO4X.Trading.Application;
 
 public static class BrokerCommandReconciliationValidator
 {
-    private const int MaximumPositions = 10_000;
-    private const int MaximumOrders = 10_000;
-    private const int MaximumDeals = 50_000;
-    private const int MaximumCommandResults = 1;
+    private const int MaximumPositions = BrokerCommandLifecycleEvidence.MaximumPositions;
+    private const int MaximumOrders = BrokerCommandLifecycleEvidence.MaximumOrders;
+    private const int MaximumDeals = BrokerCommandLifecycleEvidence.MaximumDeals;
+    private const int MaximumCommandResults = BrokerCommandLifecycleEvidence.MaximumCommandResults;
 
     public static ValidatedBrokerCommandReconciliation Validate(
         BrokerCommandReconciliationClaim claim,
@@ -28,7 +28,24 @@ public static class BrokerCommandReconciliationValidator
             out BrokerCommandReconciliation? reported);
         if (globalFailure is not null)
         {
-            return Inconclusive(claim, observation, receivedAtUtc, globalFailure);
+            return Inconclusive(
+                claim,
+                observation,
+                receivedAtUtc,
+                globalFailure,
+                sourceEvidenceValidated: false);
+        }
+
+        if (command.Action == BrokerCommandAction.Place
+            && (!ValidBrokerId(claim.BrokerOrderId)
+                || claim.BrokerOrderId != reported!.OrderId))
+        {
+            return Inconclusive(
+                claim,
+                observation,
+                receivedAtUtc,
+                "broker_reconciliation_place_order_correlation_not_proven",
+                sourceEvidenceValidated: true);
         }
 
         BrokerReconciliationMatch derived = command.Action switch
@@ -56,7 +73,8 @@ public static class BrokerCommandReconciliationValidator
                     BrokerCommandAction.Close =>
                         "broker_reconciliation_close_correlation_not_proven",
                     _ => "broker_reconciliation_semantics_not_proven"
-                });
+                },
+                sourceEvidenceValidated: true);
         }
 
         if (reported!.Match != derived)
@@ -65,17 +83,20 @@ public static class BrokerCommandReconciliationValidator
                 claim,
                 observation,
                 receivedAtUtc,
-                "broker_reconciliation_reported_result_conflicts_with_snapshot");
+                "broker_reconciliation_reported_result_conflicts_with_snapshot",
+                sourceEvidenceValidated: true);
         }
 
-        return Create(
+        // A structurally consistent gateway snapshot is still only a claim by
+        // the mutation boundary. Until the observation is authenticated by a
+        // separately trusted broker-evidence capability, no lifecycle-store
+        // implementation may treat it as terminal authority.
+        return Inconclusive(
             claim,
             observation,
-            derived,
-            "broker_reconciliation_snapshot_proven",
-            reported.OrderId,
-            reported.DealId,
-            observation.WindowEndUtc);
+            receivedAtUtc,
+            "broker_reconciliation_terminal_authority_unavailable",
+            sourceEvidenceValidated: true);
     }
 
     private static string? ValidateGlobal(
@@ -123,6 +144,11 @@ public static class BrokerCommandReconciliationValidator
         }
 
         BrokerReconciliationSnapshot snapshot = observation.Snapshot;
+        if (!BrokerCommandLifecycleEvidence.IsBoundedSnapshot(snapshot))
+        {
+            return "broker_reconciliation_snapshot_shape_invalid";
+        }
+
         if (observation.SourceSequence is null
             || observation.SourceSequence <= capability.Exposure.SourceSequence)
         {
@@ -322,9 +348,34 @@ public static class BrokerCommandReconciliationValidator
         BrokerCommandReconciliationClaim claim,
         BrokerCommandReconciliationObservation observation,
         DateTimeOffset receivedAtUtc,
-        string reasonCode)
+        string reasonCode,
+        bool sourceEvidenceValidated)
     {
         AuthorizedBrokerCommand capability = claim.Command;
+        DateTimeOffset fallbackObservedAt = receivedAtUtc.Offset == TimeSpan.Zero
+            ? BrokerCommandLifecycleEvidence.NormalizeUtcTimestamp(receivedAtUtc)
+            : claim.AuthorityNowUtc;
+        bool observationWindowIsDurable =
+            observation.WindowStartUtc == claim.QueryWindowStartUtc
+            && observation.WindowStartUtc.Offset == TimeSpan.Zero
+            && observation.WindowEndUtc.Offset == TimeSpan.Zero
+            && observation.WindowStartUtc.Ticks % TimeSpan.TicksPerMicrosecond == 0
+            && observation.WindowEndUtc.Ticks % TimeSpan.TicksPerMicrosecond == 0
+            && observation.WindowEndUtc >= observation.WindowStartUtc
+            && observation.WindowEndUtc <= fallbackObservedAt
+            && observation.WindowEndUtc <= claim.MustCompleteByUtc;
+        DateTimeOffset durableObservedAt = observationWindowIsDurable
+            ? observation.WindowEndUtc
+            : fallbackObservedAt;
+        string sourceEvidenceSha256 = sourceEvidenceValidated
+            && BrokerCommandLifecycleEvidence.ExactDigest(observation.SourceEvidenceSha256)
+                ? observation.SourceEvidenceSha256
+                : CanonicalJson.Sha256(new BrokerReconciliationValidationFailureDocument(
+                    capability.Command.CommandId,
+                    capability.AuthorizationSha256,
+                    capability.Reconciliation.ScopeSha256,
+                    claim.Attempt,
+                    reasonCode));
         return new ValidatedBrokerCommandReconciliation(
             capability.Command.CommandId,
             capability.AuthorizationSha256,
@@ -336,48 +387,23 @@ public static class BrokerCommandReconciliationValidator
             capability.Command.TargetBrokerId,
             capability.Command.OwnershipTag,
             null,
-            observation.WindowStartUtc,
-            observation.WindowEndUtc,
+            claim.QueryWindowStartUtc,
+            durableObservedAt,
             BrokerReconciliationMatch.Inconclusive,
             reasonCode,
-            observation.SourceEvidenceSha256,
+            sourceEvidenceSha256,
             null,
             null,
-            receivedAtUtc,
+            durableObservedAt,
             null);
     }
 
-    private static ValidatedBrokerCommandReconciliation Create(
-        BrokerCommandReconciliationClaim claim,
-        BrokerCommandReconciliationObservation observation,
-        BrokerReconciliationMatch match,
-        string reasonCode,
-        string? orderId,
-        string? dealId,
-        DateTimeOffset observedAtUtc)
-    {
-        AuthorizedBrokerCommand capability = claim.Command;
-        return new ValidatedBrokerCommandReconciliation(
-            capability.Command.CommandId,
-            capability.AuthorizationSha256,
-            capability.Reconciliation.ScopeSha256,
-            capability.Provenance.BrokerAccountId,
-            capability.Command.DeploymentId,
-            capability.Command.Generation,
-            capability.Command.TargetKind,
-            capability.Command.TargetBrokerId,
-            capability.Command.OwnershipTag,
-            observation.SourceSequence,
-            observation.WindowStartUtc,
-            observation.WindowEndUtc,
-            match,
-            reasonCode,
-            observation.SourceEvidenceSha256,
-            orderId,
-            dealId,
-            observedAtUtc,
-            observation.Snapshot);
-    }
+    private sealed record BrokerReconciliationValidationFailureDocument(
+        Guid CommandId,
+        string AuthorizationSha256,
+        string ScopeSha256,
+        int Attempt,
+        string ReasonCode);
 
     private static bool HasDuplicate(IEnumerable<string> ids)
     {

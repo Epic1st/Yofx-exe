@@ -1,6 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Logging.Abstractions;
+using YO4X.ControlPlane.Workers;
 using YO4X.ControlPlane.Workers.Outbox;
+using YO4X.ControlPlane.Workers.Operations;
 
 namespace YO4X.Worker.Tests;
 
@@ -23,7 +26,7 @@ public sealed class OutboxDispatchCoordinatorTests
         Assert.Equal(0, store.ClaimCalls);
         Assert.Equal(0, destination.ProbeCalls);
         Assert.Equal(OutboxReadinessCondition.PostgresUnavailable, fixture.Readiness.Condition);
-        Assert.Equal("required_dependency_unavailable", fixture.Readiness.GetReady().Code);
+        Assert.Equal("required_dependency_unavailable", fixture.Aggregate.GetReady().Code);
     }
 
     [Fact]
@@ -58,7 +61,26 @@ public sealed class OutboxDispatchCoordinatorTests
         Assert.Equal(OutboxDispatchCycleOutcome.Completed, result.Outcome);
         Assert.Equal(7, store.LastClaimRequest?.MaximumMessages);
         Assert.Equal(options.ClaimLease, store.LastClaimRequest?.LeaseDuration);
-        Assert.True(fixture.Readiness.GetReady().Healthy);
+        Assert.True(fixture.Aggregate.GetReady().Healthy);
+    }
+
+    [Fact]
+    public async Task StaleTenantRotationKeepsOutboxNotReadyAfterDeliveryWorkCompletes()
+    {
+        var store = new RecordingStore { ScanProgressHealthy = false };
+        var destination = new RecordingDestination();
+        OutboxDispatchOptions options = CreateOptions(batchSize: 7);
+        CoordinatorFixture fixture = CreateFixture(store, destination, options);
+
+        OutboxDispatchCycleResult result = await fixture.Coordinator
+            .RunCycleAsync(CancellationToken.None)
+            .ConfigureAwait(true);
+
+        Assert.Equal(OutboxDispatchCycleOutcome.ScanProgressLagging, result.Outcome);
+        Assert.Equal(options.MaximumTenantScanRotationAge, store.LastMaximumRotationAge);
+        Assert.Equal(OutboxReadinessCondition.ScanProgressLagging, fixture.Readiness.Condition);
+        Assert.False(fixture.Aggregate.GetReady().Healthy);
+        Assert.Equal("tenant_scan_rotation_stale", fixture.Aggregate.GetReady().Code);
     }
 
     [Theory]
@@ -198,7 +220,7 @@ public sealed class OutboxDispatchCoordinatorTests
         Assert.Equal(3, result.ScheduledForRetry);
         Assert.Equal(3, store.Settlements.Count);
         Assert.All(store.Settlements, settlement => Assert.Equal(OutboxSettlementKind.Retry, settlement.Kind));
-        Assert.False(fixture.Readiness.GetReady().Healthy);
+        Assert.False(fixture.Aggregate.GetReady().Healthy);
     }
 
     [Fact]
@@ -255,13 +277,60 @@ public sealed class OutboxDispatchCoordinatorTests
         Assert.Equal(0, store.ClaimCalls);
     }
 
+    [Fact]
+    public async Task CancellationIgnoringClaimFailStopsHostedWorkstreamWithoutOverlap()
+    {
+        var claimTask = new TaskCompletionSource<IReadOnlyList<ClaimedOutboxItem>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new RecordingStore { ClaimTask = claimTask };
+        OutboxDispatchOptions options = CreateOptions(
+            dependencyTimeout: TimeSpan.FromMilliseconds(100),
+            cancellationConfirmationTimeout: TimeSpan.FromMilliseconds(100));
+        CoordinatorFixture fixture = CreateFixture(store, new RecordingDestination(), options);
+        using var service = new OutboxDispatcherBackgroundService(
+            fixture.Coordinator,
+            options,
+            fixture.Readiness,
+            TimeProvider.System,
+            NullLogger<OutboxDispatcherBackgroundService>.Instance);
+        try
+        {
+            await service.StartAsync(TestContext.Current.CancellationToken);
+            Assert.NotNull(service.ExecuteTask);
+            Task executeTask = service.ExecuteTask!;
+
+            await Assert.ThrowsAsync<WorkerOperationTerminationUnconfirmedException>(async () =>
+                await executeTask.WaitAsync(
+                    TimeSpan.FromSeconds(2),
+                    TestContext.Current.CancellationToken));
+
+            Assert.Equal(OutboxReadinessCondition.Stopped, fixture.Readiness.Condition);
+            Assert.True(store.LastClaimCancellationToken.IsCancellationRequested);
+            await Assert.ThrowsAsync<WorkerWorkstreamStoppedException>(() =>
+                fixture.Coordinator.RunCycleAsync(TestContext.Current.CancellationToken));
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Equal(1, store.ClaimCalls);
+        }
+        finally
+        {
+            claimTask.TrySetResult([]);
+        }
+    }
+
     private static CoordinatorFixture CreateFixture(
         RecordingStore store,
         RecordingDestination destination,
         OutboxDispatchOptions? options = null)
     {
         options ??= CreateOptions();
-        var readiness = new OutboxWorkerReadiness();
+        var aggregate = new WorkerReadiness(
+            TimeProvider.System,
+            new WorkerReadinessOptions());
+        var readiness = new OutboxWorkerReadiness(aggregate);
+        var controlWork = new ControlWorkReadiness(aggregate);
+        readiness.MarkStarted();
+        controlWork.MarkStarted();
+        controlWork.MarkReady();
         var coordinator = new OutboxDispatchCoordinator(
             store,
             destination,
@@ -270,19 +339,23 @@ public sealed class OutboxDispatchCoordinatorTests
             readiness,
             new RetrySchedule(options),
             new FixedTimeProvider(FixedNow));
-        return new CoordinatorFixture(coordinator, readiness);
+        return new CoordinatorFixture(coordinator, readiness, aggregate);
     }
 
     private static OutboxDispatchOptions CreateOptions(
         int batchSize = 10,
-        int maximumAttempts = 5) =>
+        int maximumAttempts = 5,
+        TimeSpan? dependencyTimeout = null,
+        TimeSpan? cancellationConfirmationTimeout = null) =>
         new()
         {
             BatchSize = batchSize,
             PollInterval = TimeSpan.FromMilliseconds(10),
             ClaimLease = TimeSpan.FromSeconds(10),
-            DependencyTimeout = TimeSpan.FromSeconds(1),
+            DependencyTimeout = dependencyTimeout ?? TimeSpan.FromSeconds(1),
             DeliveryTimeout = TimeSpan.FromSeconds(1),
+            CancellationConfirmationTimeout =
+                cancellationConfirmationTimeout ?? TimeSpan.FromSeconds(1),
             MaximumAttempts = maximumAttempts,
             BaseRetryDelay = TimeSpan.FromSeconds(1),
             MaximumRetryDelay = TimeSpan.FromSeconds(10),
@@ -312,7 +385,8 @@ public sealed class OutboxDispatchCoordinatorTests
 
     private sealed record CoordinatorFixture(
         OutboxDispatchCoordinator Coordinator,
-        OutboxWorkerReadiness Readiness);
+        OutboxWorkerReadiness Readiness,
+        WorkerReadiness Aggregate);
 
     private sealed class FixedTimeProvider : TimeProvider
     {
@@ -339,18 +413,34 @@ public sealed class OutboxDispatchCoordinatorTests
 
         public bool AcceptSettlements { get; init; } = true;
 
+        public bool ScanProgressHealthy { get; init; } = true;
+
         public TaskCompletionSource<bool>? AvailabilityTask { get; init; }
+
+        public TaskCompletionSource<IReadOnlyList<ClaimedOutboxItem>>? ClaimTask { get; init; }
 
         public int ClaimCalls { get; private set; }
 
         public OutboxClaimRequest? LastClaimRequest { get; private set; }
 
+        public CancellationToken LastClaimCancellationToken { get; private set; }
+
         public List<OutboxSettlement> Settlements { get; } = [];
+
+        public TimeSpan? LastMaximumRotationAge { get; private set; }
 
         public ValueTask<bool> IsAvailableAsync(CancellationToken cancellationToken) =>
             AvailabilityTask is null
                 ? ValueTask.FromResult(Available)
                 : new ValueTask<bool>(AvailabilityTask.Task);
+
+        public ValueTask<bool> IsScanProgressHealthyAsync(
+            TimeSpan maximumRotationAge,
+            CancellationToken cancellationToken)
+        {
+            LastMaximumRotationAge = maximumRotationAge;
+            return ValueTask.FromResult(ScanProgressHealthy);
+        }
 
         public ValueTask<IReadOnlyList<ClaimedOutboxItem>> ClaimAsync(
             OutboxClaimRequest request,
@@ -358,7 +448,10 @@ public sealed class OutboxDispatchCoordinatorTests
         {
             ClaimCalls++;
             LastClaimRequest = request;
-            return ValueTask.FromResult(_items);
+            LastClaimCancellationToken = cancellationToken;
+            return ClaimTask is null
+                ? ValueTask.FromResult(_items)
+                : new ValueTask<IReadOnlyList<ClaimedOutboxItem>>(ClaimTask.Task);
         }
 
         public ValueTask<bool> SettleAsync(

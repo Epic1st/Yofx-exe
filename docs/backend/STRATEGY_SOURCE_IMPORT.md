@@ -1,6 +1,6 @@
 # Authenticated strategy-source import
 
-Status date: 2026-08-22 UTC
+Status date: 2026-08-23 UTC
 
 ## Scope
 
@@ -22,7 +22,12 @@ An exact consumed replay may only use the original job-derived reservation and m
 
 ## Secret and source handling
 
+- `Mql5SourceSecretScanner` runs on owned source bytes before static analysis, conversion evidence, compile planning, artifact output, and persistence snapshots. High-confidence private-key, provider-key, bearer-token, and sensitive non-placeholder assignment shapes fail closed. Its exception exposes only a stable rule code, safe relative path, and line; secret values and digests are never rendered.
+- `.mq5` and `.mqh` are marked `-text` in `.gitattributes`, so Git preserves their exact bytes instead of applying platform-dependent line-ending conversion. Corpus and file digests therefore bind reproducible checkout bytes.
 - The capability is never persisted, audited, included in an outbox message, accepted on the command line, or placed in source evidence.
+- Proof-key rotation persists only a non-secret key identifier and replays with
+  that exact current-or-previous key. Unknown or expired identifiers never fall
+  back to the current key; see [PROOF_KEY_ROTATION.md](./PROOF_KEY_ROTATION.md).
 - The decoded capability crosses PostgreSQL only as a parameterized binary bind value and all owned byte arrays are zeroed on disposal.
 - Runtime connection strings reject Npgsql `Log Parameters=true` and `Include Error Detail=true`.
 - Runtime roles are configured with PostgreSQL `log_parameter_max_length = 0` and `log_parameter_max_length_on_error = 0`; the connection guard rejects a role/session where either setting is nonzero.
@@ -43,6 +48,7 @@ The worker requires these non-authoritative arguments:
 --source-root <directory>
 --manifest-output <file>
 --report-output <file>
+--compile-package-plan-output <optional metadata-only file>
 --persist-postgres
 --import-job-id <canonical UUID>
 ```

@@ -1,7 +1,17 @@
 .vs/
 .idea/
 .vscode/
+**/bin/
+**/obj/
 **/node_modules/
+**/dist/
+**/coverage/
+**/TestResults/
+*.trx
+*.coverage
+*.coveragexml
+.qa/
+.tmp/
 .tools/
 *.user
 *.suo
@@ -11,6 +21,11 @@
 secrets/
 artifacts/verification/credentials/
 Testing/*Credentials*.txt
+# The original aggregate archive duplicated the extracted corpus and retained
+# credential-bearing pre-redaction source. Keep it out of the current tree.
+Testing/Mq5.zip
+# The supplied vendor example contains credential-bearing constructor samples.
+/mt5-net-api-full-binaries-main/Examples.cs
 *.yo4xcred
 *.yo4xcred.stage-*
 *.yo4xcred.backup-*

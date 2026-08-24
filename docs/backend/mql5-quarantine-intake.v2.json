@@ -1,0 +1,452 @@
+{
+  "schemaVersion": "yo4x.mql5-quarantine-intake.v2",
+  "analyzerVersion": "1.1.0",
+  "evidenceSha256": "87b6811649b7ec859a61e8a7de702b85b36aeefc1259701cacc42ecb231bdd31",
+  "canonicalCorpus": {
+    "corpusSha256": "9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47",
+    "fileCount": 198,
+    "totalBytes": 12979438,
+    "exactExtensions": [
+      ".mq5",
+      ".mqh"
+    ]
+  },
+  "limits": {
+    "maximumNonCanonicalFileCount": 256,
+    "maximumNonCanonicalFileBytes": 8388608,
+    "maximumNonCanonicalTotalBytes": 67108864,
+    "maximumArchiveCount": 16,
+    "maximumArchiveEntryCount": 128,
+    "maximumArchiveEntryBytes": 4194304,
+    "maximumArchiveTotalDeclaredBytes": 16777216,
+    "maximumArchiveCompressionRatio": 100,
+    "maximumRelativePathCharacters": 512,
+    "maximumArchivePathDepth": 16,
+    "maximumCanonicalMatchSamplesPerObject": 8,
+    "maximumArtifactUtf8Bytes": 33554432,
+    "maximumFilesystemEntryTraversalCount": 20000,
+    "maximumDirectoryTraversalCount": 2000
+  },
+  "summary": {
+    "nonCanonicalFileCount": 15,
+    "nonCanonicalTotalBytes": 1219643,
+    "sourceLikeTextCandidateCount": 4,
+    "legacyMql4SourceCount": 2,
+    "compiledMql4BinaryCount": 4,
+    "archiveCount": 4,
+    "officeDocumentContainerCount": 1,
+    "unknownQuarantinedCount": 0,
+    "archiveEntryCount": 11,
+    "archiveFileEntryCount": 8,
+    "verifiedArchiveFileEntryCount": 6,
+    "unavailableArchiveFileEntryCount": 2,
+    "verifiedObjectsMatchingCanonicalCount": 0,
+    "canonicalPathsMatched": 0,
+    "exactIntakeDuplicateGroupCount": 1,
+    "conversionProofCount": 0,
+    "compileProofCount": 0,
+    "runtimeProofCount": 0
+  },
+  "files": [
+    {
+      "relativePath": "--\u002B---------------------------.docx",
+      "extension": ".docx",
+      "byteLength": 4528,
+      "sha256": "98afcae7ce14cc10856ab5b3de840243f781cc6ad2bce07fddcdb712b560be32",
+      "classification": "officeDocumentContainer",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    },
+    {
+      "relativePath": "brains.mq5 kgaugelo",
+      "extension": ".mq5 kgaugelo",
+      "byteLength": 7285,
+      "sha256": "b85537ba7e3a6b63cb34bd73af20fe5b98d41f225e8566029087e33fe03c8435",
+      "classification": "sourceLikeTextCandidate",
+      "textEncoding": "utf-8",
+      "sourceSignalCodes": [
+        "LEGACY_EVENT_HANDLER",
+        "MARKET_DATA_API",
+        "MODERN_EVENT_HANDLER",
+        "PARAMETER_DECLARATION",
+        "PREPROCESSOR_DIRECTIVE",
+        "TRADE_API"
+      ],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    },
+    {
+      "relativePath": "Breakout Retest Pro 1.02a.mq4",
+      "extension": ".mq4",
+      "byteLength": 73064,
+      "sha256": "7d28c50e9a40c052177c8cd738f57b0302bcad34686ab601edf4029a22ddfcf4",
+      "classification": "legacyMql4Source",
+      "textEncoding": "utf-16le",
+      "sourceSignalCodes": [
+        "LEGACY_EVENT_HANDLER",
+        "MARKET_DATA_API",
+        "MODERN_EVENT_HANDLER",
+        "MQL_TYPE",
+        "PARAMETER_DECLARATION",
+        "PREPROCESSOR_DIRECTIVE",
+        "TRADE_API"
+      ],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    },
+    {
+      "relativePath": "Crude oil scalper.zip",
+      "extension": ".zip",
+      "byteLength": 76033,
+      "sha256": "09c0d944b51b154599eaf39b4e7123be4aca88292035f5f8ff34f4cf8825ce0d",
+      "classification": "zipArchive",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": {
+        "state": "inspected",
+        "reasonCode": null,
+        "entryCount": 3,
+        "fileEntryCount": 3,
+        "totalDeclaredBytes": 99089,
+        "entries": [
+          {
+            "relativePath": "Crude oil scalper/CrudeOilScalpEA.ex5",
+            "extension": ".ex5",
+            "declaredLength": 56060,
+            "compressedLength": 55598,
+            "crc32": "8280d13a",
+            "contentState": "verifiedDigest",
+            "sha256": "ea716d0182c36380414ef83e1c765c67cff173300fd70b2b78746c6ed78aa7dd",
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          },
+          {
+            "relativePath": "Crude oil scalper/CrudeOilScalpEA.mq5",
+            "extension": ".mq5",
+            "declaredLength": 29125,
+            "compressedLength": 6566,
+            "crc32": "82f8593d",
+            "contentState": "verifiedDigest",
+            "sha256": "6a203fb379e241a0bb52e848b6a4ee2d192c257512ea5614e9d52349c5e44c43",
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          },
+          {
+            "relativePath": "Crude oil scalper/CrudeOilScalp.ex5",
+            "extension": ".ex5",
+            "declaredLength": 13904,
+            "compressedLength": 13401,
+            "crc32": "05e28631",
+            "contentState": "verifiedDigest",
+            "sha256": "d4ae1e23ed42732a6a6bae12c3b59f837300230579eb19b4c6983dffae0e72fb",
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          }
+        ]
+      }
+    },
+    {
+      "relativePath": "DAY TRADING FOREX.txt",
+      "extension": ".txt",
+      "byteLength": 8766,
+      "sha256": "2312909220c07754328e50e37cfda7477e1e6db30436a8a5d97c7a201d1ffc30",
+      "classification": "sourceLikeTextCandidate",
+      "textEncoding": "utf-8",
+      "sourceSignalCodes": [
+        "LEGACY_EVENT_HANDLER",
+        "MARKET_DATA_API",
+        "MODERN_EVENT_HANDLER",
+        "PARAMETER_DECLARATION",
+        "PREPROCESSOR_DIRECTIVE"
+      ],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    },
+    {
+      "relativePath": "FTR Reversals EA mq5 Modified.txt",
+      "extension": ".txt",
+      "byteLength": 31912,
+      "sha256": "a6bcfd7b6e92a434ca596e463d28cec0497b6cf510468d8879a9a4b73db13ce0",
+      "classification": "sourceLikeTextCandidate",
+      "textEncoding": "utf-8",
+      "sourceSignalCodes": [
+        "LEGACY_EVENT_HANDLER",
+        "MARKET_DATA_API",
+        "MODERN_EVENT_HANDLER",
+        "MQL_TYPE",
+        "PARAMETER_DECLARATION",
+        "PREPROCESSOR_DIRECTIVE",
+        "TRADE_API"
+      ],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    },
+    {
+      "relativePath": "HyperGal Alpha EA.zip",
+      "extension": ".zip",
+      "byteLength": 92934,
+      "sha256": "d02237412614cc583c5b101fe98a6f7ec2f7aeaa482e9c6338e89cea04d0c957",
+      "classification": "zipArchive",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": {
+        "state": "inspected",
+        "reasonCode": null,
+        "entryCount": 6,
+        "fileEntryCount": 3,
+        "totalDeclaredBytes": 94650,
+        "entries": [
+          {
+            "relativePath": "HyperGal Alpha EA/",
+            "extension": "",
+            "declaredLength": 0,
+            "compressedLength": 2,
+            "crc32": "00000000",
+            "contentState": "directory",
+            "sha256": null,
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          },
+          {
+            "relativePath": "HyperGal Alpha EA/Experts/",
+            "extension": "",
+            "declaredLength": 0,
+            "compressedLength": 2,
+            "crc32": "00000000",
+            "contentState": "directory",
+            "sha256": null,
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          },
+          {
+            "relativePath": "HyperGal Alpha EA/Experts/HyperGal Alpha EA.ex4",
+            "extension": ".ex4",
+            "declaredLength": 72222,
+            "compressedLength": 70514,
+            "crc32": "c2ea1a44",
+            "contentState": "verifiedDigest",
+            "sha256": "3c2082cc164b1e24f5b110f6a9337658abf96d8ddc69d3a10515b191936a737c",
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          },
+          {
+            "relativePath": "HyperGal Alpha EA/Indicators/",
+            "extension": "",
+            "declaredLength": 0,
+            "compressedLength": 2,
+            "crc32": "00000000",
+            "contentState": "directory",
+            "sha256": null,
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          },
+          {
+            "relativePath": "HyperGal Alpha EA/Indicators/FOREEX SNIPER KILLER Entry Alert.ex4",
+            "extension": ".ex4",
+            "declaredLength": 13960,
+            "compressedLength": 13492,
+            "crc32": "a1ee535b",
+            "contentState": "verifiedDigest",
+            "sha256": "88fd59faa9cec393fef696e02c47d09efd4f1797f976f8faa9a17cde70b454d7",
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          },
+          {
+            "relativePath": "HyperGal Alpha EA/Indicators/RSI_Cust.ex4",
+            "extension": ".ex4",
+            "declaredLength": 8468,
+            "compressedLength": 7896,
+            "crc32": "571a8caa",
+            "contentState": "verifiedDigest",
+            "sha256": "521d8f644ff344d0be283e916abf7d68bcc72e6550aa4ee42caf8962b8c75fd4",
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          }
+        ]
+      }
+    },
+    {
+      "relativePath": "Multi Sniper mq No DLL_fix by @ForexRobot5 (2).zip",
+      "extension": ".zip",
+      "byteLength": 111368,
+      "sha256": "5fa95a8c828a5ac8ce088a507475974b2d8ca9ce0250c8cce39468918007c905",
+      "classification": "zipArchive",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": {
+        "state": "containsUnavailableEntryContent",
+        "reasonCode": "ARCHIVE_ENTRY_CONTENT_UNAVAILABLE",
+        "entryCount": 1,
+        "fileEntryCount": 1,
+        "totalDeclaredBytes": 112584,
+        "entries": [
+          {
+            "relativePath": "Multi Sniper mq No DLL_fix by @ForexRobot5.ex4",
+            "extension": ".ex4",
+            "declaredLength": 112584,
+            "compressedLength": 111142,
+            "crc32": "cb71f445",
+            "contentState": "encrypted",
+            "sha256": null,
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          }
+        ]
+      }
+    },
+    {
+      "relativePath": "Multi Sniper mq No DLL_fix by @ForexRobot5.ex4",
+      "extension": ".ex4",
+      "byteLength": 112584,
+      "sha256": "861815e7b4e17e409962327990b2594a53e27e0662c392b2237675b683903a4d",
+      "classification": "compiledMql4Binary",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 1,
+      "archive": null
+    },
+    {
+      "relativePath": "Multi Sniper mq No DLL_fix by @ForexRobot5.zip",
+      "extension": ".zip",
+      "byteLength": 111368,
+      "sha256": "d27e5d3b6e23443ab6a6218207b73676907119851ab16e92226162b46c78a8b0",
+      "classification": "zipArchive",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": {
+        "state": "containsUnavailableEntryContent",
+        "reasonCode": "ARCHIVE_ENTRY_CONTENT_UNAVAILABLE",
+        "entryCount": 1,
+        "fileEntryCount": 1,
+        "totalDeclaredBytes": 112584,
+        "entries": [
+          {
+            "relativePath": "Multi Sniper mq No DLL_fix by @ForexRobot5.ex4",
+            "extension": ".ex4",
+            "declaredLength": 112584,
+            "compressedLength": 111142,
+            "crc32": "cb71f445",
+            "contentState": "encrypted",
+            "sha256": null,
+            "exactCanonicalMatchCount": 0,
+            "exactCanonicalMatchSamples": [],
+            "exactIntakeDuplicateCount": 0
+          }
+        ]
+      }
+    },
+    {
+      "relativePath": "Multi Sniper mq No DLL_fix.ex4",
+      "extension": ".ex4",
+      "byteLength": 112584,
+      "sha256": "861815e7b4e17e409962327990b2594a53e27e0662c392b2237675b683903a4d",
+      "classification": "compiledMql4Binary",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 1,
+      "archive": null
+    },
+    {
+      "relativePath": "Multi Sniper mq v24.16_fix.ex4",
+      "extension": ".ex4",
+      "byteLength": 112284,
+      "sha256": "5d284b13023ec0f6f41d552c498e3195555977031e3ec50574d2af5f5ea7c175",
+      "classification": "compiledMql4Binary",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    },
+    {
+      "relativePath": "SHK Professional Heikin Ashi 1.00.mq4",
+      "extension": ".mq4",
+      "byteLength": 97378,
+      "sha256": "6aada51b4e4e5c812520a49fc46c99e9511f282f4965880d97368b1bb477c3f5",
+      "classification": "legacyMql4Source",
+      "textEncoding": "utf-16le",
+      "sourceSignalCodes": [
+        "LEGACY_EVENT_HANDLER",
+        "MODERN_EVENT_HANDLER",
+        "PARAMETER_DECLARATION",
+        "PREPROCESSOR_DIRECTIVE"
+      ],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    },
+    {
+      "relativePath": "Simple Classic Trailing Stop Mq5.txt",
+      "extension": ".txt",
+      "byteLength": 3577,
+      "sha256": "16cb754b57087785cc04d529ababa3af54987f93bbd345fc1eee9db8d34631b0",
+      "classification": "sourceLikeTextCandidate",
+      "textEncoding": "utf-8",
+      "sourceSignalCodes": [
+        "MARKET_DATA_API",
+        "MODERN_EVENT_HANDLER",
+        "MQL_TYPE",
+        "PARAMETER_DECLARATION",
+        "PREPROCESSOR_DIRECTIVE",
+        "TRADE_API"
+      ],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    },
+    {
+      "relativePath": "The Gold Reaper 4.1 Enhanced.ex4",
+      "extension": ".ex4",
+      "byteLength": 263978,
+      "sha256": "4de27cc4d86ef9af7571a0b51f075b35e44a501040b0a3e6eb214a4695ed6a15",
+      "classification": "compiledMql4Binary",
+      "textEncoding": "not-inspected",
+      "sourceSignalCodes": [],
+      "exactCanonicalMatchCount": 0,
+      "exactCanonicalMatchSamples": [],
+      "exactIntakeDuplicateCount": 0,
+      "archive": null
+    }
+  ]
+}

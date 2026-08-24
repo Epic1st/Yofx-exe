@@ -1,10 +1,30 @@
-using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
 namespace YO4X.ControlPlane.Postgres;
 
 public sealed partial class ControlPlanePostgresOptions
 {
+    public static TimeSpan IdempotencyReplayLifetime { get; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Maximum supported absolute difference between the Control API clock and
+    /// PostgreSQL. Readiness fails outside this window.
+    /// </summary>
+    public static TimeSpan ProofKeyMaximumDatabaseClockSkew { get; } =
+        TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Maximum production API request window retained after a replay remains
+    /// eligible according to PostgreSQL.
+    /// </summary>
+    public static TimeSpan ProofKeyReplayRequestSafetyMargin { get; } =
+        TimeSpan.FromMinutes(2);
+
+    public static TimeSpan PreviousProofKeyMinimumStartupRetention { get; } =
+        IdempotencyReplayLifetime
+        + ProofKeyMaximumDatabaseClockSkew
+        + ProofKeyReplayRequestSafetyMargin;
+
     public string? ApprovedGatewayDigest { get; init; }
 
     public string? ApprovedRegion { get; init; }
@@ -113,57 +133,4 @@ public sealed partial class ControlPlanePostgresOptions
 
     [GeneratedRegex("^sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant)]
     private static partial Regex RuntimeImageDigestPattern();
-}
-
-public sealed class CredentialProofKey : IDisposable
-{
-    private byte[]? key;
-    private readonly ReaderWriterLockSlim lifecycleLock = new(LockRecursionPolicy.NoRecursion);
-
-    public CredentialProofKey(byte[] keyBytes)
-    {
-        ArgumentNullException.ThrowIfNull(keyBytes);
-        if (keyBytes.Length < 32)
-        {
-            throw new ArgumentOutOfRangeException(nameof(keyBytes), "The credential proof key must contain at least 256 bits.");
-        }
-
-        key = keyBytes.ToArray();
-    }
-
-    internal void ComputeSha256(ReadOnlySpan<byte> input, Span<byte> destination)
-    {
-        lifecycleLock.EnterReadLock();
-        try
-        {
-            byte[] activeKey = key
-                ?? throw new ObjectDisposedException(nameof(CredentialProofKey));
-            HMACSHA256.HashData(activeKey, input, destination);
-        }
-        finally
-        {
-            lifecycleLock.ExitReadLock();
-        }
-    }
-
-    public void Dispose()
-    {
-        lifecycleLock.EnterWriteLock();
-        try
-        {
-            byte[]? owned = Interlocked.Exchange(ref key, null);
-            if (owned is not null)
-            {
-                CryptographicOperations.ZeroMemory(owned);
-            }
-        }
-        finally
-        {
-            lifecycleLock.ExitWriteLock();
-        }
-
-        GC.SuppressFinalize(this);
-    }
-
-    public override string ToString() => "[REDACTED CREDENTIAL PROOF KEY]";
 }

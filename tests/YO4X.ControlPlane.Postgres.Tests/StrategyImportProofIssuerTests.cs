@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using YO4X.BuildingBlocks;
 using YO4X.ControlPlane.Postgres;
 
 namespace YO4X.ControlPlane.Postgres.Tests;
@@ -15,7 +16,7 @@ public sealed class StrategyImportProofIssuerTests
     [Fact]
     public void ExactBindingReissuesSameRedactedCapability()
     {
-        using var key = new StrategyImportProofKey(KeyBytes());
+        using var key = new StrategyImportProofKeyRing(KeyBytes());
         var issuer = new StrategyImportProofIssuer(key);
 
         IssuedStrategyImportProof first = issuer.Issue(
@@ -40,7 +41,7 @@ public sealed class StrategyImportProofIssuerTests
     [Fact]
     public void EveryAuthorityDimensionChangesCapability()
     {
-        using var key = new StrategyImportProofKey(KeyBytes());
+        using var key = new StrategyImportProofKeyRing(KeyBytes());
         var issuer = new StrategyImportProofIssuer(key);
         string baseline = issuer.Issue(
             TenantId, UserId, JobId, CorrelationId, "mq5-production-corpus", ExpiresAt).Capability;
@@ -56,7 +57,7 @@ public sealed class StrategyImportProofIssuerTests
     [Fact]
     public void PersistedDigestHashesDecodedSecretInsteadOfCreatingAPassTheHashBearer()
     {
-        using var key = new StrategyImportProofKey(KeyBytes());
+        using var key = new StrategyImportProofKeyRing(KeyBytes());
         var issuer = new StrategyImportProofIssuer(key);
         string capability = issuer.Issue(
             TenantId, UserId, JobId, CorrelationId, "mq5-production-corpus", ExpiresAt).Capability;
@@ -85,7 +86,7 @@ public sealed class StrategyImportProofIssuerTests
     public void KeyOwnsInputAndDisposalFailsClosed()
     {
         byte[] supplied = KeyBytes();
-        var key = new StrategyImportProofKey(supplied);
+        var key = new StrategyImportProofKeyRing(supplied);
         var issuer = new StrategyImportProofIssuer(key);
         string before = issuer.Issue(
             TenantId, UserId, JobId, CorrelationId, "mq5-production-corpus", ExpiresAt).Capability;
@@ -95,7 +96,7 @@ public sealed class StrategyImportProofIssuerTests
             TenantId, UserId, JobId, CorrelationId, "mq5-production-corpus", ExpiresAt).Capability;
 
         Assert.Equal(before, after);
-        Assert.Equal("[REDACTED STRATEGY IMPORT PROOF KEY]", key.ToString());
+        Assert.Equal("[REDACTED STRATEGY IMPORT PROOF KEY RING]", key.ToString());
         key.Dispose();
         Assert.Throws<ObjectDisposedException>(() => issuer.Issue(
             TenantId, UserId, JobId, CorrelationId, "mq5-production-corpus", ExpiresAt));
@@ -104,7 +105,7 @@ public sealed class StrategyImportProofIssuerTests
     [Fact]
     public async Task KeyDisposalSerializesWithParallelProofGeneration()
     {
-        var key = new StrategyImportProofKey(KeyBytes());
+        var key = new StrategyImportProofKeyRing(KeyBytes());
         var issuer = new StrategyImportProofIssuer(key);
         using ManualResetEventSlim start = new(false);
         int successfulIssues = 0;
@@ -165,7 +166,7 @@ public sealed class StrategyImportProofIssuerTests
     [InlineData("../traversal")]
     public void SourceLabelIsStrictlyAllowlisted(string sourceLabel)
     {
-        using var key = new StrategyImportProofKey(KeyBytes());
+        using var key = new StrategyImportProofKeyRing(KeyBytes());
         var issuer = new StrategyImportProofIssuer(key);
 
         Assert.Throws<ArgumentException>(() => issuer.Issue(
@@ -175,8 +176,68 @@ public sealed class StrategyImportProofIssuerTests
     [Fact]
     public void EmptyOrAllZeroKeyIsRejected()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => new StrategyImportProofKey([]));
-        Assert.Throws<ArgumentOutOfRangeException>(() => new StrategyImportProofKey(new byte[32]));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new StrategyImportProofKeyRing([]));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new StrategyImportProofKeyRing(new byte[32]));
+    }
+
+    [Fact]
+    public void RotationOverlapReplaysBothKeyDirectionsAndRejectsRemovedKey()
+    {
+        byte[] previous = KeyBytes();
+        byte[] current = Enumerable.Range(33, 32).Select(static value => (byte)value).ToArray();
+        using var originalRing = new StrategyImportProofKeyRing(previous);
+        var originalIssuer = new StrategyImportProofIssuer(originalRing);
+        string previousKeyId = originalIssuer.CurrentKeyId;
+        string original = originalIssuer.Issue(
+            TenantId, UserId, JobId, CorrelationId, "mq5-production-corpus", ExpiresAt).Capability;
+
+        using var rotatedRing = new StrategyImportProofKeyRing(
+            current,
+            previous,
+            DateTimeOffset.UtcNow.AddHours(1));
+        var rotatedIssuer = new StrategyImportProofIssuer(rotatedRing);
+        string replay = rotatedIssuer.Issue(
+            TenantId,
+            UserId,
+            JobId,
+            CorrelationId,
+            "mq5-production-corpus",
+            ExpiresAt,
+            previousKeyId).Capability;
+        string newlyIssued = rotatedIssuer.Issue(
+            TenantId, UserId, JobId, CorrelationId, "mq5-production-corpus", ExpiresAt).Capability;
+
+        Assert.Equal(original, replay);
+        Assert.NotEqual(original, newlyIssued);
+        Assert.NotEqual(previousKeyId, rotatedIssuer.CurrentKeyId);
+
+        using var preStagedRing = new StrategyImportProofKeyRing(
+            previous,
+            current,
+            DateTimeOffset.UtcNow.AddHours(1));
+        var preStagedIssuer = new StrategyImportProofIssuer(preStagedRing);
+        string reverseReplay = preStagedIssuer.Issue(
+            TenantId,
+            UserId,
+            JobId,
+            CorrelationId,
+            "mq5-production-corpus",
+            ExpiresAt,
+            rotatedIssuer.CurrentKeyId).Capability;
+        Assert.Equal(newlyIssued, reverseReplay);
+
+        using var currentOnlyRing = new StrategyImportProofKeyRing(current);
+        var currentOnlyIssuer = new StrategyImportProofIssuer(currentOnlyRing);
+        BackendCapabilityUnavailableException removed = Assert.Throws<BackendCapabilityUnavailableException>(
+            () => currentOnlyIssuer.Issue(
+                TenantId,
+                UserId,
+                JobId,
+                CorrelationId,
+                "mq5-production-corpus",
+                ExpiresAt,
+                previousKeyId));
+        Assert.Equal("strategy-import-proof-key-unavailable", removed.Capability);
     }
 
     private static byte[] KeyBytes() =>

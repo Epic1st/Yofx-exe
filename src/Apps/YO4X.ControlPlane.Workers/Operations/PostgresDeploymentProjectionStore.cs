@@ -12,7 +12,93 @@ internal sealed class PostgresDeploymentProjectionStore(
     PostgresWorkerTenantCatalog tenantCatalog,
     ControlWorkOptions options) : IDeploymentProjectionStore
 {
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Guid> scanCursors = new();
+    private const string AdvanceDeploymentScanSql = """
+        with locked_cursor as materialized
+        (
+            select last_deployment_id, rotation_count
+            from control.deployment_scan_cursors
+            where tenant_id = @tenant_id
+            for update
+        ),
+        candidate as materialized
+        (
+            select
+                deployment.id,
+                deployment.tenant_id,
+                locked_cursor.last_deployment_id is not null
+                    and deployment.id <= locked_cursor.last_deployment_id
+                    as completes_rotation,
+                locked_cursor.rotation_count
+                    + case
+                        when locked_cursor.last_deployment_id is not null
+                            and deployment.id <= locked_cursor.last_deployment_id
+                        then 1
+                        else 0
+                      end as next_rotation_count
+            from locked_cursor
+            cross join lateral
+            (
+                select id, tenant_id
+                from operations.deployments
+                where tenant_id = @tenant_id
+                  and desired_state <> 'draft'
+                order by
+                    case
+                        when locked_cursor.last_deployment_id is not null
+                            and id <= locked_cursor.last_deployment_id
+                        then 1
+                        else 0
+                    end,
+                    id
+                limit 1
+            ) as deployment
+        ),
+        eligible as materialized
+        (
+            select
+                id,
+                tenant_id,
+                completes_rotation,
+                next_rotation_count
+            from candidate
+            where @rotation_ceiling is null
+               or next_rotation_count <= @rotation_ceiling
+        ),
+        catalog_state as materialized
+        (
+            select not exists
+            (
+                select 1
+                from operations.deployments
+                where tenant_id = @tenant_id
+                  and desired_state <> 'draft'
+            ) as is_empty
+        ),
+        advanced as
+        (
+            update control.deployment_scan_cursors as progress
+            set last_deployment_id = coalesce(
+                    eligible.id,
+                    progress.last_deployment_id)
+            from locked_cursor
+            cross join catalog_state
+            left join eligible on true
+            where progress.tenant_id = @tenant_id
+              and (eligible.id is not null or catalog_state.is_empty)
+            returning
+                eligible.id as id,
+                eligible.tenant_id as tenant_id,
+                coalesce(eligible.completes_rotation, false)
+                    as completes_rotation,
+                progress.rotation_count as rotation_count
+        )
+        select
+            id,
+            tenant_id,
+            completes_rotation,
+            rotation_count
+        from advanced
+        """;
 
     public ValueTask<bool> IsAvailableAsync(CancellationToken cancellationToken) =>
         readiness.IsReadyAsync(cancellationToken);
@@ -23,26 +109,60 @@ internal sealed class PostgresDeploymentProjectionStore(
     {
         if (!await IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
-            return new ControlWorkCycleResult(0, 0, 0, 0);
+            return new ControlWorkCycleResult(0, 0, 0, 0, false);
         }
 
         DateTimeOffset normalizedNow = now.ToUniversalTime();
-        IReadOnlyList<Guid> tenantIds = await tenantCatalog.GetTenantIdsAsync(cancellationToken)
+        await using WorkerTenantScanLease tenantScan = await tenantCatalog.BeginScanAsync(
+                WorkerTenantScanConsumer.DeploymentProjection,
+                cancellationToken)
             .ConfigureAwait(false);
+        int tenantsVisited = 0;
         int examined = 0;
         int changed = 0;
         int failed = 0;
-        foreach (Guid tenantId in tenantIds)
+        while (true)
         {
-            IReadOnlyList<DeploymentCandidate> candidates = await ReadCandidatesAsync(
-                tenantId,
-                cancellationToken).ConfigureAwait(false);
-            foreach (DeploymentCandidate candidate in candidates)
+            WorkerTenantScanStep? tenantStep = await tenantScan.TryBeginNextAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (tenantStep is not { } durableTenantStep)
             {
+                break;
+            }
+
+            Guid tenantId = durableTenantStep.TenantId;
+            tenantsVisited++;
+            long? deploymentRotationCeiling = null;
+            var acquiredDeploymentIds = new HashSet<Guid>();
+            for (int candidateIndex = 0;
+                 candidateIndex < options.DeploymentBatchSizePerTenant;
+                 candidateIndex++)
+            {
+                DeploymentScanStep? scanStep = await ReadNextCandidateAsync(
+                    tenantId,
+                    deploymentRotationCeiling,
+                    cancellationToken).ConfigureAwait(false);
+                if (scanStep is not { } durableScanStep)
+                {
+                    break;
+                }
+
+                if (!acquiredDeploymentIds.Add(durableScanStep.Candidate.Id))
+                {
+                    break;
+                }
+
+                deploymentRotationCeiling ??= durableScanStep.RotationCompleted
+                    ? durableScanStep.RotationCount
+                    : checked(durableScanStep.RotationCount + 1);
                 examined++;
                 try
                 {
-                    if (await ProjectAsync(candidate, normalizedNow, cancellationToken).ConfigureAwait(false))
+                    if (await ProjectAsync(
+                            durableScanStep.Candidate,
+                            normalizedNow,
+                            cancellationToken)
+                            .ConfigureAwait(false))
                     {
                         changed++;
                     }
@@ -62,49 +182,70 @@ internal sealed class PostgresDeploymentProjectionStore(
             }
         }
 
-        return new ControlWorkCycleResult(tenantIds.Count, examined, changed, failed);
+        bool scanRotationHealthy = await tenantCatalog.IsScanProgressHealthyAsync(
+                WorkerTenantScanConsumer.DeploymentProjection,
+                options.MaximumTenantScanRotationAge,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return new ControlWorkCycleResult(
+            tenantsVisited,
+            examined,
+            changed,
+            failed,
+            scanRotationHealthy);
     }
 
-    private async Task<IReadOnlyList<DeploymentCandidate>> ReadCandidatesAsync(
+    private async Task<DeploymentScanStep?> ReadNextCandidateAsync(
         Guid tenantId,
+        long? rotationCeiling,
         CancellationToken cancellationToken)
     {
         await using TenantPostgresTransaction transaction =
             await database.BeginTenantTransactionAsync(
                 PostgresWorkerTenantCatalog.CreateContext(tenantId, Guid.CreateVersion7()),
                 cancellationToken).ConfigureAwait(false);
-        bool hasCursor = scanCursors.TryGetValue(tenantId, out Guid cursor);
-        await using NpgsqlCommand command = transaction.CreateCommand(
+        await using (NpgsqlCommand initialize = transaction.CreateCommand(
             """
-            select id, tenant_id, row_version
-            from operations.deployments
-            where tenant_id = @tenant_id
-              and desired_state <> 'draft'
-            order by
-                case when @has_cursor and id <= @cursor then 1 else 0 end,
-                id
-            limit @batch_size
-            """);
+            insert into control.deployment_scan_cursors (tenant_id)
+            values (@tenant_id)
+            on conflict (tenant_id) do nothing
+            """))
+        {
+            initialize.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, tenantId);
+            await initialize.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using NpgsqlCommand command = transaction.CreateCommand(AdvanceDeploymentScanSql);
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, tenantId);
-        command.Parameters.AddWithValue("has_cursor", NpgsqlDbType.Boolean, hasCursor);
-        command.Parameters.AddWithValue("cursor", NpgsqlDbType.Uuid, hasCursor ? cursor : Guid.Empty);
-        command.Parameters.AddWithValue("batch_size", NpgsqlDbType.Integer, options.DeploymentBatchSizePerTenant);
-        var candidates = new List<DeploymentCandidate>(options.DeploymentBatchSizePerTenant);
+        command.Parameters.Add(new NpgsqlParameter("rotation_ceiling", NpgsqlDbType.Bigint)
+        {
+            Value = rotationCeiling is long ceiling ? ceiling : DBNull.Value
+        });
+        DeploymentScanStep? step;
         await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                candidates.Add(new DeploymentCandidate(reader.GetGuid(0), reader.GetGuid(1), reader.GetInt64(2)));
+                step = null;
+            }
+            else if (reader.IsDBNull(0))
+            {
+                step = null;
+            }
+            else
+            {
+                step = new DeploymentScanStep(
+                    new DeploymentCandidate(
+                        reader.GetGuid(0),
+                        reader.GetGuid(1)),
+                    reader.GetBoolean(2),
+                    reader.GetInt64(3));
+                step.Validate(tenantId);
             }
         }
 
-        if (candidates.Count != 0)
-        {
-            scanCursors[tenantId] = candidates[^1].Id;
-        }
-
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return candidates;
+        return step;
     }
 
     private async Task<bool> ProjectAsync(
@@ -136,11 +277,12 @@ internal sealed class PostgresDeploymentProjectionStore(
             assignment,
             cancellationToken)
             .ConfigureAwait(false);
-        ReconciliationEvidence? reconciliation = await ReadReconciliationAsync(
-            transaction,
-            deployment,
-            assignment,
-            cancellationToken).ConfigureAwait(false);
+        ReconciliationEvidence? reconciliation = ProjectableReconciliation(
+            await ReadReconciliationAsync(
+                transaction,
+                deployment,
+                assignment,
+                cancellationToken).ConfigureAwait(false));
         ComponentEvidence components = await ReadComponentEvidenceAsync(
             transaction,
             deployment,
@@ -270,12 +412,11 @@ internal sealed class PostgresDeploymentProjectionStore(
             from operations.deployments
             where tenant_id = @tenant_id
               and id = @deployment_id
-              and row_version = @expected_version
+              and desired_state <> 'draft'
             for update
             """);
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, candidate.TenantId);
         command.Parameters.AddWithValue("deployment_id", NpgsqlDbType.Uuid, candidate.Id);
-        command.Parameters.AddWithValue("expected_version", NpgsqlDbType.Bigint, candidate.RowVersion);
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -375,21 +516,65 @@ internal sealed class PostgresDeploymentProjectionStore(
         await using NpgsqlCommand command = transaction.CreateCommand(
             """
             select
-                id, state, desired_digest, observed_digest, broker_digest,
-                observed_state,
-                runtime_evidence_sha256,
-                generation,
-                worker_assignment_id,
-                worker_instance_id,
-                broker_confirmed,
-                broker_execution_state,
-                broker_position_state,
-                completed_at
-            from operations.deployment_reconciliations
-            where tenant_id = @tenant_id
-              and deployment_id = @deployment_id
-              and completed_at is not null
-            order by completed_at desc, id
+                reconciliation.id, reconciliation.state,
+                reconciliation.desired_digest, reconciliation.observed_digest,
+                reconciliation.broker_digest, reconciliation.observed_state,
+                reconciliation.runtime_evidence_sha256,
+                reconciliation.generation,
+                reconciliation.worker_assignment_id,
+                reconciliation.worker_instance_id,
+                reconciliation.broker_confirmed,
+                reconciliation.broker_execution_state,
+                reconciliation.broker_position_state,
+                reconciliation.completed_at,
+                reconciliation.pre_invocation_not_sent_proven,
+                reconciliation.reconciliation_challenge_id,
+                challenge.route_deployment_id,
+                challenge.fence_generation,
+                challenge.worker_assignment_id,
+                challenge.worker_instance_id,
+                consumption.challenge_id as consumed_challenge_id
+            from operations.deployment_reconciliations as reconciliation
+            left join control.user_operation_reconciliation_challenges as challenge
+              on challenge.tenant_id = reconciliation.tenant_id
+             and challenge.id = reconciliation.reconciliation_challenge_id
+            left join control.user_operation_reconciliation_challenge_consumptions as consumption
+              on consumption.tenant_id = challenge.tenant_id
+             and consumption.challenge_id = challenge.id
+             and consumption.target_type = 'deployment'
+             and consumption.result_record_id = reconciliation.id
+             and consumption.result_id = reconciliation.result_id
+             and consumption.request_sha256 = reconciliation.request_sha256
+            where reconciliation.tenant_id = @tenant_id
+              and reconciliation.deployment_id = @deployment_id
+              and reconciliation.completed_at is not null
+              and
+              (
+                  reconciliation.dispatch_message_id is null
+                  or
+                  (
+                      reconciliation.state in ('reconciled', 'diverged')
+                      and reconciliation.pre_invocation_not_sent_proven = false
+                      and reconciliation.gateway_invoked = true
+                      and reconciliation.broker_confirmed = true
+                      and reconciliation.observed_state is not null
+                      and reconciliation.observed_digest is not null
+                      and reconciliation.runtime_evidence_sha256 is not null
+                      and reconciliation.broker_digest is not null
+                      and reconciliation.broker_execution_state is not null
+                      and reconciliation.broker_position_state is not null
+                  )
+              )
+              and
+              (
+                  reconciliation.reconciliation_challenge_id is null
+                  or
+                  (
+                      consumption.challenge_id = reconciliation.reconciliation_challenge_id
+                      and challenge.route_deployment_id = reconciliation.deployment_id
+                  )
+              )
+            order by reconciliation.completed_at desc, reconciliation.id
             limit 1
             """);
         AddDeploymentParameters(command, deployment);
@@ -403,6 +588,24 @@ internal sealed class PostgresDeploymentProjectionStore(
         long generation = reader.GetInt64(7);
         Guid assignmentId = reader.GetGuid(8);
         Guid workerInstanceId = reader.GetGuid(9);
+        Guid? challengeId = reader.IsDBNull(15) ? null : reader.GetGuid(15);
+        if (challengeId is not null)
+        {
+            if (reader.IsDBNull(16)
+                || reader.IsDBNull(17)
+                || reader.IsDBNull(18)
+                || reader.IsDBNull(19)
+                || reader.IsDBNull(20)
+                || reader.GetGuid(20) != challengeId
+                || reader.GetGuid(16) != deployment.Id)
+            {
+                return null;
+            }
+
+            generation = reader.GetInt64(17);
+            assignmentId = reader.GetGuid(18);
+            workerInstanceId = reader.GetGuid(19);
+        }
         if (generation != deployment.FenceGeneration
             || assignmentId != assignment.Id
             || workerInstanceId != assignment.WorkerInstanceId)
@@ -424,7 +627,8 @@ internal sealed class PostgresDeploymentProjectionStore(
             reader.GetBoolean(10),
             reader.IsDBNull(11) ? null : reader.GetString(11),
             reader.IsDBNull(12) ? null : reader.GetString(12),
-            reader.GetFieldValue<DateTimeOffset>(13));
+            reader.GetFieldValue<DateTimeOffset>(13),
+            !reader.IsDBNull(14) && reader.GetBoolean(14));
     }
 
     private static async Task<ComponentEvidence> ReadComponentEvidenceAsync(
@@ -505,6 +709,7 @@ internal sealed class PostgresDeploymentProjectionStore(
         ComponentEvidence components,
         DateTimeOffset now)
     {
+        reconciliation = ProjectableReconciliation(reconciliation);
         bool reconciledBinding = reconciliation is not null
             && assignment is not null
             && reconciliation.FenceGeneration == deployment.FenceGeneration
@@ -641,6 +846,10 @@ internal sealed class PostgresDeploymentProjectionStore(
         return new ProjectionDecision(expected, "persisted_reconciliation_match");
     }
 
+    internal static ReconciliationEvidence? ProjectableReconciliation(
+        ReconciliationEvidence? reconciliation) =>
+        reconciliation is { PreInvocationNotSentProven: true } ? null : reconciliation;
+
     private static void AddDeploymentParameters(NpgsqlCommand command, DeploymentSnapshot deployment)
     {
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, deployment.TenantId);
@@ -715,7 +924,8 @@ internal sealed class PostgresDeploymentProjectionStore(
         bool BrokerConfirmed,
         string? BrokerExecutionState,
         string? BrokerPositionState,
-        DateTimeOffset CompletedAt);
+        DateTimeOffset CompletedAt,
+        bool PreInvocationNotSentProven);
 
     internal sealed record ComponentEvidence(
         int Total,
@@ -730,5 +940,23 @@ internal sealed class PostgresDeploymentProjectionStore(
 
     internal sealed record ProjectionDecision(string ObservedState, string EvidenceCode);
 
-    private sealed record DeploymentCandidate(Guid Id, Guid TenantId, long RowVersion);
+    private sealed record DeploymentCandidate(Guid Id, Guid TenantId);
+
+    private sealed record DeploymentScanStep(
+        DeploymentCandidate Candidate,
+        bool RotationCompleted,
+        long RotationCount)
+    {
+        public void Validate(Guid expectedTenantId)
+        {
+            if (Candidate.Id == Guid.Empty
+                || Candidate.TenantId != expectedTenantId
+                || RotationCount < 0
+                || (RotationCompleted && RotationCount == 0))
+            {
+                throw new InvalidOperationException(
+                    "The durable deployment scan returned invalid progress metadata.");
+            }
+        }
+    }
 }

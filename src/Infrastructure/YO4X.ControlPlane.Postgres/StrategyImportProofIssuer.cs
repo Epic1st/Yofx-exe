@@ -1,62 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
+using YO4X.BuildingBlocks;
 
 namespace YO4X.ControlPlane.Postgres;
-
-public sealed class StrategyImportProofKey : IDisposable
-{
-    private byte[]? key;
-    private readonly ReaderWriterLockSlim lifecycleLock = new(LockRecursionPolicy.NoRecursion);
-
-    public StrategyImportProofKey(byte[] keyBytes)
-    {
-        ArgumentNullException.ThrowIfNull(keyBytes);
-        if (keyBytes.Length != 32 || keyBytes.All(static value => value == 0))
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(keyBytes),
-                "The strategy import proof key must contain exactly 256 bits and cannot be all-zero.");
-        }
-
-        key = keyBytes.ToArray();
-    }
-
-    internal void ComputeSha256(ReadOnlySpan<byte> input, Span<byte> destination)
-    {
-        lifecycleLock.EnterReadLock();
-        try
-        {
-            byte[] activeKey = key
-                ?? throw new ObjectDisposedException(nameof(StrategyImportProofKey));
-            HMACSHA256.HashData(activeKey, input, destination);
-        }
-        finally
-        {
-            lifecycleLock.ExitReadLock();
-        }
-    }
-
-    public void Dispose()
-    {
-        lifecycleLock.EnterWriteLock();
-        try
-        {
-            byte[]? owned = Interlocked.Exchange(ref key, null);
-            if (owned is not null)
-            {
-                CryptographicOperations.ZeroMemory(owned);
-            }
-        }
-        finally
-        {
-            lifecycleLock.ExitWriteLock();
-        }
-
-        GC.SuppressFinalize(this);
-    }
-
-    public override string ToString() => "[REDACTED STRATEGY IMPORT PROOF KEY]";
-}
 
 public sealed class IssuedStrategyImportProof
 {
@@ -71,15 +17,34 @@ public sealed class IssuedStrategyImportProof
         "IssuedStrategyImportProof { Capability = [REDACTED] }";
 }
 
-public sealed class StrategyImportProofIssuer(StrategyImportProofKey key)
+public sealed class StrategyImportProofIssuer(StrategyImportProofKeyRing keyRing)
 {
+    public string CurrentKeyId => keyRing.CurrentKeyId;
+
     public IssuedStrategyImportProof Issue(
         Guid tenantId,
         Guid userId,
         Guid importJobId,
         Guid correlationId,
         string sourceLabel,
-        DateTimeOffset expiresAt)
+        DateTimeOffset expiresAt) =>
+        Issue(
+            tenantId,
+            userId,
+            importJobId,
+            correlationId,
+            sourceLabel,
+            expiresAt,
+            keyRing.CurrentKeyId);
+
+    public IssuedStrategyImportProof Issue(
+        Guid tenantId,
+        Guid userId,
+        Guid importJobId,
+        Guid correlationId,
+        string sourceLabel,
+        DateTimeOffset expiresAt,
+        string? proofKeyId)
     {
         RequireIdentifier(tenantId, nameof(tenantId));
         RequireIdentifier(userId, nameof(userId));
@@ -93,7 +58,12 @@ public sealed class StrategyImportProofIssuer(StrategyImportProofKey key)
         try
         {
             Span<byte> digest = stackalloc byte[32];
-            key.ComputeSha256(input, digest);
+            if (!keyRing.TryComputeSha256(proofKeyId, input, digest))
+            {
+                throw new BackendCapabilityUnavailableException(
+                    "strategy-import-proof-key-unavailable");
+            }
+
             return new IssuedStrategyImportProof(ToBase64Url(digest));
         }
         finally

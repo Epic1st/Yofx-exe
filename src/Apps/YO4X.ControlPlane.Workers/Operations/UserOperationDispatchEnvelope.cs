@@ -4,6 +4,12 @@ namespace YO4X.ControlPlane.Workers.Operations;
 
 internal static class UserOperationDispatchGuard
 {
+    public static bool IsProtective(string operationType) => operationType is
+        "broker_account.disable" or
+        "broker_account.delete" or
+        "deployment.close_only" or
+        "deployment.stop_after_flat";
+
     public static bool IncreasesAuthority(string operationType) => operationType is
         "broker_account.connection_test" or
         "broker_account.credential_rotation" or
@@ -22,10 +28,22 @@ internal static class UserOperationDispatchGuard
         && workerAssignmentId is not null && workerAssignmentId != Guid.Empty
         && workerInstanceId is not null && workerInstanceId != Guid.Empty;
 
-    public static bool RouteWaitExpired(
+    public static bool ShouldExpireBeforeDispatch(
+        string operationType,
         DateTimeOffset createdAt,
         DateTimeOffset now,
-        TimeSpan maximumAge) => now - createdAt >= maximumAge;
+        TimeSpan maximumAge) =>
+        !IsProtective(operationType) && now - createdAt >= maximumAge;
+
+    public static string AwaitingProofState(
+        string currentState,
+        DateTimeOffset handedOffAt,
+        DateTimeOffset now,
+        TimeSpan unknownAfter,
+        bool published) =>
+        now - handedOffAt >= unknownAfter
+            ? "unknown"
+            : published ? "reconciling" : currentState;
 
     public static bool IsReconciliationBindingCurrent(
         string operationType,
@@ -153,10 +171,14 @@ public sealed record UserOperationDispatchEnvelope
         UserOperationTargetBinding targetBinding,
         UserOperationPolicyEvidence? policyEvidence,
         string dispatchPolicySnapshotSha256,
+        string resultCapability,
         DateTimeOffset requestedAt,
-        DateTimeOffset dispatchedAt)
+        DateTimeOffset dispatchedAt,
+        DateTimeOffset resultCapabilityExpiresAt,
+        DateTimeOffset assignmentLeaseExpiresAt,
+        DateTimeOffset executionDeadline)
     {
-        SchemaVersion = 1;
+        SchemaVersion = 3;
         OperationId = operationId;
         TenantId = tenantId;
         OperationType = operationType;
@@ -170,8 +192,12 @@ public sealed record UserOperationDispatchEnvelope
         TargetBinding = targetBinding;
         PolicyEvidence = policyEvidence;
         DispatchPolicySnapshotSha256 = dispatchPolicySnapshotSha256;
+        ResultCapability = resultCapability;
         RequestedAt = requestedAt;
         DispatchedAt = dispatchedAt;
+        ResultCapabilityExpiresAt = resultCapabilityExpiresAt;
+        AssignmentLeaseExpiresAt = assignmentLeaseExpiresAt;
+        ExecutionDeadline = executionDeadline;
     }
 
     public int SchemaVersion { get; }
@@ -202,11 +228,28 @@ public sealed record UserOperationDispatchEnvelope
 
     public string DispatchPolicySnapshotSha256 { get; }
 
+    /// <summary>
+    /// Opaque, one-use proof-of-handoff capability. Only its SHA-256 digest is
+    /// stored with the operation; this bearer value must never be logged.
+    /// </summary>
+    public string ResultCapability { get; }
+
     public DateTimeOffset RequestedAt { get; }
 
     public DateTimeOffset DispatchedAt { get; }
 
-    public string MessageType => $"yo4x.{OperationType.Replace('_', '-')}.requested.v1";
+    public DateTimeOffset ResultCapabilityExpiresAt { get; }
+
+    public DateTimeOffset AssignmentLeaseExpiresAt { get; }
+
+    /// <summary>
+    /// Exclusive database-clock boundary for beginning the initial mutation.
+    /// Equality is expired; a reconciliation challenge authorizes observation
+    /// only and cannot extend this deadline.
+    /// </summary>
+    public DateTimeOffset ExecutionDeadline { get; }
+
+    public string MessageType => $"yo4x.{OperationType.Replace('_', '-')}.requested.v3";
 
     public static UserOperationDispatchEnvelope Create(
         Guid operationId,
@@ -231,8 +274,12 @@ public sealed record UserOperationDispatchEnvelope
         string? policyInputSha256,
         string? evaluationEvidenceSha256,
         string dispatchPolicySnapshotSha256,
+        string resultCapability,
         DateTimeOffset requestedAt,
-        DateTimeOffset dispatchedAt)
+        DateTimeOffset dispatchedAt,
+        DateTimeOffset resultCapabilityExpiresAt,
+        DateTimeOffset assignmentLeaseExpiresAt,
+        DateTimeOffset executionDeadline)
     {
         RequireIdentifier(operationId, nameof(operationId));
         RequireIdentifier(tenantId, nameof(tenantId));
@@ -252,13 +299,36 @@ public sealed record UserOperationDispatchEnvelope
                 "The current policy snapshot must be bound by a SHA-256 digest.",
                 nameof(dispatchPolicySnapshotSha256));
         }
+        if (!IsResultCapability(resultCapability))
+        {
+            throw new ArgumentException(
+                "The broker-result capability is invalid.",
+                nameof(resultCapability));
+        }
+        if (requestedAt.Offset != TimeSpan.Zero
+            || dispatchedAt.Offset != TimeSpan.Zero
+            || resultCapabilityExpiresAt.Offset != TimeSpan.Zero
+            || assignmentLeaseExpiresAt.Offset != TimeSpan.Zero
+            || executionDeadline.Offset != TimeSpan.Zero
+            || requestedAt > dispatchedAt
+            || resultCapabilityExpiresAt <= dispatchedAt
+            || assignmentLeaseExpiresAt <= dispatchedAt
+            || executionDeadline <= dispatchedAt
+            || executionDeadline > resultCapabilityExpiresAt
+            || executionDeadline > assignmentLeaseExpiresAt)
+        {
+            throw new ArgumentException(
+                "The dispatch authority timestamps are inconsistent or not UTC.");
+        }
 
         bool hasAssignment = workerAssignmentId is not null && workerInstanceId is not null;
         if ((workerAssignmentId is null) != (workerInstanceId is null)
             || routeDeploymentId is null
             || routeDeploymentId == Guid.Empty
             || !hasAssignment
-            || fenceGeneration is null
+            || workerAssignmentId == Guid.Empty
+            || workerInstanceId == Guid.Empty
+            || fenceGeneration is null or <= 0
             || targetType == "deployment" && routeDeploymentId != targetId)
         {
             throw new ArgumentException("The runtime assignment binding is inconsistent.");
@@ -297,8 +367,12 @@ public sealed record UserOperationDispatchEnvelope
                 targetDigest),
             policy,
             dispatchPolicySnapshotSha256,
-            requestedAt.ToUniversalTime(),
-            dispatchedAt.ToUniversalTime());
+            resultCapability,
+            requestedAt,
+            dispatchedAt,
+            resultCapabilityExpiresAt,
+            assignmentLeaseExpiresAt,
+            executionDeadline);
     }
 
     private static UserOperationPolicyEvidence? CreatePolicyEvidence(
@@ -340,6 +414,9 @@ public sealed record UserOperationDispatchEnvelope
     private static bool IsSha256(string value) =>
         value.Length == 64
         && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static bool IsResultCapability(string value) =>
+        CanonicalBase64Url.IsEncodedByteCount(value, 32);
 
     private static void RequireIdentifier(Guid value, string name)
     {

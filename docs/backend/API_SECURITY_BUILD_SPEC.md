@@ -100,7 +100,15 @@ Every user-owned row carries a non-null `tenant_id`. Tenant context comes from t
 Enforce tenant ownership twice:
 
 1. Application repositories require an explicit trusted `TenantContext` and include `tenant_id` in every key lookup, join, update, and uniqueness constraint.
-2. PostgreSQL row-level security provides defense in depth. At the beginning of each transaction, the data adapter uses `SET LOCAL app.tenant_id = ...` and an allowlisted actor kind. Policies reject missing context. Pooling tests prove context is transaction-scoped and cannot bleed into the next request.
+2. PostgreSQL row-level security provides defense in depth. At the beginning of
+   each transaction, the runtime reads its exact database/role/backend/full-xid
+   binding and activates a one-use 256-bit capability issued through the
+   separately credentialed `yo4x_context_issuer`. PostgreSQL stores only the
+   capability digest and binds the resulting tenant, actor, correlation, and
+   optional session identity to that exact transaction. Policies read only this
+   protected binding; caller-writable custom GUCs are inert. Missing, expired,
+   replayed, cross-role, cross-backend, cross-transaction, or mismatched context
+   fails closed, and pooling cannot carry authority into a later transaction.
 
 Admin access does not disable RLS globally. Admin read models contain pre-redacted operational fields, and authoritative cross-tenant access uses narrowly scoped security-definer functions or a dedicated role mapped to a permission/scope decision and audited purpose. Worker credentials are restricted to one account/deployment/generation. Background jobs carry an explicit system purpose and bounded shard/scope rather than an all-tenant repository switch.
 
@@ -573,7 +581,10 @@ All tests that exercise persistence run against the real PostgreSQL engine with 
 
 - Fresh database migrates from zero; restart creates no mock business rows; previous compatible application version works during rollout.
 - RLS and repository filters deny cross-tenant read/update/delete for every tenant entity, including guessed IDs, joins, exports, and object references.
-- Connection-pool reuse cannot leak `app.tenant_id`; missing tenant context fails closed.
+- Connection-pool reuse cannot carry tenant authority. Missing issuer/provider
+  configuration fails before tenant SQL, caller-written GUCs are inert, and
+  expired, replayed, cross-backend, cross-transaction, cross-role, or
+  cross-context capabilities fail closed.
 - Admin scoped read succeeds only for the authorized purpose/scope and emits sensitive-read evidence; broad user enumeration is impossible.
 - DTO over-posting, unknown enums, mass assignment, malformed JSON, oversized bodies, injection, SSRF, XSS, CSRF, and CSV formula payloads fail safely.
 - Problem responses and `404` behavior do not reveal tenant/resource/account existence or secrets.

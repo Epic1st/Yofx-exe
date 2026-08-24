@@ -73,6 +73,7 @@ public static class PostgresAuditOutboxWriter
             id,
             tenant_id,
             message_type,
+            schema_version,
             aggregate_type,
             aggregate_id,
             payload,
@@ -87,6 +88,7 @@ public static class PostgresAuditOutboxWriter
             @id,
             @tenant_id,
             @message_type,
+            @schema_version,
             @aggregate_type,
             @aggregate_id,
             @payload,
@@ -188,6 +190,10 @@ public static class PostgresAuditOutboxWriter
         command.Parameters.AddWithValue("id", NpgsqlDbType.Uuid, message.Id);
         command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, message.TenantId);
         command.Parameters.AddWithValue("message_type", NpgsqlDbType.Text, message.MessageType);
+        command.Parameters.AddWithValue(
+            "schema_version",
+            NpgsqlDbType.Smallint,
+            checked((short)message.SchemaVersion));
         command.Parameters.AddWithValue("aggregate_type", NpgsqlDbType.Text, message.AggregateType);
         command.Parameters.AddWithValue("aggregate_id", NpgsqlDbType.Text, message.AggregateId);
         command.Parameters.AddWithValue("payload", NpgsqlDbType.Jsonb, message.PayloadJson);

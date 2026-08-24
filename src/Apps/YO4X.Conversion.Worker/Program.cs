@@ -1,6 +1,12 @@
 using YO4X.Conversion.Worker;
 using YO4X.StrategyGovernance;
 
+if (Mql5QuarantineIntakeCommand.IsRequested(args))
+{
+    Environment.ExitCode = await Mql5QuarantineIntakeCommand.RunAsync(args);
+    return;
+}
+
 if (ConversionInventoryCommand.IsRequested(args))
 {
     Environment.ExitCode = await ConversionInventoryCommand.RunAsync(args);

@@ -43,9 +43,9 @@ input int SessionStartHour = 7;     // Session start hour UTC (default 7)
 input int SessionEndHour   = 22;    // Session end hour UTC (default 22)
 
 // Notifications
-input string TelegramBotToken = "8723945825:AAHd_-IX04V84lTVRAkL3X-lFKLyD4aj3uQ";  // Telegram Bot Token
-input string TelegramChatID   = "2071398340";  // Telegram Chat ID
-input string EmailAddress     = "Mabyconnect@gmail.com";  // Email for trade notifications
+input string TelegramBotToken = "";  // Telegram Bot Token
+input string TelegramChatID   = "";  // Telegram Chat ID
+input string EmailAddress     = "";  // Email for trade notifications
 
 // Limits
 input int MaxPairsOpen    = 2;      // Max simultaneous pairs open
