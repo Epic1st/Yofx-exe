@@ -27,14 +27,14 @@ U0 is a technical proof, not a customer release.
 | Vendor DLL is present | PASS | Exact artifact exists in workspace |
 | Artifact hash recorded | PASS | Supplied DLL SHA-256: `EB238C958A4D9F80C8A3EEACA07636AE53BC5A78A093BC3FE63923FA50A309C6` |
 | Managed assembly inspection | PASS | Managed assembly; unsigned vendor artifact; provenance requires approval |
-| One demo authentication test | NOT PROVEN FOR SUPPLIED ARTIFACT | The supplied DLL was not loaded or connected by this implementation work |
+| One demo authentication test | CONNECTION-ONLY PASS | On 2026-08-24 the dedicated manifest-pinned backend worker loaded the exact DLL, authenticated an approved `VantageMarkets-Demo` binding through a `search.mtapi.io`-resolved node, read bounded metadata, and confirmed disconnect; no order surface was present |
 | Repeat connection/restart/reconciliation | NOT PROVEN | One successful login is not a soak or recovery proof |
 | Commercial local/cloud/SaaS rights | BLOCKED | Written vendor rights are not in the workspace |
 | Full-production vs trial artifact | BLOCKED | Must be proven by vendor/licence evidence and network testing |
-| Supplied MQ5/MQH corpus | STATIC INTAKE COMPLETE | 198 exact byte-preserved files inventoried; the authenticated persistence path is integration-tested; corpus SHA-256 `9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47` |
-| Deterministic semantic strategy translation | BLOCKED | Static inventory is not semantic conversion; per-strategy mapping and reference evidence remain required |
+| Security-sanitized current MQ5/MQH corpus | PERSISTENCE COMPLETE | 198 exact byte-preserved current files inventoried and transactionally persisted through the production PostgreSQL store with exact inventory evidence; corpus SHA-256 `9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47` |
+| Deterministic semantic strategy translation | BLOCKED | The restricted compiler attempted 30 candidates: 2 data-only translation units lowered and 28 failed closed; executable-strategy, MetaEditor, parity, and runtime proofs remain zero |
 | Three-process runtime proof | BUILDABLE BOUNDARIES; END-TO-END PROOF OPEN | Supervisor, StrategyHost, and GatewayHost are isolated executables; broker/demo soak evidence remains required |
-| Crash/unknown-command reconciliation proof | NOT STARTED | Required before V1A |
+| Crash/unknown-command reconciliation proof | SCAFFOLDING AND PRODUCTION WORK-STORE INTEGRATION IMPLEMENTED | Requested-v4/result-v5 attempt and reconciliation-challenge state machines, strict C# adapters, and `PostgresUserOperationWorkStore` scheduling are PG18-tested with a deterministic non-broker provider. Authenticated transport/consumer/provider/restart wiring and real broker-observation proof remain unproven and are required before V1A. |
 | Formal first risk-policy values | BLOCKED | Requires broker/strategy/account assumptions |
 | Minimum admin containment controls | FOUNDATION IMPLEMENTED | Database-authoritative admin sessions, grants, step-up checks, command/approval boundaries, least-privilege roles, and audit/outbox tests are green; production identity/provider and operational evidence remain open |
 
@@ -150,7 +150,7 @@ Pass:
 
 Available input and still-required owner evidence:
 
-- The supplied directory contains 166 exact `.mq5` files and 32 exact `.mqh` files; their deterministic metadata inventory is complete.
+- The security-sanitized current working directory contains 166 exact `.mq5` files and 32 exact `.mqh` files; their deterministic metadata inventory is complete. One credential-bearing default was blanked before the corpus freeze, so this evidence does not claim byte identity with the untouched intake.
 - Required local or standard-library include resolution is recorded per file; missing/custom dependencies remain explicit findings.
 - Source for required custom indicators.
 - SET files.
@@ -360,7 +360,7 @@ Stop or replace the gateway/strategy approach when rights, credential path, dete
 
 ## 8. Immediate blocker
 
-The supplied MQL5 intake is now statically inventoried and transactionally persisted, but that does not establish semantic conversion, compiler success, strategy parity, or safe runtime behavior. The next external gates are written gateway licence/production-artifact evidence, a trusted isolated Windows runner, a production write-only secret provider, and strategy-specific reference expectations. Until those arrive, U0 can strengthen deterministic contracts and test harnesses but cannot truthfully execute the vendor path, complete strategy mapping, place a demo order, or approve V1A.
+The supplied MQL5 intake is now statically inventoried and transactionally persisted, but that does not establish executable semantic conversion, compiler success, strategy parity, or safe runtime behavior. A bounded connection-only vendor path has authenticated one Vantage demo binding and confirmed disconnect. External gates still include written gateway licence/production-artifact evidence, hardened isolated Windows execution, a production write-only secret provider, and strategy-specific reference expectations. Repository implementation gates also remain: authenticated requested-v4 mutation transport and consumption across Supervisor/Gateway/credential boundaries, the provider/observer and restart coordinator, and a trusted risk authority over immutable broker facts. Until both gate sets close, U0 cannot truthfully complete executable strategy mapping, place a demo order, prove crash/unknown reconciliation against a broker, or approve V1A.
 
 ## 9. Review remediation map
 

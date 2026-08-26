@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>YO4X.Mql5.Live</RootNamespace>
+    <Description>Runs a compiled MQL5 strategy against a live broker session: live bars in, real orders out.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\YO4X.Mql5.CodeGen\YO4X.Mql5.CodeGen.csproj" />
+    <ProjectReference Include="..\YO4X.Mql5.Engine\YO4X.Mql5.Engine.csproj" />
+    <ProjectReference Include="..\YO4X.Mql5.Runtime\YO4X.Mql5.Runtime.csproj" />
+    <ProjectReference Include="..\YO4X.Mt5.ConnectionProbe.Windows\YO4X.Mt5.ConnectionProbe.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

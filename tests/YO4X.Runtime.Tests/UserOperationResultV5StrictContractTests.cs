@@ -110,6 +110,48 @@ public sealed class UserOperationResultV5StrictContractTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DurableObservationParserAcceptsJsonbOrderButRejectsShapeDrift()
+    {
+        UserOperationDeploymentTargetObservation expected = DeploymentObservation();
+        string databaseJson =
+            $"{{\"observedState\":\"{expected.ObservedState}\"," +
+            $"\"brokerDigest\":\"{expected.BrokerDigest}\"," +
+            $"\"runtimeEvidenceSha256\":\"{expected.RuntimeEvidenceSha256}\"," +
+            $"\"brokerPositionState\":\"{expected.BrokerPositionState}\"," +
+            $"\"brokerConfirmed\":true," +
+            $"\"observedDigest\":\"{expected.ObservedDigest}\"," +
+            $"\"brokerExecutionState\":\"{expected.BrokerExecutionState}\"}}";
+
+        UserOperationTargetObservation parsed =
+            UserOperationTargetObservation.ParseDatabaseJson(
+                "deployment",
+                databaseJson);
+        Assert.IsType<UserOperationDeploymentTargetObservation>(parsed);
+        Assert.Equal(expected.ToCanonicalJson(), parsed.ToCanonicalJson());
+        Assert.Equal(expected.ComputeCanonicalSha256(), parsed.ComputeCanonicalSha256());
+
+        string unknown = databaseJson.Replace(
+            "\"observedState\"",
+            "\"unknownState\"",
+            StringComparison.Ordinal);
+        string duplicate = databaseJson.Replace(
+            "{\"observedState\"",
+            "{\"observedState\":\"running\",\"observedState\"",
+            StringComparison.Ordinal);
+        string unconfirmed = databaseJson.Replace(
+            "\"brokerConfirmed\":true",
+            "\"brokerConfirmed\":false",
+            StringComparison.Ordinal);
+
+        Assert.Throws<InvalidDataException>(() =>
+            UserOperationTargetObservation.ParseDatabaseJson("deployment", unknown));
+        Assert.Throws<InvalidDataException>(() =>
+            UserOperationTargetObservation.ParseDatabaseJson("deployment", duplicate));
+        Assert.Throws<ArgumentException>(() =>
+            UserOperationTargetObservation.ParseDatabaseJson("deployment", unconfirmed));
+    }
+
     private static UserOperationGatewayResultV5 GatewayResult()
     {
         UserOperationTargetObservation observation = DeploymentObservation();

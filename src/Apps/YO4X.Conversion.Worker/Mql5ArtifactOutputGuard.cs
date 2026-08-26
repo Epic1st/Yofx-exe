@@ -15,10 +15,10 @@ internal static class Mql5ArtifactOutputGuard
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceRoot);
         ArgumentNullException.ThrowIfNull(outputPaths);
-        if (outputPaths.Length is < 1 or > 5
+        if (outputPaths.Length is < 1 or > 6
             || outputPaths.Any(string.IsNullOrWhiteSpace))
         {
-            throw new ArgumentException("One to five artifact output paths are required.", nameof(outputPaths));
+            throw new ArgumentException("One to six artifact output paths are required.", nameof(outputPaths));
         }
 
         string fullSourceRoot = NormalizePath(sourceRoot);

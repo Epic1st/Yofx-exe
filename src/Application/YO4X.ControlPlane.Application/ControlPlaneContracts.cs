@@ -45,6 +45,28 @@ public sealed record BrokerAccountView(
     long Version,
     DateTimeOffset UpdatedAt);
 
+public sealed record CreateBrokerAccount(
+    Guid BrokerProfileId,
+    string Server,
+    string MaskedLogin,
+    string BindingFingerprint,
+    BrokerAccountEnvironment Environment);
+
+/// <summary>
+/// One MetaTrader 5 server the dashboard may offer. A directory entry that this
+/// tenant has not approved yet carries no broker profile at all, so an
+/// unapproved option cannot be turned into a registration request by accident.
+/// </summary>
+public sealed record BrokerAccountRegistrationOption(
+    Guid? BrokerProfileId,
+    Guid? DirectoryServerId,
+    string BrokerCompany,
+    string Server,
+    BrokerAccountEnvironment Environment,
+    bool Approved);
+
+public sealed record ApproveBrokerServer(Guid DirectoryServerId);
+
 public sealed record DeploymentView(
     Guid Id,
     DeploymentMode Mode,
@@ -76,6 +98,22 @@ public enum StrategyCompatibilitySourceType
     Mq5,
     Mqh
 }
+
+/// <summary>
+/// One imported MQL5 source corpus, as listed for a user.
+/// </summary>
+/// <remarks>
+/// The counts are carried on the summary because the page that lists corpora shows coverage
+/// without opening one: a corpus whose files mostly fail to convert is the interesting one, and
+/// making that visible should not cost a second request per row.
+/// </remarks>
+public sealed record StrategySourceCorpusSummary(
+    Guid CorpusId,
+    string SourceLabel,
+    int FileCount,
+    long TotalBytes,
+    int AnalyzedFileCount,
+    DateTimeOffset ImportedAt);
 
 public sealed record StrategyCompatibilityItem(
     Guid StrategyId,
@@ -207,6 +245,32 @@ public interface IControlPlaneApplication
         Guid brokerAccountId,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<BrokerAccountView>> GetBrokerAccountsAsync(
+        UserActor actor,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Without a search term this returns only what the tenant may already link.
+    /// With one it searches the imported MetaTrader 5 server directory, which is
+    /// far too large to ship whole, and marks which matches are approved.
+    /// </summary>
+    Task<IReadOnlyList<BrokerAccountRegistrationOption>> GetBrokerAccountRegistrationOptionsAsync(
+        UserActor actor,
+        string? query,
+        CancellationToken cancellationToken);
+
+    Task<BrokerAccountRegistrationOption> ApproveBrokerServerAsync(
+        UserActor actor,
+        ApproveBrokerServer request,
+        RequestMetadata metadata,
+        CancellationToken cancellationToken);
+
+    Task<BrokerAccountView> CreateBrokerAccountAsync(
+        UserActor actor,
+        CreateBrokerAccount request,
+        RequestMetadata metadata,
+        CancellationToken cancellationToken);
+
     Task<CredentialStateView?> GetCredentialStateAsync(
         UserActor actor,
         Guid brokerAccountId,
@@ -272,6 +336,10 @@ public interface IControlPlaneApplication
         Guid deploymentId,
         int limit,
         Guid? before,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<StrategySourceCorpusSummary>> GetStrategySourceCorporaAsync(
+        UserActor actor,
         CancellationToken cancellationToken);
 
     Task<StrategyCompatibilityProjection?> GetStrategyCompatibilityAsync(

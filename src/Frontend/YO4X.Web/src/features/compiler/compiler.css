@@ -1,0 +1,136 @@
+/*
+ * "Compiler" — what our own MQL5 toolchain made of each imported source file.
+ * Shared primitives come from global.css; only what is specific to this feature
+ * lives here, and every value is a token.
+ */
+
+.compiler-corpora {
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.compiler-corpus-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* Each import is a real button: selecting one reloads the file table beneath. */
+.compiler-corpus {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+
+.compiler-corpus:hover {
+  background: var(--color-surface-hover);
+}
+
+.compiler-corpus:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.compiler-corpus--open {
+  border-color: var(--color-accent-border);
+  background: var(--color-accent-wash);
+}
+
+.compiler-corpus__name {
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.compiler-corpus__meta {
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+}
+
+.compiler-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/*
+ * A tile is both a figure and a filter. Pressing one narrows the table to that state, which is
+ * how a reader gets from "eleven are unsupported" to "which eleven" without a second control.
+ */
+.compiler-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-raised);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+
+.compiler-tile:hover {
+  background: var(--color-surface-hover);
+}
+
+.compiler-tile:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.compiler-tile--active {
+  border-color: var(--color-accent-border);
+  background: var(--color-accent-wash);
+}
+
+.compiler-tile__count {
+  font-size: 22px;
+  line-height: 1.1;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.compiler-tile__label {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.compiler-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px 10px;
+}
+
+/* File names are long and near-identical at the tail, so they read better monospaced. */
+.compiler-file {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.compiler-skeleton {
+  height: 14px;
+  border-radius: var(--radius-tiny);
+}
+
+@media (max-width: 900px) {
+  .compiler-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

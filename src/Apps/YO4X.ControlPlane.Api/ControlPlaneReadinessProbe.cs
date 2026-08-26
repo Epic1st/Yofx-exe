@@ -12,7 +12,15 @@ internal sealed class ControlPlaneReadinessProbe(
     IServiceScopeFactory scopeFactory,
     IClock clock)
 {
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(3);
+    // Readiness re-attests four separate least-privilege logins, and each one
+    // recomputes the whole-catalog semantic manifest (>12k catalog entries) plus
+    // its own capability contract. A cold pass measures ~3.8s on the reference
+    // Windows development runtime and ~1.7s once the pools are warm, so a 3s
+    // deadline made the first probe after start-up fail closed on time alone and
+    // reported "unhealthy" for a database that was in fact fully conformant.
+    // The deadline exists to bound the probe, not to enforce a security property:
+    // every individual attestation below still fails closed on its own merits.
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
 
     internal const string ControlDatabaseReadinessSql =
         """
@@ -253,7 +261,9 @@ internal sealed class ControlPlaneReadinessProbe(
                       current_user,
                       attribute.attrelid,
                       attribute.attnum,
-                      'SELECT')) = array['file_count', 'id', 'state', 'tenant_id', 'user_id']::text[]
+                      'SELECT')) = array[
+                          'created_at', 'file_count', 'id', 'source_label', 'state',
+                          'tenant_id', 'total_bytes', 'user_id']::text[]
            and (
                 select pg_catalog.array_agg(attribute.attname::text order by attribute.attname)
                 from pg_catalog.pg_attribute as attribute

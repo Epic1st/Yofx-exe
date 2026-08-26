@@ -2,9 +2,11 @@
 
 ## Status
 
-This manifest records a compile-time, proof-only inspection of the user-supplied
-`mt5-net-api-full-binaries-main` bundle. It does not approve redistribution,
-production use, credential handling, network access, demo trading, or live trading.
+This manifest records the proof boundary for the user-supplied
+`mt5-net-api-full-binaries-main` bundle. Ordinary builds use it only as a pinned
+compile-time reference; a dedicated manifest-pinned worker may load it for bounded
+demo connect/identity-read/disconnect probing. This does not approve redistribution,
+production use, order handling, strategy execution, or live trading.
 
 The vendor's current first-party product page describes a separately purchased
 "binaries license" and states that the trial uses vendor servers for trial
@@ -21,7 +23,7 @@ it does not establish publisher identity, provenance, licensing rights, or safet
 
 | File | Bytes | SHA-256 | Classification |
 |---|---:|---|---|
-| `mt5api.dll` | 500736 | `EB238C958A4D9F80C8A3EEACA07636AE53BC5A78A093BC3FE63923FA50A309C6` | Unsigned managed vendor assembly; compile-time reference only |
+| `mt5api.dll` | 500736 | `EB238C958A4D9F80C8A3EEACA07636AE53BC5A78A093BC3FE63923FA50A309C6` | Unsigned managed vendor assembly; compile-time reference plus dedicated connection-only canary |
 | `mt5api.xml` | 124327 | `D3A9FCD88F0CF24C0D5E05B1E12BB6951C405D3920AC3FADFF81C80826FF5829` | XML API documentation; 482 documented members |
 | `Examples.cs` (quarantined) | 71463 | `9E2B955E635EFED933CEF91C1E880C4244F58C95ACDDC5860F73DE2155D031EB` | Removed from the working tree after credential-like constructor tuples were detected; never compiled or copied |
 
@@ -80,23 +82,31 @@ presence of the vendor assembly cannot cause a login or order.
 
 - Written commercial licence and redistribution/deployment rights.
 - Publisher-authenticated, signed production artifact and supported update process.
-- Runtime/cloud credential consumption and a production write-only secret provider;
-  the local DPAPI maintenance vault is deliberately not wired to GatewayHost.
-- Representative broker/account bundle and isolated demo credentials.
-- Broker capability and account-mode evidence.
+- Production/cloud credential consumption and a production write-only secret provider;
+  the local DPAPI vault is wired only to the dedicated connection probe, not GatewayHost.
+- Representative mutation/reconciliation broker evidence beyond the single bounded
+  Vantage demo connection observation.
+- Complete broker capability evidence beyond the observed demo/hedging identity fields.
 - Server timezone and quote/history timestamp specification.
 - A trusted risk-authority component that derives immutable broker-dependent inputs;
   production broker-command authorization is currently hard-disabled.
 - Authenticated broker-observation provenance. The production durable authority does
   not accept a conclusive terminal reconciliation result.
 - Risk, ownership/fencing, idempotency, and `UNKNOWN`-result reconciliation proofs.
-- An isolated vendor-adapter process and authenticated IPC protocol. An in-process
-  synchronous vendor call can block before it returns a `Task`, so cancellation or a
-  managed timeout cannot provide a hard containment boundary.
+- Hardened OS isolation, broker-only egress enforcement, signed deployment attestation,
+  and soak evidence beyond the supervised same-host connection-only worker.
 - Network-egress inventory, containment testing, compatibility testing, and demo soak.
 
 Until every relevant blocker is closed with immutable evidence, the adapter remains a
-non-connecting, no-order U0 boundary.
+connection-only, no-order U0 boundary.
+
+The redacted connection artifact
+`artifacts/verification/mt5/vantage-demo-connection-canary.v1.json` records a
+successful 2026-08-24 Vantage demo authentication through a
+`search.mtapi.io`-resolved access node, bounded identity observation, and confirmed
+disconnect. The exact pinned DLL was loaded only inside the dedicated worker. No
+plaintext account identity/password was rendered, no order method was exposed, and no
+strategy was executed.
 
 The current read-only host observation is
 `artifacts/verification/toolchain/mt5-toolchain-isolation.v4.json` (artifact file

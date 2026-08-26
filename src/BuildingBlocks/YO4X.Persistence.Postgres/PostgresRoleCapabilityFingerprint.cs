@@ -76,6 +76,19 @@ public sealed class PostgresRoleCapabilityContract
 
 public static class Yo4xPostgresRoleContracts
 {
+    public static PostgresRoleCapabilityContract LocalIdentity { get; } = new(
+        "yo4x_local_identity",
+        ["identity|USAGE"],
+        [],
+        [],
+        ["identity.provision_local_development_identity(uuid,uuid,uuid,text,timestamp with time zone)"],
+        PostgresRoleCapabilityContract.BaseRoleConfiguration.Concat(
+        [
+            "idle_in_transaction_session_timeout=10s",
+            "lock_timeout=2s",
+            "statement_timeout=5s"
+        ]).ToArray());
+
     public static PostgresRoleCapabilityContract ContextIssuer { get; } = new(
         "yo4x_context_issuer",
         ["control|USAGE"],
@@ -148,7 +161,7 @@ public static class Yo4xPostgresRoleContracts
             Columns("governance.strategy_conversion_classifications", "SELECT",
                 "corpus_id,tenant_id,user_id"),
             Columns("governance.strategy_source_corpora", "SELECT",
-                "file_count,id,state,tenant_id,user_id"),
+                "created_at,file_count,id,source_label,state,tenant_id,total_bytes,user_id"),
             Columns("governance.strategy_source_files", "SELECT",
                 "corpus_id,disposition,features,id,manifest_order,relative_path,source_kind,tenant_id,user_id"),
             Columns("governance.strategy_version_source_bindings", "SELECT",
@@ -159,6 +172,8 @@ public static class Yo4xPostgresRoleContracts
                 "revoked_at,row_version,state,updated_at"),
             Columns("operations.broker_accounts", "SELECT",
                 "account_mode,binding_fingerprint,broker_hosted_stop_loss,broker_hosted_take_profit,broker_id,broker_profile_id,capability_evidence_sha256,capability_observed_at,capability_valid_until,created_at,credential_state,dedicated_cloud_use,environment,id,manual_or_external_trading_detected,masked_login,row_version,server,state,supports_deal_history,supports_order_query,supports_position_query,tenant_id,trading_allowed,updated_at,user_id"),
+            Columns("operations.broker_accounts", "INSERT",
+                "binding_fingerprint,broker_id,broker_profile_id,environment,id,masked_login,server,tenant_id,user_id"),
             Columns("operations.broker_accounts", "UPDATE",
                 "credential_state,row_version,state,updated_at"),
             Columns("operations.deployments", "INSERT",
@@ -303,7 +318,7 @@ public static class Yo4xPostgresRoleContracts
             Columns("control.user_operation_reconciliation_challenges", "SELECT",
                 "fence_generation,id,operation_id,original_dispatch_message_id,route_deployment_id,tenant_id,worker_assignment_id,worker_instance_id"),
             Columns("control.user_operations", "SELECT",
-                "claim_expires_at,claim_token,claimed_by,completed_at,correlation_id,created_at,dispatch_assignment_lease_expires_at,dispatch_attempts,dispatch_execution_deadline,dispatch_fence_generation,dispatch_message_id,dispatch_policy_snapshot_sha256,dispatch_route_deployment_id,dispatch_target_binding_sha256,dispatch_worker_assignment_id,dispatch_worker_instance_id,dispatched_at,effective_policy_digest,expected_resource_version,id,idempotency_record_id,last_error_code,last_processing_error_code,next_processing_at,operation_type,policy_input_sha256,policy_version_watermark,processing_deferral_count,reconciliation_fence_generation,reconciliation_route_deployment_id,reconciliation_worker_assignment_id,reconciliation_worker_instance_id,requested_target_state,result_capability_expires_at,result_capability_sha256,result_reference,row_version,state,submitted_resource_version,target_id,target_type,tenant_id,updated_at,user_id"),
+                "claim_expires_at,claim_token,claimed_by,completed_at,correlation_id,created_at,current_invocation_attempt_id,dispatch_assignment_lease_expires_at,dispatch_attempts,dispatch_execution_deadline,dispatch_fence_generation,dispatch_message_id,dispatch_policy_snapshot_sha256,dispatch_route_deployment_id,dispatch_target_binding_sha256,dispatch_worker_assignment_id,dispatch_worker_instance_id,dispatched_at,effective_policy_digest,expected_resource_version,id,idempotency_record_id,invocation_protocol_version,last_error_code,last_processing_error_code,next_processing_at,operation_type,policy_input_sha256,policy_version_watermark,processing_deferral_count,reconciliation_fence_generation,reconciliation_route_deployment_id,reconciliation_worker_assignment_id,reconciliation_worker_instance_id,requested_target_state,result_capability_expires_at,result_capability_sha256,result_reference,row_version,state,submitted_resource_version,target_id,target_type,tenant_id,updated_at,user_id"),
             Columns("control.user_operations", "UPDATE",
                 "claim_expires_at,claim_token,claimed_by,completed_at,dispatch_assignment_lease_expires_at,dispatch_attempts,dispatch_execution_deadline,dispatch_fence_generation,dispatch_message_id,dispatch_policy_snapshot_sha256,dispatch_route_deployment_id,dispatch_target_binding_sha256,dispatch_worker_assignment_id,dispatch_worker_instance_id,dispatched_at,last_error_code,reconciliation_fence_generation,reconciliation_route_deployment_id,reconciliation_worker_assignment_id,reconciliation_worker_instance_id,result_capability_expires_at,result_capability_sha256,result_reference,row_version,state,updated_at"),
             Columns("identity.tenants", "SELECT", "id"),
@@ -447,8 +462,62 @@ public static class Yo4xPostgresRoleContracts
 /// </summary>
 public static class PostgresCatalogSemanticFingerprint
 {
+    // Re-pinned 2026-08-25 after 007_broker_server_catalogue.sql replaced the body
+    // of operations.enforce_pending_demo_broker_account_creation, tightening it so a
+    // broker profile minted from the imported MetaTrader 5 server directory also
+    // needs that tenant's own approval row, and after least_privilege_roles.sql was
+    // extended to restore the Control API's read-only access to the new
+    // `brokerdirectory` schema following its subtractive sweep, and again once that
+    // guard turned out to need its own read grant: it is SECURITY DEFINER and owned
+    // by yo4x_migrator, which has no implicit access to a schema it does not own.
+    // The pin is a whole-catalog attestation, so every additive migration or grant
+    // sweep change legitimately moves it; it must only ever be re-derived from a
+    // database provisioned solely by the embedded migrations plus the role script,
+    // which `YO4X.DevelopmentBootstrap catalog-fingerprint` prints.
+    //
+    // Re-pinned 2026-08-26 after 008_backtest_queue_worker_access.sql gave
+    // yo4x_worker the queue access a background backtest runner needs — usage on
+    // the simulation schema, select and update on simulation.backtests, select on
+    // simulation.backtest_inputs — and least_privilege_roles.sql was extended to
+    // restore exactly those three grants after its subtractive sweep. simulation is
+    // outside the eight guarded schemas, so the move is carried entirely by the
+    // manifest's `external-schema-runtime-acl` and `external-relation-runtime-acl`
+    // entries. The partial claim index the same migration adds does not move the
+    // pin: index entries are collected only for the guarded schemas. Revoking
+    // exactly those three grants in a rolled-back transaction reproduces the
+    // previous pin 42ded7f2e3d96d401a35926fddd63f2e3673a14bfb46ef8797976db5240f8417
+    // byte for byte, so nothing else moved with it.
+    //
+    // Re-pinned 2026-08-26 after 009_backtest_equity_curve.sql began keeping the
+    // equity curve a backtest run measures instead of discarding it: three
+    // nullable columns and one self-description constraint on
+    // simulation.backtests, the new simulation.backtest_equity_points table with
+    // its two indexes, and runtime grants on that table — full CRUD for
+    // yo4x_control_api, select/insert/delete for yo4x_worker — restored in
+    // least_privilege_roles.sql after its subtractive sweep. simulation is
+    // outside the eight guarded schemas, so the move is carried by the manifest
+    // `external-relation-runtime-acl` entries; the added columns, constraint and
+    // indexes are not collected, because column, constraint and index entries are
+    // gathered only for the guarded schemas. Dropping exactly those objects and
+    // grants in a rolled-back transaction reproduces the previous pin
+    // 4a3d0d0e1a018e25e572d1f93f7792bbd277e46010dc60f3fc15273c07d081ae byte for
+    // byte, so nothing else moved with it.
+    //
+    // Re-pinned 2026-08-26 after 010_bot_settings_and_broker_symbols.sql gave a bot
+    // the settings it had nowhere to keep: three nullable columns on bots.bots, the
+    // new bots.bot_inputs table holding the EA input values an operator overrode,
+    // the new bots.broker_symbols table holding the instrument list a broker
+    // reports, their indexes, and full CRUD on both tables for yo4x_control_api,
+    // restored in least_privilege_roles.sql after its subtractive sweep. `bots` is
+    // outside the eight guarded schemas, so the move is carried entirely by the
+    // manifest's `external-relation-runtime-acl` entries; the added columns,
+    // constraints and indexes are not collected, because those entries are gathered
+    // only for the guarded schemas. Dropping exactly those two tables and the three
+    // columns in a rolled-back transaction reproduces the previous pin
+    // 329ddae47fbe84e5594d10e35693154cd97d05f75f35a0fb90f98583e259b2d1 byte for
+    // byte, so nothing else moved with it.
     public const string ExpectedSha256 =
-        "216b6f8464d4842d8e6b3af5136e78353e674745228429a27aa18c4f5a1dbfe1";
+        "8772e5e7b8044ef68e185772d569128e771a11fb4b6f06dca7df1260b3822eba";
 
     private const int MaximumEntryCount = 50_000;
     private const int MaximumEntryByteCount = 4 * 1024 * 1024;
@@ -469,7 +538,7 @@ public static class PostgresCatalogSemanticFingerprint
             select role.oid, role.rolname
             from pg_catalog.pg_roles as role
             where role.rolname in
-                ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff',
+                ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff',
                  'yo4x_emergency', 'yo4x_secret_ingestion',
                  'yo4x_conversion_worker', 'yo4x_strategy_verifier',
                  'yo4x_runtime_evidence', 'yo4x_worker',
@@ -505,7 +574,7 @@ public static class PostgresCatalogSemanticFingerprint
                     '[]'::jsonb))::text
             from pg_catalog.pg_roles as role
             where role.rolname in
-                ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff',
+                ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff',
                  'yo4x_emergency', 'yo4x_secret_ingestion',
                  'yo4x_conversion_worker', 'yo4x_strategy_verifier',
                  'yo4x_runtime_evidence', 'yo4x_worker',
@@ -526,14 +595,14 @@ public static class PostgresCatalogSemanticFingerprint
             join pg_catalog.pg_roles as grantor
               on grantor.oid = membership.grantor
             where granted_role.rolname in
-                ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff',
+                ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff',
                  'yo4x_emergency', 'yo4x_secret_ingestion',
                  'yo4x_conversion_worker', 'yo4x_strategy_verifier',
                  'yo4x_runtime_evidence', 'yo4x_worker',
                  'yo4x_supervisor_runtime', 'yo4x_trade_authorizer',
                  'yo4x_gateway_runtime', 'yo4x_credential_runtime')
                or member_role.rolname in
-                ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff',
+                ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff',
                  'yo4x_emergency', 'yo4x_secret_ingestion',
                  'yo4x_conversion_worker', 'yo4x_strategy_verifier',
                  'yo4x_runtime_evidence', 'yo4x_worker',
@@ -606,7 +675,7 @@ public static class PostgresCatalogSemanticFingerprint
                     or database.datname = current_database())
               and (database_setting.setrole = 0
                    or role.rolname in
-                    ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff',
+                    ('yo4x_migrator', 'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff',
                      'yo4x_emergency', 'yo4x_secret_ingestion',
                      'yo4x_conversion_worker', 'yo4x_strategy_verifier',
                      'yo4x_runtime_evidence', 'yo4x_worker',
@@ -1578,7 +1647,7 @@ public static class PostgresRoleCapabilityFingerprint
                     ),
                     array[]::text[]) as configuration
             from pg_catalog.pg_roles as role
-            where role.rolname = current_user
+            where role.rolname = @inspected_role
         ),
         migrator_identity as
         (
@@ -1737,8 +1806,22 @@ public static class PostgresRoleCapabilityFingerprint
               and privilege.privilege_type = 'EXECUTE'
               and privilege.grantee in (0, (select oid from role_identity))
         )
-        select session_user = current_user
-           and current_user = @expected_role
+        select
+           (
+               (@require_current_session
+                and session_user = current_user
+                and current_user = @expected_role)
+               or
+               (not @require_current_session
+                and session_user = current_user
+                and exists
+                (
+                    select 1
+                    from pg_catalog.pg_roles as caller
+                    where caller.rolname = current_user
+                      and caller.rolsuper
+                ))
+           )
            and (select rolcanlogin from role_identity)
            and not (select rolinherit from role_identity)
            and not (select rolsuper from role_identity)
@@ -1767,14 +1850,21 @@ public static class PostgresRoleCapabilityFingerprint
                   and setting.setdatabase = database_identity.oid
                   and coalesce(pg_catalog.cardinality(setting.setconfig), 0) > 0
            )
-           and current_setting('session_replication_role') = 'origin'
-           and current_setting('row_security') = 'on'
-           and current_setting('transaction_read_only') = 'off'
-           and current_setting('default_transaction_read_only') = 'off'
-           and current_setting('default_transaction_isolation') = 'read committed'
-           and current_setting('transaction_timeout') = '2min'
+           and (not @require_current_session
+                or current_setting('session_replication_role') = 'origin')
+           and (not @require_current_session
+                or current_setting('row_security') = 'on')
+           and (not @require_current_session
+                or current_setting('transaction_read_only') = 'off')
+           and (not @require_current_session
+                or current_setting('default_transaction_read_only') = 'off')
+           and (not @require_current_session
+                or current_setting('default_transaction_isolation') = 'read committed')
+           and (not @require_current_session
+                or current_setting('transaction_timeout') = '2min')
            and current_setting('max_prepared_transactions')::integer = 0
-           and current_setting('search_path') = '""'
+           and (not @require_current_session
+                or current_setting('search_path') = '""')
            and (select count(*) from migrator_identity) = 1
            and (select count(*) from context_authority_identity) = 1
            and (select datdba from database_identity) =
@@ -1878,7 +1968,34 @@ public static class PostgresRoleCapabilityFingerprint
         }
 
         await using var command = new NpgsqlCommand(Sql, connection, transaction);
-        Bind(command, contract);
+        Bind(command, contract, requireCurrentSession: true);
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
+    }
+
+    /// <summary>
+    /// Verifies a named login's stored posture and direct catalog privileges
+    /// from the direct offline-superuser deployment boundary. This overload is
+    /// for intentionally minimal roles that cannot read the migration ledger
+    /// and therefore cannot self-attest without receiving unrelated privileges.
+    /// </summary>
+    public static async ValueTask<bool> IsNamedRoleSatisfiedForDeploymentAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction? transaction,
+        PostgresRoleCapabilityContract contract,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(contract);
+        if (!await PostgresCatalogSemanticFingerprint.IsSatisfiedAsync(
+                connection,
+                transaction,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        await using var command = new NpgsqlCommand(Sql, connection, transaction);
+        Bind(command, contract, requireCurrentSession: false);
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
     }
 
@@ -1897,15 +2014,21 @@ public static class PostgresRoleCapabilityFingerprint
         }
 
         await using NpgsqlCommand command = transaction.CreateCommand(Sql);
-        Bind(command, contract);
+        Bind(command, contract, requireCurrentSession: true);
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
     }
 
     private static void Bind(
         NpgsqlCommand command,
-        PostgresRoleCapabilityContract contract)
+        PostgresRoleCapabilityContract contract,
+        bool requireCurrentSession)
     {
         command.Parameters.AddWithValue("expected_role", NpgsqlDbType.Text, contract.Role);
+        command.Parameters.AddWithValue("inspected_role", NpgsqlDbType.Text, contract.Role);
+        command.Parameters.AddWithValue(
+            "require_current_session",
+            NpgsqlDbType.Boolean,
+            requireCurrentSession);
         command.Parameters.AddWithValue(
             "connection_limit",
             NpgsqlDbType.Integer,

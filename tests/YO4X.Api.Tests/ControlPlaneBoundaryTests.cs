@@ -576,7 +576,8 @@ public sealed class ControlPlaneBoundaryTests
         }
 
         Assert.Contains(
-            "array['file_count', 'id', 'state', 'tenant_id', 'user_id']::text[]",
+            "array[ 'created_at', 'file_count', 'id', 'source_label', 'state', "
+                + "'tenant_id', 'total_bytes', 'user_id']::text[]",
             normalizedSql,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -740,6 +741,88 @@ public sealed class ControlPlaneBoundaryTests
         Assert.Contains("Results.Ok(projection)", endpoint, StringComparison.Ordinal);
         Assert.DoesNotContain("source_content", endpoint, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("evidence", endpoint, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BrokerAccountRegistrationIsAuthenticatedIdempotentAndCredentialFree()
+    {
+        string program = ReadRepositoryFile(
+            "src",
+            "Apps",
+            "YO4X.ControlPlane.Api",
+            "Program.cs");
+        string endpoint = Slice(
+            program,
+            "user.MapPost(\"/broker-accounts\"",
+            "user.MapGet(\"/broker-accounts/{brokerAccountId:guid}\"");
+        string contracts = ReadRepositoryFile(
+            "src",
+            "Application",
+            "YO4X.ControlPlane.Application",
+            "ControlPlaneContracts.cs");
+        string request = Slice(
+            contracts,
+            "public sealed record CreateBrokerAccount(",
+            "public sealed record DeploymentView(");
+
+        Assert.Contains("app.MapGroup(\"/v1\").RequireAuthorization(\"user\")", program, StringComparison.Ordinal);
+        Assert.Contains("CreateBrokerAccountAsync(", endpoint, StringComparison.Ordinal);
+        Assert.Contains("ToUserActor(context.User)", endpoint, StringComparison.Ordinal);
+        Assert.Contains("ToMetadata(context)", endpoint, StringComparison.Ordinal);
+        Assert.Contains("Results.Created($\"/v1/broker-accounts/{account.Id:D}\"", endpoint, StringComparison.Ordinal);
+        Assert.Contains("new MutationPreconditionFilter()", endpoint, StringComparison.Ordinal);
+        Assert.DoesNotContain("requireExpectedVersion: true", endpoint, StringComparison.Ordinal);
+
+        foreach (string field in new[]
+        {
+            "BrokerProfileId", "Server", "MaskedLogin", "BindingFingerprint", "Environment"
+        })
+        {
+            Assert.Contains(field, request, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain("Password", request, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Credential", request, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("RawLogin", request, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The link dialog now collects a broker password, so the wire body carries
+    /// one. This pins the shape of that path: the password goes to the on-device
+    /// vault and the persistence layer never sees it.
+    /// </summary>
+    [Fact]
+    public void BrokerAccountLinkSendsThePasswordOnlyToTheOnDeviceCredentialVault()
+    {
+        string program = ReadRepositoryFile(
+            "src",
+            "Apps",
+            "YO4X.ControlPlane.Api",
+            "Program.cs");
+        string endpoint = Slice(
+            program,
+            "user.MapPost(\"/broker-accounts\"",
+            "user.MapBrokerAccountDiscovery();");
+
+        // The plaintext is scoped and erased, is refused off-device, and is
+        // handed to the vault rather than to the application layer.
+        Assert.Contains("using Utf8Secret password = request.Password;", endpoint, StringComparison.Ordinal);
+        Assert.Contains("IPAddress.IsLoopback(context.Connection.RemoteIpAddress)", endpoint, StringComparison.Ordinal);
+        Assert.Contains("credentialVault.StoreAsync(", endpoint, StringComparison.Ordinal);
+        Assert.Contains("BrokerAccountLinkValidation.ToApplicationRequest(", endpoint, StringComparison.Ordinal);
+
+        // The application call must receive the mapped, password-free request.
+        string applicationCall = Slice(endpoint, "application.CreateBrokerAccountAsync(", ");");
+        Assert.DoesNotContain("password", applicationCall, StringComparison.OrdinalIgnoreCase);
+
+        // Nothing in the persistence path may name the secret at all.
+        string mutations = ReadRepositoryFile(
+            "src",
+            "Infrastructure",
+            "YO4X.ControlPlane.Postgres",
+            "PostgresBrokerAccountMutations.cs");
+        Assert.DoesNotContain("password", mutations, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Utf8Secret", mutations, StringComparison.Ordinal);
     }
 
     [Fact]

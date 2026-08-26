@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Json;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using YO4X.BuildingBlocks;
 
 namespace YO4X.Api;
@@ -123,7 +124,7 @@ public static class ApiFoundation
     }
 }
 
-internal sealed class Yo4xExceptionHandler : IExceptionHandler
+internal sealed partial class Yo4xExceptionHandler(ILogger<Yo4xExceptionHandler> logger) : IExceptionHandler
 {
     public async ValueTask<bool> TryHandleAsync(
         HttpContext httpContext,
@@ -168,8 +169,38 @@ internal sealed class Yo4xExceptionHandler : IExceptionHandler
             _ => "The service could not complete the request."
         };
 
+        // Every mapped exception above turns into a deliberate, self-describing problem code, and
+        // logging those would be noise. An unmapped one becomes a bare 500 whose body says only
+        // "the service could not complete the request" — so without this line the cause exists
+        // nowhere: not in the response, not in the log, not in any artifact. That is exactly the
+        // shape of failure that is hardest to diagnose, and it cost a real investigation to find.
+        //
+        // The exception is logged, never the request. Bodies on this API can carry a broker
+        // password, and a logger that reached into the request would defeat the boundary that
+        // keeps that password out of every store but the vault.
+        if (status == StatusCodes.Status500InternalServerError)
+        {
+            UnhandledException(
+                logger,
+                httpContext.Request.Method,
+                httpContext.Request.Path.Value ?? string.Empty,
+                CorrelationIdMiddleware.Get(httpContext),
+                exception);
+        }
+
         IResult problem = ApiProblems.Create(httpContext, status, code, title);
         await problem.ExecuteAsync(httpContext).ConfigureAwait(false);
         return true;
     }
+
+    [LoggerMessage(
+        EventId = 5000,
+        Level = LogLevel.Error,
+        Message = "Unhandled exception for {Method} {Path}; correlation {CorrelationId}.")]
+    private static partial void UnhandledException(
+        ILogger logger,
+        string method,
+        string path,
+        string correlationId,
+        Exception exception);
 }

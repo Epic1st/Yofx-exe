@@ -203,6 +203,7 @@ public sealed class PostgresSourceContractTests
 
         foreach (string mutationSource in new[]
         {
+            "PostgresBrokerAccountMutations.cs",
             "PostgresCredentialMutations.cs",
             "PostgresDeploymentMutations.cs",
             "PostgresSessionMutations.cs",
@@ -309,7 +310,7 @@ public sealed class PostgresSourceContractTests
             controlSection,
             StringComparison.Ordinal);
         Assert.Contains(
-            "grant select (id, tenant_id, user_id, file_count, state) on governance.strategy_source_corpora to yo4x_control_api",
+            "grant select (id, tenant_id, user_id, file_count, state, source_label, total_bytes, created_at) on governance.strategy_source_corpora to yo4x_control_api",
             controlSection,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -323,7 +324,7 @@ public sealed class PostgresSourceContractTests
 
         string projectionGrants = Slice(
             controlSection,
-            "grant select (id, tenant_id, user_id, file_count, state)",
+            "grant select (id, tenant_id, user_id, file_count, state, source_label, total_bytes, created_at)",
             "grant update (state, reservation_id");
         foreach (string forbiddenColumn in new[]
         {

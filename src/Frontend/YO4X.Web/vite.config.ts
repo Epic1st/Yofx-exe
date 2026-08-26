@@ -7,6 +7,18 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 4173,
     strictPort: true,
+    proxy: {
+      '/v1': {
+        target: 'https://127.0.0.1:7209',
+        changeOrigin: false,
+        secure: false,
+      },
+      '/health': {
+        target: 'https://127.0.0.1:7209',
+        changeOrigin: false,
+        secure: false,
+      },
+    },
   },
   preview: {
     host: '127.0.0.1',
@@ -25,5 +37,10 @@ export default defineConfig({
     pool: 'threads',
     fileParallelism: false,
     maxWorkers: 1,
+    environmentOptions: {
+      jsdom: {
+        url: 'http://127.0.0.1:4173/',
+      },
+    },
   },
 });

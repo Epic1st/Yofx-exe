@@ -1,0 +1,241 @@
+/*
+ * Strategies catalog page + the strategy card shared with the dashboard.
+ * Transcribed from the approved canvas (Strategies section).
+ * Tokens only — never a literal colour here.
+ */
+
+/* ---------------------------------------------------------------- card ---- */
+
+.strategy-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  appearance: none;
+}
+
+.strategy-card--placeholder {
+  cursor: default;
+}
+
+.strategy-card__thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.strategy-card__thumb-skeleton {
+  aspect-ratio: 1 / 1;
+  width: 100%;
+  border-radius: 0;
+}
+
+.strategy-card__body {
+  display: block;
+  padding: 11px 12px 0;
+}
+
+.strategy-card__name {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strategy-card__meta {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strategy-card__rating {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding-bottom: 10px;
+}
+
+.strategy-card__rating-value {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.strategy-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: auto;
+  border-top: 1px solid var(--color-border-subtle);
+  padding: 9px 12px;
+}
+
+.strategy-card__price {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.strategy-card__price-note {
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+}
+
+.strategy-card__line {
+  height: 10px;
+}
+
+.strategy-card__line--name {
+  width: 76%;
+}
+
+.strategy-card__line--meta {
+  width: 92%;
+  margin-top: 6px;
+  height: 8px;
+}
+
+.strategy-card__line--rating {
+  width: 58%;
+  margin-top: 8px;
+  margin-bottom: 10px;
+  height: 8px;
+}
+
+.strategy-card__line--price {
+  width: 46%;
+  height: 9px;
+  margin: 0 auto;
+}
+
+/* ------------------------------------------------------------- catalog ---- */
+
+.catalog-head {
+  margin-bottom: 18px;
+}
+
+.catalog-sort {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.catalog-sort__select {
+  height: 34px;
+  padding: 0 32px 0 12px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  appearance: none;
+  transition: background var(--motion-fast);
+}
+
+.catalog-sort__select:hover {
+  background: var(--color-surface-sunken);
+}
+
+.catalog-sort__chevron {
+  position: absolute;
+  right: 12px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.catalog-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.catalog-filters__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--color-border-strong);
+  margin: 0 6px;
+  flex: none;
+}
+
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+}
+
+.catalog-empty {
+  margin-top: 4px;
+}
+
+.catalog-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 26px;
+}
+
+.catalog-page-button {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-small);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.catalog-page-button:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+}
+
+.catalog-page-button:disabled {
+  cursor: default;
+  color: var(--color-text-faint);
+}
+
+.catalog-page-button--current {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-surface);
+}
+
+.catalog-page-button--current:hover:not(:disabled) {
+  background: var(--color-accent);
+}
+
+.catalog-page-gap {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-faint);
+  padding: 0 2px;
+}

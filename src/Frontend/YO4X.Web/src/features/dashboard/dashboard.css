@@ -1,0 +1,233 @@
+/*
+ * Dashboard page layout, transcribed from the approved canvas.
+ * Shared appearance (.panel, .table, .card, .btn, .chip, .dot, .stat-tile,
+ * .banner, .empty-state, .skeleton) lives in global.css — this file only holds
+ * the dashboard's own composition. Tokens only; never a literal colour.
+ */
+
+.dashboard-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* --------------------------------------------------------------- stats ---- */
+
+.dashboard-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.dashboard-stat__delta {
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.dashboard-stat__delta--up {
+  color: var(--color-positive-text);
+}
+
+.dashboard-stat__delta--down {
+  color: var(--color-negative);
+}
+
+.dashboard-stat__delta--flat {
+  color: var(--color-text-muted);
+}
+
+.dashboard-stats-empty {
+  margin-bottom: 14px;
+}
+
+.dashboard-stat-skeleton {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  padding: 14px 16px;
+}
+
+.dashboard-stat-skeleton__label {
+  height: 9px;
+  width: 54%;
+}
+
+.dashboard-stat-skeleton__value {
+  height: 20px;
+  width: 68%;
+  margin-top: 8px;
+}
+
+.dashboard-stat-skeleton__delta {
+  height: 9px;
+  width: 40%;
+  margin-top: 8px;
+}
+
+/* -------------------------------------------------------------- banner ---- */
+
+.dashboard-banner {
+  margin-bottom: 28px;
+}
+
+.dashboard-banner__icon {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: var(--radius-chip);
+  background: var(--color-accent-tint);
+  color: var(--color-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dashboard-banner__body {
+  flex: 1;
+}
+
+.dashboard-banner__title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dashboard-banner__text {
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+  margin-top: 3px;
+}
+
+.dashboard-banner__cta {
+  flex: none;
+  padding: 0 16px;
+}
+
+.dashboard-banner__dismiss {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  border-radius: var(--radius-small);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.dashboard-banner__dismiss:hover {
+  background: var(--color-accent-tint);
+  color: var(--color-accent);
+}
+
+/* --------------------------------------------------------- running now ---- */
+
+.dashboard-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.dashboard-running {
+  margin-bottom: 30px;
+}
+
+.dashboard-row__name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+  min-width: 0;
+}
+
+.dashboard-row__name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-row__muted {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.dashboard-row__pl {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.dashboard-row__pl--up {
+  color: var(--color-positive-text);
+}
+
+.dashboard-row__pl--down {
+  color: var(--color-negative);
+}
+
+.dashboard-row__pl--flat {
+  color: var(--color-text-tertiary);
+}
+
+.dashboard-row__host {
+  font-size: 12.5px;
+  color: var(--color-text-tertiary);
+}
+
+.dashboard-row__action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.dashboard-row-skeleton {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.dashboard-row-skeleton:last-child {
+  border-bottom: none;
+}
+
+.dashboard-row-skeleton__cell {
+  height: 10px;
+  width: 70%;
+}
+
+/* ---------------------------------------------------------- strategies ---- */
+
+.dashboard-strategies-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.dashboard-strategies-head__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: 6px;
+}
+
+.dashboard-strategies-head__browse {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-accent);
+  font-weight: 500;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.dashboard-strategies-head__browse:hover {
+  color: var(--color-accent-hover);
+}
+
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+}

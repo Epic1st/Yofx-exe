@@ -1,3 +1,13 @@
+/**
+ * One field-level rejection from a `422` response. `path` names the offending
+ * request member, so a form can show the message beside the field that caused it.
+ */
+export interface ApiValidationError {
+  readonly path: string;
+  readonly code: string;
+  readonly message: string;
+}
+
 export interface ProblemDetails {
   readonly type?: string;
   readonly title?: string;
@@ -6,6 +16,8 @@ export interface ProblemDetails {
   readonly instance?: string;
   readonly code?: string;
   readonly correlationId?: string;
+  /** Present only when the service returned a per-field rejection list. */
+  readonly errors?: readonly ApiValidationError[];
 }
 
 export class ApiProblemError extends Error {
@@ -22,6 +34,53 @@ export class ApiProblemError extends Error {
 function optionalString(source: Record<string, unknown>, field: string): string | undefined {
   const value = source[field];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function boundedText(value: unknown, maximumLength: number): string | null {
+  return typeof value === 'string' && value.length > 0 && value.length <= maximumLength
+    ? value
+    : null;
+}
+
+/**
+ * Reads the `errors` extension of a problem document. Both shapes the platform can
+ * emit are accepted: a list of `{ path, code, message }` records, and the dictionary
+ * form `{ field: ["message", …] }`. Malformed entries are dropped rather than shown.
+ */
+function optionalValidationErrors(
+  source: Record<string, unknown>,
+): readonly ApiValidationError[] | undefined {
+  const raw = source.errors;
+  const errors: ApiValidationError[] = [];
+
+  if (Array.isArray(raw)) {
+    for (const entry of raw.slice(0, 200)) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        continue;
+      }
+      const record = entry as Record<string, unknown>;
+      const path = boundedText(record.path, 400);
+      const message = boundedText(record.message, 2_000);
+      if (path === null || message === null) {
+        continue;
+      }
+      errors.push({ path, code: boundedText(record.code, 200) ?? 'INVALID', message });
+    }
+  } else if (typeof raw === 'object' && raw !== null) {
+    for (const [path, messages] of Object.entries(raw as Record<string, unknown>).slice(0, 200)) {
+      if (path.length === 0 || path.length > 400 || !Array.isArray(messages)) {
+        continue;
+      }
+      for (const entry of messages.slice(0, 20)) {
+        const message = boundedText(entry, 2_000);
+        if (message !== null) {
+          errors.push({ path, code: 'INVALID', message });
+        }
+      }
+    }
+  }
+
+  return errors.length === 0 ? undefined : errors;
 }
 
 export async function toApiProblem(response: Response): Promise<ApiProblemError> {
@@ -45,6 +104,7 @@ export async function toApiProblem(response: Response): Promise<ApiProblemError>
   const instance = optionalString(payload, 'instance');
   const code = optionalString(payload, 'code');
   const correlationId = optionalString(payload, 'correlationId');
+  const errors = optionalValidationErrors(payload);
 
   return new ApiProblemError({
     status: response.status,
@@ -54,6 +114,7 @@ export async function toApiProblem(response: Response): Promise<ApiProblemError>
     ...(instance !== undefined ? { instance } : {}),
     ...(code !== undefined ? { code } : {}),
     ...(correlationId !== undefined ? { correlationId } : {}),
+    ...(errors !== undefined ? { errors } : {}),
   });
 }
 

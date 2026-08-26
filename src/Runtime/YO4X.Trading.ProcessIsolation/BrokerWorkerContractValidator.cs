@@ -23,7 +23,9 @@ internal static class BrokerWorkerContractValidator
         switch (request.Operation)
         {
             case BrokerWorkerProtocolContract.SendOperation:
-                if (request.Send is null || request.Reconcile is not null)
+                if (request.Send is null
+                    || request.Reconcile is not null
+                    || request.ConnectProbe is not null)
                 {
                     throw InvalidContract();
                 }
@@ -31,12 +33,24 @@ internal static class BrokerWorkerContractValidator
                 ValidateSendRequest(request.Send);
                 break;
             case BrokerWorkerProtocolContract.ReconcileOperation:
-                if (request.Reconcile is null || request.Send is not null)
+                if (request.Reconcile is null
+                    || request.Send is not null
+                    || request.ConnectProbe is not null)
                 {
                     throw InvalidContract();
                 }
 
                 ValidateReconcileRequest(request.Reconcile);
+                break;
+            case BrokerWorkerProtocolContract.ConnectProbeOperation:
+                if (request.ConnectProbe is null
+                    || request.Send is not null
+                    || request.Reconcile is not null)
+                {
+                    throw InvalidContract();
+                }
+
+                ValidateConnectProbeRequest(request.ConnectProbe, nowUtc, request.DeadlineUtc);
                 break;
             default:
                 throw InvalidContract();
@@ -60,7 +74,9 @@ internal static class BrokerWorkerContractValidator
         switch (response.Operation)
         {
             case BrokerWorkerProtocolContract.SendOperation:
-                if (response.SendResult is null || response.ReconciliationSnapshot is not null)
+                if (response.SendResult is null
+                    || response.ReconciliationSnapshot is not null
+                    || response.ConnectProbeObservation is not null)
                 {
                     throw InvalidContract();
                 }
@@ -79,6 +95,7 @@ internal static class BrokerWorkerContractValidator
                 break;
             case BrokerWorkerProtocolContract.ReconcileOperation:
                 if (response.SendResult is not null
+                    || response.ConnectProbeObservation is not null
                     || response.IsSuccess != (response.ReconciliationSnapshot is not null))
                 {
                     throw InvalidContract();
@@ -89,6 +106,12 @@ internal static class BrokerWorkerContractValidator
                     ValidateSnapshot(response.ReconciliationSnapshot, request.Reconcile!);
                 }
 
+                break;
+            case BrokerWorkerProtocolContract.ConnectProbeOperation:
+                ValidateConnectProbeResponse(
+                    response,
+                    request.ConnectProbe!,
+                    request.DeadlineUtc);
                 break;
             default:
                 throw InvalidContract();
@@ -141,6 +164,87 @@ internal static class BrokerWorkerContractValidator
             || request.CommandIds.Count is < 1 or > MaximumCommandIds
             || request.CommandIds.Any(id => id == Guid.Empty)
             || request.CommandIds.Distinct().Count() != request.CommandIds.Count)
+        {
+            throw InvalidContract();
+        }
+    }
+
+    private static void ValidateConnectProbeRequest(
+        BrokerWorkerConnectProbeRequest request,
+        DateTimeOffset nowUtc,
+        DateTimeOffset deadlineUtc)
+    {
+        if (request.BrokerAccountId == Guid.Empty
+            || request.GatewayArtifactId == Guid.Empty
+            || !IsSha256(request.GatewayArtifactSha256)
+            || !IsSha256(request.CredentialKey)
+            || !IsSha256(request.CredentialVaultIdentitySha256)
+            || request.Server is null
+            || !IsText(request.Server.BrokerCompany, MaximumTextLength)
+            || !IsText(request.Server.ServerName, MaximumTextLength)
+            || request.ExpectedEnvironment != BrokerEnvironment.Demo
+            || request.ProbeNotBeforeUtc.Offset != TimeSpan.Zero
+            || request.ProbeNotBeforeUtc > nowUtc
+            || request.ProbeNotBeforeUtc < nowUtc.AddMinutes(-2)
+            || request.ProbeNotBeforeUtc >= deadlineUtc)
+        {
+            throw InvalidContract();
+        }
+    }
+
+    private static void ValidateConnectProbeResponse(
+        BrokerWorkerResponse response,
+        BrokerWorkerConnectProbeRequest request,
+        DateTimeOffset deadlineUtc)
+    {
+        if (response.SendResult is not null || response.ReconciliationSnapshot is not null)
+        {
+            throw InvalidContract();
+        }
+
+        if (!response.IsSuccess)
+        {
+            if (response.ConnectProbeObservation is not null
+                || response.Code is not (
+                    BrokerWorkerProtocolContract.ConnectProbeUnavailableCode or
+                    BrokerWorkerProtocolContract.ConnectProbeRejectedCode or
+                    BrokerWorkerProtocolContract.ConnectProbeFailedCode))
+            {
+                throw InvalidContract();
+            }
+
+            return;
+        }
+
+        BrokerConnectionProbeObservation observation = response.ConnectProbeObservation
+            ?? throw InvalidContract();
+        if (response.Code != BrokerWorkerProtocolContract.ConnectProbeSucceededCode
+            || observation.ContractVersion
+                != BrokerWorkerProtocolContract.ConnectProbeObservationVersion
+            || observation.BrokerAccountId != request.BrokerAccountId
+            || observation.GatewayArtifactId != request.GatewayArtifactId
+            || !string.Equals(
+                observation.GatewayArtifactSha256,
+                request.GatewayArtifactSha256,
+                StringComparison.Ordinal)
+            || !IsMaskedLogin(observation.MaskedLogin)
+            || !string.Equals(
+                observation.BrokerCompany,
+                request.Server.BrokerCompany,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                observation.ServerName,
+                request.Server.ServerName,
+                StringComparison.Ordinal)
+            || !Enum.IsDefined(observation.AccountMode)
+            || observation.Environment != BrokerEnvironment.Demo
+            || !Enum.IsDefined(observation.TradingAccess)
+            || !IsCurrency(observation.Currency)
+            || !observation.DisconnectConfirmed
+            || observation.ObservedAtUtc == default
+            || observation.ObservedAtUtc.Offset != TimeSpan.Zero
+            || observation.ObservedAtUtc < request.ProbeNotBeforeUtc
+            || observation.ObservedAtUtc > deadlineUtc)
         {
             throw InvalidContract();
         }
@@ -281,6 +385,27 @@ internal static class BrokerWorkerContractValidator
 
     private static bool IsOptionalText(string? value, int maximumLength) =>
         value is null || IsText(value, maximumLength);
+
+    private static bool IsCurrency(string? value) =>
+        value is { Length: >= 3 and <= 16 }
+        && value.All(character => character is >= 'A' and <= 'Z');
+
+    private static bool IsMaskedLogin(string? value)
+    {
+        if (value is not { Length: >= 2 and <= 64 })
+        {
+            return false;
+        }
+
+        int firstDigit = value.IndexOfAnyInRange('0', '9');
+        if (firstDigit < 1 || value.Length - firstDigit is < 1 or > 4)
+        {
+            return false;
+        }
+
+        return value.AsSpan(0, firstDigit).IndexOfAnyExcept('*') < 0
+            && value.AsSpan(firstDigit).IndexOfAnyExceptInRange('0', '9') < 0;
+    }
 
     private static bool IsText(string? value, int maximumLength) =>
         !string.IsNullOrWhiteSpace(value)

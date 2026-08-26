@@ -20,6 +20,7 @@
 !.env.example
 secrets/
 artifacts/verification/credentials/
+artifacts/desktop/
 Testing/*Credentials*.txt
 # The original aggregate archive duplicated the extracted corpus and retained
 # credential-bearing pre-redaction source. Keep it out of the current tree.
@@ -39,3 +40,15 @@ Testing/Mq5.zip
 *.dmp
 .tools/postgresql-local/data-*/
 .tools/postgresql-local/runs/
+
+# Local development runtime state. This directory holds the PostgreSQL cluster, the local
+# identity database with its password hashes, the loopback certificates, and
+# secrets.clixml — which carries every database role password and the certificate
+# password in recoverable form. None of it is reproducible from this repository, and
+# none of it may ever be committed. Only *.pfx and *.key were previously excluded, which
+# left the secrets file itself tracked.
+.local/
+
+# Response bodies a curl config wrote to the repository root because a Windows path was
+# read as an escape sequence. Transient output, never source.
+UsersDev23Desktopyo4x.localdevelopmentprojection-body-*

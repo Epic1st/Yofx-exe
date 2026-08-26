@@ -37,17 +37,22 @@ internal sealed class BrokerProcessClient
     private readonly TimeProvider timeProvider;
     private readonly IBrokerProcessObserver? observer;
     private readonly IBrokerProcessLaunchCheckpoint? launchCheckpoint;
+    private readonly IReadOnlyDictionary<string, string> workerEnvironment;
 
     internal BrokerProcessClient(
         IsolatedBrokerProcessOptions options,
         TimeProvider? timeProvider = null,
         IBrokerProcessObserver? observer = null,
-        IBrokerProcessLaunchCheckpoint? launchCheckpoint = null)
+        IBrokerProcessLaunchCheckpoint? launchCheckpoint = null,
+        IReadOnlyDictionary<string, string>? workerEnvironment = null)
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.timeProvider = timeProvider ?? TimeProvider.System;
         this.observer = observer;
         this.launchCheckpoint = launchCheckpoint;
+        this.workerEnvironment = workerEnvironment is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(workerEnvironment, StringComparer.Ordinal);
     }
 
     internal async Task<BrokerWorkerResponse> ExecuteAsync(
@@ -320,6 +325,11 @@ internal sealed class BrokerProcessClient
 
         startInfo.Environment["DOTNET_EnableDiagnostics"] = "0";
         startInfo.Environment["COMPlus_EnableDiagnostics"] = "0";
+        foreach ((string key, string value) in workerEnvironment)
+        {
+            startInfo.Environment[key] = value;
+        }
+
         return new Process { StartInfo = startInfo };
     }
 

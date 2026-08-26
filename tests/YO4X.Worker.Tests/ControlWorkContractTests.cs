@@ -508,6 +508,14 @@ public sealed class ControlWorkContractTests
             "control.reconcile_user_operation_invocation_attempt(",
             source,
             StringComparison.Ordinal);
+        Assert.Contains("conclusive_projected_result", source, StringComparison.Ordinal);
+        Assert.Contains("conclusive_diverged_result", source, StringComparison.Ordinal);
+        Assert.Contains("projection_blocked", source, StringComparison.Ordinal);
+        Assert.Contains("target_observation::text", source, StringComparison.Ordinal);
+        Assert.Contains("operation.invocation_protocol_version", source, StringComparison.Ordinal);
+        Assert.Contains("operation.current_invocation_attempt_id", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("conclusive_gateway_receipt", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("invocation_result_projection_required", source, StringComparison.Ordinal);
         Assert.Contains(
             "control.issue_user_operation_invocation_reconciliation_challenge_v3(",
             source,

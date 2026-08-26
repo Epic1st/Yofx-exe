@@ -3,7 +3,7 @@
 -- model exercised by the integration harness; provider-specific equivalents
 -- require their own qualification before use.
 -- This script deliberately does not create LOGIN roles or passwords. The platform
--- must provision the fifteen named roles before running it and keep runtime logins out
+-- must provision the sixteen named roles before running it and keep runtime logins out
 -- of the yo4x_migrator role.
 
 begin;
@@ -32,6 +32,7 @@ begin
         'yo4x_migrator',
         'yo4x_context_authority',
         'yo4x_context_issuer',
+        'yo4x_local_identity',
         'yo4x_control_api',
         'yo4x_admin_bff',
         'yo4x_emergency',
@@ -110,7 +111,7 @@ begin
         select 1
         from pg_catalog.pg_roles
         where rolname in
-            ('yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency', 'yo4x_secret_ingestion', 'yo4x_conversion_worker', 'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker', 'yo4x_supervisor_runtime', 'yo4x_trade_authorizer', 'yo4x_gateway_runtime', 'yo4x_credential_runtime')
+            ('yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency', 'yo4x_secret_ingestion', 'yo4x_conversion_worker', 'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker', 'yo4x_supervisor_runtime', 'yo4x_trade_authorizer', 'yo4x_gateway_runtime', 'yo4x_credential_runtime')
           and (not rolcanlogin or rolinherit or rolsuper or rolbypassrls or rolcreatedb
                or rolcreaterole or rolreplication
                or (rolvaliduntil is not null
@@ -125,7 +126,7 @@ begin
         from pg_catalog.pg_auth_members as membership
         join pg_catalog.pg_roles as member_role on member_role.oid = membership.member
         where member_role.rolname in
-            ('yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency', 'yo4x_secret_ingestion', 'yo4x_conversion_worker', 'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker', 'yo4x_supervisor_runtime', 'yo4x_trade_authorizer', 'yo4x_gateway_runtime', 'yo4x_credential_runtime')
+            ('yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency', 'yo4x_secret_ingestion', 'yo4x_conversion_worker', 'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker', 'yo4x_supervisor_runtime', 'yo4x_trade_authorizer', 'yo4x_gateway_runtime', 'yo4x_credential_runtime')
     ) then
         raise exception 'YO4X runtime roles must not inherit or SET ROLE into any other database role';
     end if;
@@ -136,7 +137,7 @@ begin
         from pg_catalog.pg_auth_members as membership
         join pg_catalog.pg_roles as granted_role on granted_role.oid = membership.roleid
         where granted_role.rolname in
-            ('yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency', 'yo4x_secret_ingestion', 'yo4x_conversion_worker', 'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker', 'yo4x_supervisor_runtime', 'yo4x_trade_authorizer', 'yo4x_gateway_runtime', 'yo4x_credential_runtime')
+            ('yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency', 'yo4x_secret_ingestion', 'yo4x_conversion_worker', 'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker', 'yo4x_supervisor_runtime', 'yo4x_trade_authorizer', 'yo4x_gateway_runtime', 'yo4x_credential_runtime')
     ) then
         raise exception 'YO4X runtime roles must not be granted to wrapper or member roles';
     end if;
@@ -156,6 +157,7 @@ begin
     alter role yo4x_context_authority connection limit -1;
     foreach runtime_role in array array[
         'yo4x_context_issuer',
+        'yo4x_local_identity',
         'yo4x_control_api',
         'yo4x_admin_bff',
         'yo4x_emergency',
@@ -202,11 +204,11 @@ begin
         where database.datname <> current_database()
     loop
         execute format(
-            'revoke connect, create, temporary on database %I from public, yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime',
+            'revoke connect, create, temporary on database %I from public, yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime',
             database_record.datname);
         if database_record.owner_name in
         (
-            'yo4x_context_authority', 'yo4x_context_issuer',
+            'yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_local_identity',
             'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency',
             'yo4x_secret_ingestion', 'yo4x_conversion_worker',
             'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker',
@@ -235,10 +237,10 @@ begin
         'grant connect, create on database %I to yo4x_migrator',
         current_database());
     execute format(
-        'revoke all privileges on database %I from yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime',
+        'revoke all privileges on database %I from yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime',
         current_database());
     execute format(
-        'grant connect on database %I to yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime',
+        'grant connect on database %I to yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime',
         current_database());
 end
 $$;
@@ -252,7 +254,7 @@ declare
     runtime_role_oids oid[];
     target record;
     runtime_roles constant text :=
-        'yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, '
+        'yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, '
         || 'yo4x_secret_ingestion, yo4x_conversion_worker, '
         || 'yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, '
         || 'yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime';
@@ -261,7 +263,7 @@ begin
     into strict runtime_role_oids
     from pg_catalog.pg_roles as role
     where role.rolname in
-        ('yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency',
+        ('yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_local_identity', 'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency',
          'yo4x_secret_ingestion', 'yo4x_conversion_worker',
          'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker',
          'yo4x_supervisor_runtime', 'yo4x_trade_authorizer',
@@ -643,13 +645,13 @@ $$;
 
 revoke all privileges on table pg_catalog.pg_authid from public;
 revoke all privileges on schema pg_toast from public,
-    yo4x_context_authority, yo4x_context_issuer, yo4x_control_api,
+    yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api,
     yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion,
     yo4x_conversion_worker, yo4x_strategy_verifier,
     yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime,
     yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime;
 revoke all privileges on all tables in schema pg_toast from public,
-    yo4x_context_authority, yo4x_context_issuer, yo4x_control_api,
+    yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api,
     yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion,
     yo4x_conversion_worker, yo4x_strategy_verifier,
     yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime,
@@ -670,7 +672,7 @@ begin
     loop
         execute format(
             'revoke all privileges on table %s from public, '
-            || 'yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, '
+            || 'yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, '
             || 'yo4x_admin_bff, yo4x_emergency, yo4x_secret_ingestion, '
             || 'yo4x_conversion_worker, yo4x_strategy_verifier, '
             || 'yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime, '
@@ -690,7 +692,7 @@ do $$
 declare
     target record;
     runtime_roles constant text :=
-        'yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, '
+        'yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, '
         || 'yo4x_secret_ingestion, yo4x_conversion_worker, '
         || 'yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, '
         || 'yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime';
@@ -747,7 +749,7 @@ begin
     into strict runtime_role_oids
     from pg_catalog.pg_roles as role
     where role.rolname in
-        ('yo4x_context_authority', 'yo4x_context_issuer',
+        ('yo4x_context_authority', 'yo4x_context_issuer', 'yo4x_local_identity',
          'yo4x_control_api', 'yo4x_admin_bff', 'yo4x_emergency',
          'yo4x_secret_ingestion', 'yo4x_conversion_worker',
          'yo4x_strategy_verifier', 'yo4x_runtime_evidence', 'yo4x_worker',
@@ -965,13 +967,13 @@ grant all privileges on all functions in schema identity, "authorization", contr
 -- the current explicit grant list no longer mentions it.
 revoke all privileges on schema identity, "authorization", control, operations,
     governance, audit, messaging, readmodel
-    from yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency,
+    from yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency,
     yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier,
     yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime,
     yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime;
 revoke all privileges on all tables in schema identity, "authorization", control,
     operations, governance, audit, messaging, readmodel
-    from yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency,
+    from yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency,
     yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier,
     yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime,
     yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime;
@@ -1001,7 +1003,7 @@ begin
         if relation.relkind = 'm' then
             execute format(
                 'revoke select (%s) on %I.%I from '
-                || 'yo4x_migrator, yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, '
+                || 'yo4x_migrator, yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, '
                 || 'yo4x_secret_ingestion, yo4x_conversion_worker, '
                 || 'yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, '
                 || 'yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime',
@@ -1010,7 +1012,7 @@ begin
             execute format(
                 'revoke select (%1$s), insert (%1$s), update (%1$s), references (%1$s) '
                 || 'on %2$I.%3$I from '
-                || 'yo4x_migrator, yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, '
+                || 'yo4x_migrator, yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency, '
                 || 'yo4x_secret_ingestion, yo4x_conversion_worker, '
                 || 'yo4x_strategy_verifier, yo4x_runtime_evidence, yo4x_worker, '
                 || 'yo4x_supervisor_runtime, yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime',
@@ -1022,13 +1024,13 @@ $$;
 
 revoke all privileges on all sequences in schema identity, "authorization", control,
     operations, governance, audit, messaging, readmodel
-    from yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency,
+    from yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency,
     yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier,
     yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime,
     yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime;
 revoke all privileges on all functions in schema identity, "authorization", control,
     operations, governance, audit, messaging, readmodel
-    from yo4x_context_authority, yo4x_context_issuer, yo4x_control_api, yo4x_admin_bff, yo4x_emergency,
+    from yo4x_context_authority, yo4x_context_issuer, yo4x_local_identity, yo4x_control_api, yo4x_admin_bff, yo4x_emergency,
     yo4x_secret_ingestion, yo4x_conversion_worker, yo4x_strategy_verifier,
     yo4x_runtime_evidence, yo4x_worker, yo4x_supervisor_runtime,
     yo4x_trade_authorizer, yo4x_gateway_runtime, yo4x_credential_runtime;
@@ -1353,6 +1355,9 @@ grant insert (id, tenant_id, user_id, idempotency_record_id, decision_type,
     rule_results, decision, effective_policy_digest, policy_version_watermark,
     input_sha256, evidence_sha256, evaluated_at)
     on control.user_policy_evaluations to yo4x_control_api;
+grant insert (id, tenant_id, user_id, broker_id, broker_profile_id, server,
+    masked_login, binding_fingerprint, environment)
+    on operations.broker_accounts to yo4x_control_api;
 grant update (credential_state, state, row_version, updated_at)
     on operations.broker_accounts to yo4x_control_api;
 grant select (id, tenant_id, broker_account_id, operation, allowed_origin, state,
@@ -1382,7 +1387,13 @@ revoke all privileges on governance.strategy_source_corpora,
     governance.strategy_source_files,
     governance.strategy_conversion_classifications
     from yo4x_control_api;
-grant select (id, tenant_id, user_id, file_count, state)
+-- The corpus listing the Control API serves needs the user's own import label,
+-- byte total, and import instant to be identifiable in the UI. These are corpus
+-- metadata, not source bytes or conversion evidence, so they stay inside the
+-- documented boundary above; the evidence digests, manifest, and disposition
+-- counts remain ungranted.
+grant select (id, tenant_id, user_id, file_count, state, source_label,
+    total_bytes, created_at)
     on governance.strategy_source_corpora to yo4x_control_api;
 grant select (tenant_id, corpus_id, user_id)
     on governance.strategy_conversion_classifications to yo4x_control_api;
@@ -1709,6 +1720,7 @@ grant select (id, tenant_id, user_id, operation_type, target_type, target_id,
     submitted_resource_version, requested_target_state,
     last_error_code, result_reference, effective_policy_digest,
     policy_version_watermark, policy_input_sha256, dispatch_message_id,
+    invocation_protocol_version, current_invocation_attempt_id,
     dispatch_route_deployment_id, dispatch_fence_generation, dispatch_worker_assignment_id,
     dispatch_worker_instance_id, dispatch_target_binding_sha256,
     dispatch_policy_snapshot_sha256, result_capability_sha256,
@@ -1855,5 +1867,133 @@ alter role yo4x_credential_runtime set idle_in_transaction_session_timeout = '10
 alter role yo4x_context_issuer set statement_timeout = '5s';
 alter role yo4x_context_issuer set lock_timeout = '2s';
 alter role yo4x_context_issuer set idle_in_transaction_session_timeout = '10s';
+
+-- The development identity provider has one execute-only provisioning seam.
+-- It receives no direct table, sequence, control-context, or migration rights.
+do $$
+begin
+    execute format(
+        'grant connect on database %I to yo4x_local_identity',
+        current_database());
+end
+$$;
+grant usage on schema identity to yo4x_local_identity;
+grant execute on function identity.provision_local_development_identity(
+    uuid, uuid, uuid, text, timestamptz) to yo4x_local_identity;
+alter role yo4x_local_identity set statement_timeout = '5s';
+alter role yo4x_local_identity set lock_timeout = '2s';
+alter role yo4x_local_identity set idle_in_transaction_session_timeout = '10s';
+
+-- Frontend projection schemas added by 005_frontend_projections.sql. These are
+-- plain CRUD surfaces for the operational web application, deliberately outside
+-- the eight guarded YO4X schemas. The subtractive sweep above revokes every
+-- runtime grant outside those eight, so the tenant control API's access must be
+-- restored here or every projection endpoint fails closed on permission denied.
+grant usage on schema catalog to yo4x_control_api;
+grant select, insert, update, delete
+    on all tables in schema catalog to yo4x_control_api;
+grant usage on schema bots to yo4x_control_api;
+grant select, insert, update, delete
+    on all tables in schema bots to yo4x_control_api;
+grant usage on schema simulation to yo4x_control_api;
+grant select, insert, update, delete
+    on all tables in schema simulation to yo4x_control_api;
+grant usage on schema billing to yo4x_control_api;
+grant select, insert, update, delete
+    on all tables in schema billing to yo4x_control_api;
+grant usage on schema journal to yo4x_control_api;
+grant select, insert, update, delete
+    on all tables in schema journal to yo4x_control_api;
+
+-- Strategy input and backtest-request tables added by
+-- 006_strategy_inputs_and_backtests.sql. They live in the same two projection
+-- schemas as the block above and are named explicitly so the tenant control
+-- API's access is restored table by table, not only by the schema-wide grant.
+grant usage on schema catalog to yo4x_control_api;
+grant select, insert, update, delete
+    on catalog.strategy_inputs to yo4x_control_api;
+grant select, insert, update, delete
+    on catalog.strategy_enum_members to yo4x_control_api;
+grant usage on schema simulation to yo4x_control_api;
+grant select, insert, update, delete
+    on simulation.backtest_inputs to yo4x_control_api;
+
+-- Backtest queue access for the background worker, added by
+-- 008_backtest_queue_worker_access.sql. yo4x_worker holds nothing else in the
+-- simulation schema, and the sweep above revokes every runtime grant outside
+-- the eight guarded YO4X schemas, so without this the worker fails closed on
+-- permission denied at its first queue claim. Select and update on the queue
+-- table only: the worker claims a request and writes what the run measured,
+-- both updates to a row that already exists. Deliberately no insert, because a
+-- request is created by the user through the control API and carries the tenant
+-- and user it was filed under; deliberately no delete, because the request and
+-- its outcome are the record that a run was asked for and what it produced, and
+-- a worker must not be able to erase a failure it caused. The submitted input
+-- values stay read-only to it so a run cannot change the question it was asked
+-- and then answer the changed one.
+grant usage on schema simulation to yo4x_worker;
+grant select, update on simulation.backtests to yo4x_worker;
+grant select on simulation.backtest_inputs to yo4x_worker;
+
+-- The stored backtest equity curve added by 009_backtest_equity_curve.sql. It
+-- lives in the same projection schema as the block above, and the sweep above
+-- revokes every runtime grant outside the eight guarded YO4X schemas, so these
+-- must be restored here or the detail page fails closed reading a curve and a
+-- run fails closed writing one. The tenant control API serves the chart and is
+-- still the login the runner uses today, so it gets the same full CRUD it holds
+-- on the rest of the simulation projections. yo4x_worker gets insert, because
+-- the curve is the measurement that run produced, and delete, because a
+-- requeued request is claimed again and its outcome columns are overwritten, so
+-- the curve has to be replaced with them rather than left describing a
+-- different run. Deliberately no update: a sample is written once, and a
+-- correction is a new run replacing the whole curve. Deliberately still no
+-- delete on simulation.backtests itself, so a worker cannot erase the request
+-- or the failure it produced.
+grant select, insert, update, delete
+    on simulation.backtest_equity_points to yo4x_control_api;
+grant select, insert, delete
+    on simulation.backtest_equity_points to yo4x_worker;
+
+-- Per-bot settings and the broker instrument list added by
+-- 010_bot_settings_and_broker_symbols.sql. Both tables live in the `bots`
+-- projection schema, which is outside the eight guarded YO4X schemas, so the
+-- sweep above revokes them and they must be restored here or the settings page
+-- fails closed reading the values it is meant to render and saving the ones the
+-- operator changed. The tenant control API serves that page, saves what it
+-- changes, serves the instrument list it picks a symbol from, and is the login
+-- the broker-symbol importer connects as, so it gets the same full CRUD it
+-- already holds on the rest of the bots projections. Deliberately nothing for
+-- yo4x_worker: a background run reads the request it was given and has no
+-- business rewriting the settings of a live bot.
+grant usage on schema bots to yo4x_control_api;
+grant select, insert, update, delete
+    on bots.bot_inputs to yo4x_control_api;
+grant select, insert, update, delete
+    on bots.broker_symbols to yo4x_control_api;
+
+-- MetaTrader 5 broker-server directory added by 007_broker_server_catalogue.sql.
+-- Read-only, plus exactly one narrow approval capability. The tenant control API
+-- deliberately gets no insert/update/delete anywhere in this schema: a directory
+-- row is written only by the offline importer, and the only runtime write is the
+-- SECURITY DEFINER promotion of one server for the calling tenant.
+grant usage on schema brokerdirectory to yo4x_control_api;
+grant select on brokerdirectory.catalogue_snapshots, brokerdirectory.servers,
+    brokerdirectory.catalogue_broker_profiles, brokerdirectory.tenant_demo_approvals
+    to yo4x_control_api;
+grant execute on function brokerdirectory.approve_demo_server(uuid) to yo4x_control_api;
+
+-- operations.enforce_pending_demo_broker_account_creation is SECURITY DEFINER and
+-- is owned by yo4x_migrator, so the directory-approval clause 007 added to it
+-- reads these two tables as that role, never as the caller. The eight guarded
+-- schemas are normalised to yo4x_migrator ownership above, but brokerdirectory is
+-- not one of them and stays owned by whoever ran the migration, so the guard has
+-- no implicit access and every broker-account INSERT fails closed without this.
+-- Exactly the two relations the guard reads, select only: it must never be able
+-- to write an approval it is itself checking, and it needs nothing from
+-- brokerdirectory.servers or brokerdirectory.catalogue_snapshots.
+grant usage on schema brokerdirectory to yo4x_migrator;
+grant select on brokerdirectory.catalogue_broker_profiles,
+    brokerdirectory.tenant_demo_approvals
+    to yo4x_migrator;
 
 commit;

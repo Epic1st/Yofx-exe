@@ -1,0 +1,303 @@
+{
+  "schemaVersion": "yo4x.mt5.demo-account-connectivity.v1",
+  "evidenceAuthority": "unsigned-local-observation",
+  "observedAtUtc": "2026-08-26T09:54:11.2223896+00:00",
+  "vendorArtifactSha256": "eb238c958a4d9f80c8a3eeaca07636ae53bc5a78a093bc3fe63923fa50a309c6",
+  "endpointDiscoverySource": "https://search.mtapi.io/Search?company=<server>&mt5=true",
+  "accountsInspected": 10,
+  "accountsConnected": 6,
+  "accountsSafeForDemoExecution": 6,
+  "ordersSent": 0,
+  "accounts": [
+    {
+      "credentialKey": "092124f9de2eb927932809fcd29388c521b3854cf12d886fe0236a6d2af41a10",
+      "server": "VantageMarkets-Demo",
+      "maskedLogin": "******65",
+      "endpointResolution": "vendor-server-name-resolution",
+      "diagnosis": "connected-demo",
+      "host": "a2ccde13c297ed6bd.awsglobalaccelerator.com",
+      "port": 701,
+      "connected": true,
+      "accountGroup": "demo",
+      "accountGroupIndicatesDemo": true,
+      "safeForDemoExecution": true,
+      "accountCompanyName": "Vantage Markets (Pty) Ltd",
+      "currency": "USD",
+      "balance": 49993.49,
+      "equity": 49993.49,
+      "openOrderCount": 0,
+      "failedAttempts": []
+    },
+    {
+      "credentialKey": "598364aacdb46bc163854c1c40939f2f10ae460602a3d364b9e6e20aab90ca1b",
+      "server": "VantageMarketsFutures-Demo",
+      "maskedLogin": "******10",
+      "endpointResolution": "unresolved",
+      "diagnosis": "broker-rejected-credential",
+      "host": null,
+      "port": null,
+      "connected": false,
+      "accountGroup": null,
+      "accountGroupIndicatesDemo": false,
+      "safeForDemoExecution": false,
+      "accountCompanyName": null,
+      "currency": null,
+      "balance": null,
+      "equity": null,
+      "openOrderCount": null,
+      "failedAttempts": [
+        {
+          "route": "vendor-server-name-resolution",
+          "target": "VantageMarketsFutures-Demo",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "a237b0851ac2cf254.awsglobalaccelerator.com:700",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "a237b0851ac2cf254.awsglobalaccelerator.com:701",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "a237b0851ac2cf254.awsglobalaccelerator.com:702",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        }
+      ]
+    },
+    {
+      "credentialKey": "929f2a699794b5b523ea74e309b496a530d7c0468172f1658ad06acf1623a53a",
+      "server": "PUPrime-Demo",
+      "maskedLogin": "*******19",
+      "endpointResolution": "vendor-server-name-resolution",
+      "diagnosis": "connected-demo",
+      "host": "a8d3d269e9582b729.awsglobalaccelerator.com",
+      "port": 703,
+      "connected": true,
+      "accountGroup": "demo",
+      "accountGroupIndicatesDemo": true,
+      "safeForDemoExecution": true,
+      "accountCompanyName": "PU Prime Ltd",
+      "currency": "USD",
+      "balance": 25000,
+      "equity": 25000,
+      "openOrderCount": 0,
+      "failedAttempts": []
+    },
+    {
+      "credentialKey": "9e3b131597696f6ad084c88f6136d919006a89b9d02637d25b3a550fb90844d3",
+      "server": "MetaQuotes-Demo",
+      "maskedLogin": "******95",
+      "endpointResolution": "unresolved",
+      "diagnosis": "broker-rejected-credential",
+      "host": null,
+      "port": null,
+      "connected": false,
+      "accountGroup": null,
+      "accountGroupIndicatesDemo": false,
+      "safeForDemoExecution": false,
+      "accountCompanyName": null,
+      "currency": null,
+      "balance": null,
+      "equity": null,
+      "openOrderCount": null,
+      "failedAttempts": [
+        {
+          "route": "vendor-server-name-resolution",
+          "target": "MetaQuotes-Demo",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "194.164.179.214:443",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "194.164.179.214:1950",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "access.metatrader5.com:443",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        }
+      ]
+    },
+    {
+      "credentialKey": "b496155f43669caaefa9c212a49afd82794c1973fda8e831c510c2ef57d8a160",
+      "server": "VantageMarkets-Demo",
+      "maskedLogin": "******61",
+      "endpointResolution": "vendor-server-name-resolution",
+      "diagnosis": "connected-demo",
+      "host": "18.210.228.251",
+      "port": 443,
+      "connected": true,
+      "accountGroup": "demo",
+      "accountGroupIndicatesDemo": true,
+      "safeForDemoExecution": true,
+      "accountCompanyName": "Vantage Markets (Pty) Ltd",
+      "currency": "USD",
+      "balance": 50000,
+      "equity": 50000,
+      "openOrderCount": 0,
+      "failedAttempts": []
+    },
+    {
+      "credentialKey": "dfed27e9602c2592f28d7cf41a5881f09588f8add1329616cf751678579980ad",
+      "server": "MetaQuotes-Demo",
+      "maskedLogin": "*****93",
+      "endpointResolution": "unresolved",
+      "diagnosis": "broker-rejected-credential",
+      "host": null,
+      "port": null,
+      "connected": false,
+      "accountGroup": null,
+      "accountGroupIndicatesDemo": false,
+      "safeForDemoExecution": false,
+      "accountCompanyName": null,
+      "currency": null,
+      "balance": null,
+      "equity": null,
+      "openOrderCount": null,
+      "failedAttempts": [
+        {
+          "route": "vendor-server-name-resolution",
+          "target": "MetaQuotes-Demo",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "194.164.179.214:443",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "194.164.179.214:1950",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "access.metatrader5.com:443",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        }
+      ]
+    },
+    {
+      "credentialKey": "e3b120918da32f8677d473c905bcb5faf78dc004f351ac4a91b0394b053cfaf5",
+      "server": "XMGlobal-MT5 2",
+      "maskedLogin": "*******80",
+      "endpointResolution": "vendor-server-name-resolution",
+      "diagnosis": "connected-demo",
+      "host": "54.179.18.23",
+      "port": 443,
+      "connected": true,
+      "accountGroup": "demo",
+      "accountGroupIndicatesDemo": true,
+      "safeForDemoExecution": true,
+      "accountCompanyName": "XM Global Limited",
+      "currency": "USD",
+      "balance": 10000,
+      "equity": 10000,
+      "openOrderCount": 0,
+      "failedAttempts": []
+    },
+    {
+      "credentialKey": "e7fd67b805d582c35ea3ff81fa31a471a47c12af549ee715c34d6a0800f33ab7",
+      "server": "VantageMarkets-Demo",
+      "maskedLogin": "******60",
+      "endpointResolution": "vendor-server-name-resolution",
+      "diagnosis": "connected-demo",
+      "host": "a2ccde13c297ed6bd.awsglobalaccelerator.com",
+      "port": 703,
+      "connected": true,
+      "accountGroup": "demo",
+      "accountGroupIndicatesDemo": true,
+      "safeForDemoExecution": true,
+      "accountCompanyName": "Vantage Markets (Pty) Ltd",
+      "currency": "USD",
+      "balance": 50000,
+      "equity": 50000,
+      "openOrderCount": 0,
+      "failedAttempts": []
+    },
+    {
+      "credentialKey": "f9c324336da5058662d93fd107139af34a1d6d6418339915be8c345d6943094a",
+      "server": "VantageMarketsFutures-Demo",
+      "maskedLogin": "*****44",
+      "endpointResolution": "unresolved",
+      "diagnosis": "broker-rejected-credential",
+      "host": null,
+      "port": null,
+      "connected": false,
+      "accountGroup": null,
+      "accountGroupIndicatesDemo": false,
+      "safeForDemoExecution": false,
+      "accountCompanyName": null,
+      "currency": null,
+      "balance": null,
+      "equity": null,
+      "openOrderCount": null,
+      "failedAttempts": [
+        {
+          "route": "vendor-server-name-resolution",
+          "target": "VantageMarketsFutures-Demo",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "a237b0851ac2cf254.awsglobalaccelerator.com:700",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "a237b0851ac2cf254.awsglobalaccelerator.com:701",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        },
+        {
+          "route": "broker-directory-endpoint",
+          "target": "a237b0851ac2cf254.awsglobalaccelerator.com:702",
+          "exceptionType": "ServerException",
+          "message": "INVALID_ACCOUNT"
+        }
+      ]
+    },
+    {
+      "credentialKey": "fd1632b1bfc9db9422161ca863f3bbe7484b463780c1ca0d01a0523e8b0e2155",
+      "server": "VantageMarkets-Demo",
+      "maskedLogin": "******56",
+      "endpointResolution": "vendor-server-name-resolution",
+      "diagnosis": "connected-demo",
+      "host": "a2ccde13c297ed6bd.awsglobalaccelerator.com",
+      "port": 702,
+      "connected": true,
+      "accountGroup": "demo",
+      "accountGroupIndicatesDemo": true,
+      "safeForDemoExecution": true,
+      "accountCompanyName": "Vantage Markets (Pty) Ltd",
+      "currency": "USD",
+      "balance": 50000,
+      "equity": 50000,
+      "openOrderCount": 0,
+      "failedAttempts": []
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+<Application x:Class="YO4X.Desktop.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnMainWindowClose">
+  <Application.Resources>
+    <SolidColorBrush x:Key="ShellBackground" Color="#F5F8FF" />
+    <SolidColorBrush x:Key="ShellBorder" Color="#D9E3F5" />
+    <SolidColorBrush x:Key="BrandBlue" Color="#0B5CDE" />
+    <Style TargetType="Button">
+      <Setter Property="MinWidth" Value="74" />
+      <Setter Property="Height" Value="32" />
+      <Setter Property="Margin" Value="0,0,8,0" />
+      <Setter Property="Padding" Value="12,0" />
+      <Setter Property="Background" Value="White" />
+      <Setter Property="BorderBrush" Value="{StaticResource ShellBorder}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+  </Application.Resources>
+</Application>

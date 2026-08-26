@@ -1,0 +1,268 @@
+/*
+ * "Cloud runners" — billing toggle, plan cards, active runner table and explainer.
+ * Shared primitives (.page, .panel, .table, .chip, .badge, .btn) come from global.css.
+ */
+
+.cloud-head {
+  align-items: flex-end;
+  margin-bottom: 22px;
+}
+
+.cloud-billing {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--radius-chip);
+  background: var(--color-surface-field);
+}
+
+.cloud-billing__option {
+  background: none;
+}
+
+.cloud-billing__option.chip--active {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.cloud-plans {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr;
+  gap: 16px;
+  max-width: 760px;
+  margin-bottom: 34px;
+}
+
+.cloud-plans__state {
+  grid-column: 1 / -1;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+}
+
+.cloud-plan {
+  display: flex;
+  flex-direction: column;
+  padding: 18px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+
+.cloud-plan--highlighted {
+  border-color: var(--color-accent-border);
+  background: var(--color-accent-wash);
+}
+
+.cloud-plan__head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.cloud-plan__name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cloud-plan__price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.cloud-plan__price {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.cloud-plan__unit {
+  color: var(--color-text-quaternary);
+  font-size: 13px;
+}
+
+.cloud-plan__period {
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+  font-size: 11.5px;
+}
+
+.cloud-plan__blurb {
+  min-height: 40px;
+  margin: 8px 0 0;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cloud-plan__divider {
+  height: 1px;
+  margin: 16px 0;
+  background: var(--color-border-inset);
+}
+
+.cloud-plan__features {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cloud-plan__feature {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 4px 0;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.cloud-plan__check {
+  flex: none;
+  margin-top: 2px;
+  color: var(--color-positive);
+}
+
+.cloud-plan__cta {
+  justify-content: center;
+  width: 100%;
+  height: 36px;
+  margin-top: 16px;
+}
+
+.cloud-plan__skeleton {
+  height: 14px;
+  margin-bottom: 10px;
+}
+
+.cloud-plan__skeleton--title {
+  width: 40%;
+}
+
+.cloud-plan__skeleton--price {
+  width: 55%;
+  height: 30px;
+}
+
+.cloud-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.cloud-invoice {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.cloud-cell {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
+.cloud-uptime {
+  color: var(--color-positive-text);
+  font-size: 12px;
+}
+
+.cloud-runner__bot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+}
+
+.cloud-runner__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cloud-skeleton {
+  height: 12px;
+  margin-right: 16px;
+}
+
+.cloud-explainer {
+  display: flex;
+  gap: 26px;
+  margin-top: 26px;
+  padding: 18px 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+}
+
+.cloud-explainer__copy {
+  flex: 1;
+}
+
+.cloud-explainer__title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cloud-explainer__body {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cloud-explainer__regions {
+  flex: none;
+  width: 270px;
+  padding-left: 22px;
+  border-left: 1px solid var(--color-border-inset);
+}
+
+.cloud-explainer__regions-label {
+  margin: 0;
+  color: var(--color-text-quaternary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.cloud-explainer__regions-empty {
+  margin: 9px 0 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.cloud-region-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.cloud-region {
+  padding: 5px 9px;
+  border-radius: var(--radius-small);
+  background: var(--color-surface-field);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.cloud-region-skeleton {
+  width: 96px;
+  height: 26px;
+}
+
+@media (max-width: 900px) {
+  .cloud-plans {
+    grid-template-columns: 1fr;
+  }
+
+  .cloud-explainer {
+    flex-direction: column;
+  }
+
+  .cloud-explainer__regions {
+    width: auto;
+    padding-left: 0;
+    border-left: none;
+  }
+}

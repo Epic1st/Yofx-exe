@@ -2,18 +2,19 @@
 
 ## Status and scope
 
-`YO4X.LocalSecrets.Windows` is an isolated, Windows-only maintenance boundary
-for importing MT5 demo credentials into a local DPAPI vault. It is not a cloud
-secret provider and is not referenced by GatewayHost or the cloud/runtime
-projects. `YO4X.SecretIngestion.Api` therefore remains fail closed until a
-managed secret provider is selected and configured.
+`YO4X.LocalSecrets.Windows` is an isolated, Windows-only boundary for importing
+MT5 demo credentials into a local DPAPI vault. It is not a cloud secret provider
+and is not referenced by GatewayHost. A separate dedicated Windows connection
+probe worker consumes it only for bounded connect/identity-read/disconnect use.
+`YO4X.SecretIngestion.Api` remains fail closed until a managed secret provider
+is selected and configured.
 
-The boundary protects local storage and retrieval. It does not establish that
-a vendor DLL is safe, authentic, licensed, or production-capable; it does not
-prove a broker login; and it never authorizes an order or other broker command.
-Runtime consumption is not wired. Any future consumer must independently pass
-the signed-assignment, fresh-lease, account-binding, execution-mode, and policy
-gates before opening a credential.
+The boundary protects local storage and retrieval. It does not establish that a
+vendor DLL is safe, licensed, or production-capable, and it never authorizes an
+order or other broker command. Runtime consumption is wired only to the
+dedicated connection-only worker. On 2026-08-24 that worker proved one Vantage
+demo login and confirmed disconnect without rendering credentials. GatewayHost
+remains disconnected from this vault and mutation submission remains disabled.
 
 ## Components
 
@@ -23,9 +24,13 @@ gates before opening a credential.
 - `YO4X.LocalCredentialImporter` accepts only an absolute source path, an
   operator-approved source SHA-256 digest, an optional vault directory, and an
   explicit rotation flag. Passwords are never command-line values or output.
+- `YO4X.LocalCredentialWriter` stores exactly one credential, read from standard
+  input, for the control-plane API. It is the only route from the web link
+  dialog to the vault. See "Web link-dialog credential entry" below.
 - `YO4X.LocalSecrets.Windows.Tests` uses synthetic credentials to exercise the
   parser, secret lifecycle, DPAPI, ACL, paths, atomic batch behavior, recovery
-  residue, concurrency, tamper handling, and evidence schema.
+  residue, concurrency, tamper handling, evidence schema, the writer process,
+  and the API's end-to-end handoff into the vault.
 
 ## Security invariants
 
@@ -70,6 +75,66 @@ gates before opening a credential.
 9. Retrieval bounds the ciphertext read, uses DPAPI, and revalidates the
    embedded credential key. Corrupt, moved, wrong-user, or tampered ciphertext
    fails closed.
+
+## Web link-dialog credential entry
+
+The "Link a trading account" dialog collects the MT5 password. This is a
+deliberate product decision and it changes who types the credential, not where
+it is kept: the plaintext still ends in this DPAPI vault and still never reaches
+PostgreSQL.
+
+The path, in order:
+
+1. The browser posts the password in the JSON body of
+   `POST /v1/broker-accounts`, alongside the unmasked login the service needs to
+   re-derive the binding. Never a query string, never a header, never browser
+   storage. The dialog holds it in component state and clears it when the dialog
+   opens and after a successful link.
+2. The control-plane API refuses the request unless it arrived over loopback. A
+   control plane reached across a network has no vault to write to and must not
+   hold a broker password even briefly.
+3. `Utf8SecretJsonConverter` copies the password's UTF-8 bytes straight out of
+   the request body into a buffer the process owns. It is never materialized as
+   a `string`, which could not be overwritten. `Utf8Secret` renders as
+   `[REDACTED]` and refuses serialization outright.
+4. The API re-derives the credential key and the masked login from the login and
+   server, and rejects the request if either disagrees with what the browser
+   claimed. A fingerprint that does not follow from the login and server would
+   name a vault entry the connection probe never looks up.
+5. The account row is written first. Authorization comes before the secret: the
+   insert proves this tenant may link this server, and it persists only the
+   masked login and the opaque binding fingerprint.
+6. The API then spawns `YO4X.LocalCredentialWriter`, whose path and SHA-256 are
+   pinned in configuration and re-verified on every call, and writes one
+   credential block to its standard input. The password is never an argument: a
+   command line is readable by every process on the host.
+7. The writer verifies that the bytes it received hash to the digest the parent
+   intended, parses them with the same `Mt5CredentialFileParser` the operator
+   importer uses, refuses the write unless the derived credential key equals the
+   one the API is persisting, and stores it with `CreateOrVerify`. A different
+   password already bound to the same server/login is a conflict, not an
+   overwrite; only an explicit rotation may replace one.
+8. The writer prints a receipt carrying only the credential key, the masked
+   login, and `secretsRendered = false`. Its failure modes are fixed codes on
+   standard error, never parser or vault text that could quote a value.
+9. Both plaintext buffers — the API's transit block and the request's
+   `Utf8Secret` — are zeroed when the call returns, on every path including a
+   rejection, a timeout, and a failed write.
+
+The capability is fail closed. With no `LocalBrokerCredentialVault` section
+configured the API resolves `UnavailableLocalBrokerCredentialVault`, which
+refuses the write rather than falling back to any other store. A deployment that
+cannot reach an on-device vault therefore cannot accept a password at all.
+
+Known gap: the account row is committed before the vault write. If the vault
+write fails, the account exists with no credential, and a retry is refused by the
+unique binding constraint. Recovery is the operator importer or an explicit
+rotation. The alternative — writing the secret before the row that authorizes it
+— was rejected.
+
+The password is also outside this process's control in one place that cannot be
+fixed from here: the Kestrel request buffer that carried the request body. That
+buffer is pooled and not zeroed on release.
 
 ## Atomicity and local-host limitations
 

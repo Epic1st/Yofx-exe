@@ -6,14 +6,18 @@ namespace YO4X.Trading.ProcessIsolation;
 public sealed class AuthenticatedBrokerWorkerServer
 {
     private readonly IBrokerWorkerExecutor executor;
+    private readonly IBrokerConnectionProbeExecutor connectionProbeExecutor;
     private readonly TimeProvider timeProvider;
 
     public AuthenticatedBrokerWorkerServer(
         IBrokerWorkerExecutor executor,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IBrokerConnectionProbeExecutor? connectionProbeExecutor = null)
     {
         this.executor = executor ?? throw new ArgumentNullException(nameof(executor));
         this.timeProvider = timeProvider ?? TimeProvider.System;
+        this.connectionProbeExecutor = connectionProbeExecutor
+            ?? new UnavailableBrokerConnectionProbeExecutor();
     }
 
     public async Task<int> RunOnceAsync(
@@ -88,6 +92,23 @@ public sealed class AuthenticatedBrokerWorkerServer
                 result.Code,
                 result,
                 null);
+        }
+
+        if (request.Operation == BrokerWorkerProtocolContract.ConnectProbeOperation)
+        {
+            GatewayOperationResult<BrokerConnectionProbeObservation> probe =
+                await connectionProbeExecutor
+                    .ConnectProbeAsync(request.ConnectProbe!, cancellationToken)
+                    .ConfigureAwait(false);
+            return new BrokerWorkerResponse(
+                BrokerWorkerProtocolContract.Version,
+                request.RequestId,
+                request.Operation,
+                probe.IsSuccess && probe.Value is not null,
+                probe.Code,
+                null,
+                null,
+                probe.IsSuccess ? probe.Value : null);
         }
 
         GatewayOperationResult<BrokerReconciliationSnapshot> reconciliation = await executor

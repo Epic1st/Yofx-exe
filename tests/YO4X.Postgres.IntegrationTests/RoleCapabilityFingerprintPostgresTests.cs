@@ -66,6 +66,19 @@ public sealed class RoleCapabilityFingerprintPostgresTests(PostgresContainerFixt
         await using PostgresTestDatabase database = await postgres.CreateDatabaseAsync();
         await PostgresProductionReadinessFixture.RemoveBroadActorGrantsAsync(database);
 
+        await using NpgsqlConnection administrator =
+            await database.Administrator.OpenConnectionAsync();
+        bool localIdentityRoleSatisfied =
+            await PostgresRoleCapabilityFingerprint.IsNamedRoleSatisfiedForDeploymentAsync(
+            administrator,
+            transaction: null,
+            Yo4xPostgresRoleContracts.LocalIdentity);
+        Assert.True(
+            localIdentityRoleSatisfied,
+            localIdentityRoleSatisfied
+                ? string.Empty
+                : "The local identity role does not match its deployment contract.");
+
         bool controlRoleSatisfied = await IsSatisfiedAsync(
             database.ControlApi,
             Yo4xPostgresRoleContracts.ControlApi);
@@ -112,6 +125,15 @@ public sealed class RoleCapabilityFingerprintPostgresTests(PostgresContainerFixt
         Assert.True(await credential.IsReadyAsync());
         var secret = new PostgresCredentialIngestionGrantStore(database.SecretIngestion);
         Assert.True(await secret.IsReadyAsync(CancellationToken.None));
+
+        await AssertDriftRejectedAndRestoreAsync(
+            database,
+            "grant select on identity.tenants to yo4x_local_identity",
+            async () => await PostgresRoleCapabilityFingerprint
+                .IsNamedRoleSatisfiedForDeploymentAsync(
+                    administrator,
+                    transaction: null,
+                    Yo4xPostgresRoleContracts.LocalIdentity));
 
         await AssertDriftRejectedAndRestoreAsync(
             database,
@@ -843,6 +865,13 @@ public sealed class RoleCapabilityFingerprintPostgresTests(PostgresContainerFixt
         PostgresRoleCapabilityContract contract)
     {
         await using NpgsqlConnection connection = await database.OpenConnectionAsync();
+        return await DescribePrivilegeMismatchAsync(connection, contract);
+    }
+
+    private static async Task<string> DescribePrivilegeMismatchAsync(
+        NpgsqlConnection connection,
+        PostgresRoleCapabilityContract contract)
+    {
         await using var command = new NpgsqlCommand(
             """
             with role_identity as

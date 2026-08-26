@@ -17,6 +17,18 @@ public sealed class UnavailableControlPlaneApplication : IControlPlaneApplicatio
     public Task<BrokerAccountView?> GetBrokerAccountAsync(UserActor actor, Guid brokerAccountId, CancellationToken cancellationToken) =>
         Unavailable<BrokerAccountView?>();
 
+    public Task<IReadOnlyList<BrokerAccountView>> GetBrokerAccountsAsync(UserActor actor, CancellationToken cancellationToken) =>
+        Unavailable<IReadOnlyList<BrokerAccountView>>();
+
+    public Task<IReadOnlyList<BrokerAccountRegistrationOption>> GetBrokerAccountRegistrationOptionsAsync(UserActor actor, string? query, CancellationToken cancellationToken) =>
+        Unavailable<IReadOnlyList<BrokerAccountRegistrationOption>>();
+
+    public Task<BrokerAccountRegistrationOption> ApproveBrokerServerAsync(UserActor actor, ApproveBrokerServer request, RequestMetadata metadata, CancellationToken cancellationToken) =>
+        Unavailable<BrokerAccountRegistrationOption>();
+
+    public Task<BrokerAccountView> CreateBrokerAccountAsync(UserActor actor, CreateBrokerAccount request, RequestMetadata metadata, CancellationToken cancellationToken) =>
+        Unavailable<BrokerAccountView>();
+
     public Task<CredentialStateView?> GetCredentialStateAsync(UserActor actor, Guid brokerAccountId, CancellationToken cancellationToken) =>
         Unavailable<CredentialStateView?>();
 
@@ -49,6 +61,9 @@ public sealed class UnavailableControlPlaneApplication : IControlPlaneApplicatio
 
     public Task<IReadOnlyList<ActivityView>> GetDeploymentActivityAsync(UserActor actor, Guid deploymentId, int limit, Guid? before, CancellationToken cancellationToken) =>
         Unavailable<IReadOnlyList<ActivityView>>();
+
+    public Task<IReadOnlyList<StrategySourceCorpusSummary>> GetStrategySourceCorporaAsync(UserActor actor, CancellationToken cancellationToken) =>
+        Unavailable<IReadOnlyList<StrategySourceCorpusSummary>>();
 
     public Task<StrategyCompatibilityProjection?> GetStrategyCompatibilityAsync(UserActor actor, Guid corpusId, CancellationToken cancellationToken) =>
         Unavailable<StrategyCompatibilityProjection?>();

@@ -130,7 +130,7 @@ Browser plugin tooling was not available, so regular Playwright Core 1.62.1 drov
 | State treatment | Proven, pending, blocked and runtime states are legible | Text + icon/dot + semantic color; production missing projections remain unavailable/not configured |
 | Responsive behavior | Compact continuation expected from the desktop system | 390px page has no horizontal page overflow; drawer, stacked panels, scrollable tables, focus handling, and close behavior verified |
 | Core interaction | Evidence review and compatibility report access | Search filtering, evidence/report dialogs, Escape close, notification/profile menus, and mobile navigation work |
-| Production data boundary | Reference data must never become an operational claim | Production preview rejects `?fixture=dashboard`, renders `Dashboard unavailable` when `/v1/me` and `/health/ready` are deliberately absent, and remains fail-closed after retry at both 1536 × 1024 and 390 × 844 |
+| Production data boundary | Reference data must never become an operational claim | Production preview ignores `?fixture=dashboard` and excludes the fixture branch; it follows the normal API path, renders `Dashboard unavailable` when `/v1/me` and `/health/ready` are deliberately absent, and remains fail-closed after retry at both 1536 × 1024 and 390 × 844 |
 
 Material fixes made during visual QA: desktop-only menu controls were properly hidden; metric wrapping was corrected; readiness state columns were aligned; compatibility headings were consolidated into the concept’s compact header band; support-card placement and height were matched; favicon console noise was removed; and the page was brought within the native viewport without horizontal or vertical overflow.
 

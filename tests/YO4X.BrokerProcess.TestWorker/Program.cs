@@ -29,7 +29,9 @@ try
     BrokerWorkerRequest request = BrokerProcessProtocol.DeserializeRequest(requestPayload);
     BrokerWorkerContractValidator.ValidateRequest(request, DateTimeOffset.UtcNow);
 
-    string mode = request.Send?.Command.Symbol ?? "reconcile";
+    string mode = request.Send?.Command.Symbol
+        ?? request.ConnectProbe?.Server.ServerName
+        ?? "reconcile";
     if (mode == "__YO4X_TEST_HANG__")
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
@@ -106,6 +108,18 @@ static BrokerWorkerResponse CreateResponse(BrokerWorkerRequest request)
             false,
             result.Code,
             result,
+            null);
+    }
+
+    if (request.Operation == BrokerWorkerProtocolContract.ConnectProbeOperation)
+    {
+        return new BrokerWorkerResponse(
+            BrokerWorkerProtocolContract.Version,
+            request.RequestId,
+            request.Operation,
+            false,
+            BrokerWorkerProtocolContract.ConnectProbeUnavailableCode,
+            null,
             null);
     }
 

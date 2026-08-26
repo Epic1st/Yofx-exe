@@ -211,6 +211,8 @@ set row_security = on
 as $$
 declare
     active_tenant_id uuid := control.current_tenant_id();
+    active_actor_id uuid := control.current_actor_id();
+    active_correlation_id uuid := control.current_correlation_id();
     authority_now timestamptz;
     locked_operation control.user_operations%rowtype;
     locked_attempt record;
@@ -220,7 +222,10 @@ declare
 begin
     if session_user <> 'yo4x_worker'
         or current_user <> 'yo4x_migrator'
-        or active_tenant_id is null then
+        or active_tenant_id is null
+        or active_actor_id is distinct from
+            '21e67e5a-daec-46eb-84af-f97244508616'::uuid
+        or active_correlation_id is null then
         raise exception using
             errcode = '42501',
             message = 'Invocation reconciliation requires exact worker tenant authority.';
@@ -235,6 +240,21 @@ begin
             message = 'Invocation reconciliation evidence is invalid.';
     end if;
 
+    -- Bind the caller to the operation before taking either the global U0
+    -- authority lock or a row lock. A mismatched correlation must be
+    -- indistinguishable from a missing/stale operation and must not retain a
+    -- denial-of-service or timing oracle against the legitimate worker.
+    if not exists
+    (
+        select 1
+        from control.user_operations as operation
+        where operation.tenant_id = active_tenant_id
+          and operation.id = p_operation_id
+          and operation.correlation_id = active_correlation_id
+    ) then
+        return;
+    end if;
+
     perform control.acquire_u0_authority_lock();
     authority_now := clock_timestamp();
     select operation.*
@@ -242,6 +262,7 @@ begin
     from control.user_operations as operation
     where operation.tenant_id = active_tenant_id
       and operation.id = p_operation_id
+      and operation.correlation_id = active_correlation_id
     for update;
 
     if locked_operation.id is null

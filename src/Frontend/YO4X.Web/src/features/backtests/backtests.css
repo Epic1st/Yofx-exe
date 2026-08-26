@@ -1,0 +1,533 @@
+/*
+ * "Backtests" — the request list, the creation dialog and the detail view.
+ * Shared primitives come from global.css; only what is specific to this feature
+ * lives here, and every value is a token.
+ */
+
+.backtests-notice {
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  border-color: var(--color-accent-wash-border);
+  background: var(--color-accent-wash);
+}
+
+.backtests-notice__text {
+  max-width: 92ch;
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-text-tertiary);
+}
+
+/* The whole row opens the request, so it is a real button laid out as a grid row. */
+.backtests-row {
+  width: 100%;
+  border-radius: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+
+.backtests-row:hover {
+  background: var(--color-surface-hover);
+}
+
+.backtests-row:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.backtests-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.backtests-cell {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
+.backtests-figure {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.backtests-profit {
+  color: var(--color-positive-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.backtests-drawdown {
+  color: var(--color-negative);
+  font-size: 12px;
+}
+
+/* A figure nothing has produced. Deliberately plain: never a zero, never a bar. */
+.backtests-absent {
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+}
+
+.backtests-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.backtests-status__note {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.backtests-skeleton {
+  height: 12px;
+  margin-right: 16px;
+}
+
+/* --------------------------------------------------------- new backtest -- */
+
+.nb {
+  width: 760px;
+  max-width: calc(100% - 48px);
+}
+
+.nb__form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.nb__body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.nb-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nb-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nb-control {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.nb-control:focus-visible {
+  outline: none;
+  border-color: var(--color-accent-border);
+  box-shadow: var(--focus-ring);
+}
+
+.nb-control[aria-invalid='true'] {
+  border-color: var(--color-negative-border);
+}
+
+.nb-control--colour {
+  width: 56px;
+  padding: 2px;
+}
+
+.nb-search {
+  height: 36px;
+}
+
+.nb-picker {
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+}
+
+.nb-picker__item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: none;
+  border-bottom: 1px solid var(--color-border-hairline);
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nb-picker__item:last-child {
+  border-bottom: none;
+}
+
+.nb-picker__item:hover {
+  background: var(--color-surface-hover);
+}
+
+.nb-picker__item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.nb-picker__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.nb-picker__meta {
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+.nb-picker__skeleton {
+  height: 14px;
+  margin: 10px 12px;
+}
+
+.nb-hint {
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+.nb-chosen {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+}
+
+.nb-chosen__name {
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.nb-chosen__meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+
+.nb-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.nb-group__title {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border-inset);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.nb-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.nb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.nb-field--wide {
+  grid-column: 1 / -1;
+}
+
+.nb-field--check {
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.nb-field--check .nb-field__hint,
+.nb-field--check .nb-field__error {
+  flex-basis: 100%;
+}
+
+.nb-field__label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.nb-field__hint {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.nb-field__error {
+  font-size: 11.5px;
+  color: var(--color-negative);
+}
+
+.nb-check {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-accent);
+}
+
+.nb-input__skeleton {
+  height: 34px;
+}
+
+.nb-banner {
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.nb-banner__icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--color-accent);
+}
+
+.nb-banner__text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-text-tertiary);
+}
+
+.nb-problem {
+  padding: 12px 14px;
+  border: 1px solid var(--color-negative-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-negative-wash);
+}
+
+.nb-problem__title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-negative);
+}
+
+.nb-problem__list {
+  margin: 6px 0 0 18px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  list-style: disc;
+}
+
+/* ------------------------------------------------------ backtest detail -- */
+
+.bd-back {
+  padding: 0;
+  margin-bottom: 6px;
+  gap: 4px;
+}
+
+.bd-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.bd-panel {
+  overflow: hidden;
+}
+
+.bd-skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bd-skeleton {
+  height: 14px;
+}
+
+.bd-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px 20px;
+  padding: 16px 20px;
+}
+
+.bd-fact {
+  min-width: 0;
+}
+
+.bd-fact__value {
+  margin-top: 5px;
+  font-size: 13px;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.bd-note {
+  padding: 0 20px 16px;
+  font-size: 12.5px;
+  color: var(--color-text-tertiary);
+}
+
+.bd-failure {
+  padding: 0 20px 16px;
+  font-size: 12.5px;
+  color: var(--color-negative);
+}
+
+.bd-quality {
+  padding: 16px 20px;
+}
+
+.bd-quality__value {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.bd-quality__statement {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.bd-quality__detail {
+  max-width: 84ch;
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-text-muted);
+}
+
+.bd-input__name {
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.bd-input__value {
+  font-size: 12.5px;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+/* Equity curve */
+
+.bd-chart__head {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.bd-chart__caption {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.bd-chart__plot {
+  height: 212px;
+  padding: 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.bd-chart__plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.bd-chart__grid {
+  stroke: var(--color-border-subtle);
+  stroke-width: 1;
+}
+
+/* The balance the run started from. Dashed so it never reads as measured data. */
+.bd-chart__baseline {
+  stroke: var(--color-text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.bd-chart__area {
+  fill: var(--color-accent-wash);
+  stroke: none;
+}
+
+.bd-chart__line {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.bd-chart__line--positive {
+  stroke: var(--color-positive);
+}
+
+.bd-chart__line--negative {
+  stroke: var(--color-negative);
+}
+
+.bd-chart__axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  margin-bottom: 18px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.bd-chart__value--positive {
+  color: var(--color-positive-text);
+}
+
+.bd-chart__value--negative {
+  color: var(--color-negative);
+}
+
+.bd-chart__note {
+  max-width: 84ch;
+  margin-top: 14px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 900px) {
+  .nb-grid,
+  .bd-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

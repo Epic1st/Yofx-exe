@@ -316,6 +316,133 @@ public sealed class Mql5ConversionEvidenceTests
     }
 
     [Fact]
+    public async Task CommandWritesSeparateDeterministicRestrictedIrArtifact()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "yo4x-restricted-ir-cli-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string sourceRoot = Path.Combine(root, "source");
+            Directory.CreateDirectory(sourceRoot);
+            await File.WriteAllTextAsync(
+                Path.Combine(sourceRoot, "types.mqh"),
+                "struct Signal { datetime time; double price; };",
+                TestContext.Current.CancellationToken);
+            string staticJson = Path.Combine(root, "static.json");
+            string staticReport = Path.Combine(root, "static.md");
+            string restrictedIr = Path.Combine(root, "restricted-ir.json");
+
+            int exitCode = await ConversionInventoryCommand.RunAsync(
+            [
+                "--static-inventory",
+                "--source-root", sourceRoot,
+                "--manifest-output", staticJson,
+                "--report-output", staticReport,
+                "--restricted-ir-output", restrictedIr
+            ], TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, exitCode);
+            string json = await File.ReadAllTextAsync(
+                restrictedIr,
+                TestContext.Current.CancellationToken);
+            JsonObject artifact = Assert.IsType<JsonObject>(JsonNode.Parse(json));
+            Assert.Equal(1, artifact["fileCount"]?.GetValue<int>());
+            Assert.Equal(1, artifact["attemptedCount"]?.GetValue<int>());
+            Assert.Equal(1, artifact["loweredCount"]?.GetValue<int>());
+            Assert.Equal(0, artifact["failedCount"]?.GetValue<int>());
+            Assert.Matches("^[0-9a-f]{64}$", artifact["artifactSha256"]?.GetValue<string>());
+            JsonObject file = Assert.IsType<JsonObject>(Assert.Single(
+                Assert.IsType<JsonArray>(artifact["files"])));
+            Assert.Equal("lowered", file["disposition"]?.GetValue<string>());
+            Assert.NotNull(file["ir"]);
+            Assert.Contains("Signal", json, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RestrictedCorpusArtifactIsDeterministicAndDoesNotChangeLegacyEvidence()
+    {
+        Mql5SourceDocument[] documents =
+        [
+            new("empty.mq5", []),
+            new("runtime.mq5", Encoding.UTF8.GetBytes("void OnTick() {}"))
+        ];
+        var staticAnalyzer = new Mql5StaticInventoryAnalyzer();
+        Mql5CorpusManifest manifest = staticAnalyzer.Analyze(documents);
+        Mql5ConversionCorpusEvidence evidence = new Mql5ConversionEvidenceAnalyzer(staticAnalyzer)
+            .Analyze(documents);
+        string legacyJson = Mql5ConversionEvidenceFormatter.ToJson(evidence);
+
+        Mql5RestrictedCorpusArtifact first = Mql5RestrictedCorpusCompiler.Compile(
+            manifest,
+            evidence,
+            documents);
+        Mql5RestrictedCorpusArtifact second = Mql5RestrictedCorpusCompiler.Compile(
+            manifest,
+            evidence,
+            documents.Reverse());
+
+        Assert.Equal(first.ArtifactSha256, second.ArtifactSha256);
+        Assert.Equal(
+            Mql5RestrictedCorpusArtifactFormatter.ToJson(first),
+            Mql5RestrictedCorpusArtifactFormatter.ToJson(second));
+        Assert.Equal(legacyJson, Mql5ConversionEvidenceFormatter.ToJson(evidence));
+        Assert.Equal(2, first.AttemptedCount);
+        Assert.Equal(1, first.LoweredCount);
+        Assert.Equal(1, first.FailedCount);
+        Assert.Equal(
+            [Mql5RestrictedCorpusDisposition.Lowered, Mql5RestrictedCorpusDisposition.Failed],
+            first.Files.Select(static file => file.Disposition));
+    }
+
+    [Fact]
+    public void RestrictedCorpusArtifactRejectsConversionEvidenceNotRebuiltFromSources()
+    {
+        Mql5SourceDocument[] documents =
+        [
+            new("data.mqh", "struct Point { double x; double y; };"u8.ToArray())
+        ];
+        Mql5CorpusManifest manifest = new Mql5StaticInventoryAnalyzer().Analyze(documents);
+        Mql5ConversionCorpusEvidence evidence = new Mql5ConversionEvidenceAnalyzer().Analyze(documents);
+        Mql5ConversionCorpusEvidence tampered = evidence with
+        {
+            EvidenceSha256 = new string('0', 64)
+        };
+
+        ArgumentException failure = Assert.Throws<ArgumentException>(() =>
+            Mql5RestrictedCorpusCompiler.Compile(manifest, tampered, documents));
+
+        Assert.Equal("conversionEvidence", failure.ParamName);
+    }
+
+    [Fact]
+    public void ArtifactOutputGuardAcceptsSixDistinctOutputsForCompleteInventoryRun()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "yo4x-six-artifacts-" + Guid.NewGuid().ToString("N"));
+        string sourceRoot = Path.Combine(root, "source");
+        Directory.CreateDirectory(sourceRoot);
+        try
+        {
+            string[] outputs = Enumerable.Range(1, 6)
+                .Select(index => Path.Combine(root, $"artifact-{index}.json"))
+                .ToArray();
+
+            Mql5ArtifactPathSet paths = Mql5ArtifactOutputGuard.Resolve(sourceRoot, outputs);
+
+            Assert.Equal(6, paths.OutputPaths.Count);
+            Assert.Equal(6, paths.OutputPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CommandRejectsSecretBeforeWritingAnyArtifact()
     {
         string root = Path.Combine(Path.GetTempPath(), "yo4x-secret-cli-" + Guid.NewGuid().ToString("N"));

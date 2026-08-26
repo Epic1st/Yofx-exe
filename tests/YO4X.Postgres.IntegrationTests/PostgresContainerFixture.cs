@@ -83,6 +83,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
         string suffix = Guid.CreateVersion7().ToString("N");
         string databaseName = $"yo4x_{suffix}";
         string contextIssuerPassword = CreateEphemeralPassword();
+        string localIdentityPassword = CreateEphemeralPassword();
         string controlApiPassword = CreateEphemeralPassword();
         string adminBffPassword = CreateEphemeralPassword();
         string emergencyPassword = CreateEphemeralPassword();
@@ -113,6 +114,10 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                 serverConnection,
                 "yo4x_context_issuer",
                 contextIssuerPassword).ConfigureAwait(false);
+            await EnableRoleLoginAsync(
+                serverConnection,
+                "yo4x_local_identity",
+                localIdentityPassword).ConfigureAwait(false);
             await EnableRoleLoginAsync(
                 serverConnection,
                 "yo4x_control_api",
@@ -253,6 +258,10 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
             administratorBuilder,
             PostgresTenantContextCapabilityProvider.RequiredDatabaseRole,
             contextIssuerPassword);
+        var localIdentityBuilder = CreateRuntimeConnectionBuilder(
+            administratorBuilder,
+            "yo4x_local_identity",
+            localIdentityPassword);
         var contextCapabilityProvider = new PostgresTenantContextCapabilityProvider(
             contextIssuerBuilder.ConnectionString,
             requireTls: false);
@@ -282,7 +291,8 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
             new PostgresDatabase(gatewayRuntimeBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
             gatewayRuntimeBuilder.ConnectionString,
             new PostgresDatabase(credentialRuntimeBuilder.ConnectionString, PostgresDatabaseUsage.Runtime, contextCapabilityProvider, allowInsecureLoopbackForDevelopment: true),
-            credentialRuntimeBuilder.ConnectionString);
+            credentialRuntimeBuilder.ConnectionString,
+            localIdentityBuilder.ConnectionString);
     }
 
     internal async Task<PostgresDatabase> CreateUnmigratedDatabaseAsync()
@@ -371,6 +381,7 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
                     'yo4x_control_api',
                     'yo4x_context_authority',
                     'yo4x_context_issuer',
+                    'yo4x_local_identity',
                     'yo4x_admin_bff',
                     'yo4x_emergency',
                     'yo4x_secret_ingestion',
@@ -557,7 +568,8 @@ public sealed class PostgresTestDatabase(
     PostgresDatabase gatewayRuntime,
     string gatewayRuntimeConnectionString,
     PostgresDatabase credentialRuntime,
-    string credentialRuntimeConnectionString) : IAsyncDisposable
+    string credentialRuntimeConnectionString,
+    string localIdentityConnectionString) : IAsyncDisposable
 {
     public PostgresDatabase Administrator { get; } = administrator;
 
@@ -602,6 +614,8 @@ public sealed class PostgresTestDatabase(
     public PostgresDatabase CredentialRuntime { get; } = credentialRuntime;
 
     public string CredentialRuntimeConnectionString { get; } = credentialRuntimeConnectionString;
+
+    public string LocalIdentityConnectionString { get; } = localIdentityConnectionString;
 
     public async ValueTask DisposeAsync()
     {

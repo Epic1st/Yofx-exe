@@ -61,7 +61,7 @@ public sealed partial class PostgresFoundationTests(PostgresContainerFixture pos
         {
             Assert.True(await reader.ReadAsync());
             Assert.Equal(8L, reader.GetInt64(0));
-            Assert.Equal(2L, reader.GetInt64(1));
+            Assert.Equal(5L, reader.GetInt64(1));
             Assert.True(reader.GetBoolean(2));
             Assert.Equal(0L, reader.GetInt64(3));
             Assert.Equal(0L, reader.GetInt64(4));
@@ -110,7 +110,7 @@ public sealed partial class PostgresFoundationTests(PostgresContainerFixture pos
         await using NpgsqlDataReader reader = await read.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal(mismatchedChecksum, reader.GetString(0));
-        Assert.Equal(2L, reader.GetInt64(1));
+        Assert.Equal(5L, reader.GetInt64(1));
         Assert.False(await reader.ReadAsync());
     }
 

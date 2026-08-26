@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "evidenceAuthority": "unsigned-local-observation",
+  "observedAtUtc": "2026-08-24T11:15:39.5280568Z",
+  "isSuccess": true,
+  "code": "mt5_connect_probe_succeeded",
+  "brokerAccountId": "019c8d27-763d-7000-8000-000000000002",
+  "gatewayArtifact": {
+    "id": "019c8d27-763d-7000-8000-000000000004",
+    "sha256": "eb238c958a4d9f80c8a3eeaca07636ae53bc5a78a093bc3fe63923fa50a309c6"
+  },
+  "worker": {
+    "sha256": "bc1ffaf9942605b9fac920168070f1448fd58c27b80d5854502d1ff8b12b0d88",
+    "manifestSha256": "35a579447c711049407a393273c609b1b9d3bd3251e1be460b32ab6bdd1cf949",
+    "manifestExactFileCount": 18
+  },
+  "endpointDiscovery": {
+    "source": "https://search.mtapi.io/Search?company=VantageMarkets-Demo&mt5=true",
+    "serverName": "VantageMarkets-Demo",
+    "brokerCompany": "Vantage Markets (Pty) Ltd",
+    "accessNode": "a2ccde13c297ed6bd.awsglobalaccelerator.com:700"
+  },
+  "observation": {
+    "accountIdentityRendered": false,
+    "passwordRendered": false,
+    "accountMode": "hedging",
+    "environment": "demo",
+    "tradingAccess": "unknown",
+    "currency": "USD",
+    "disconnectConfirmed": true
+  },
+  "ordersSent": 0,
+  "strategyExecutionAttempted": false
+}

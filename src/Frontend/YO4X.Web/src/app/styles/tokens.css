@@ -1,33 +1,110 @@
+/*
+ * Design tokens transcribed from the approved "Bot Dashboard" canvas
+ * (desktop-bot-dashboard-design/project/Bot Dashboard.dc.html).
+ *
+ * This file is the single source of truth for colour, type, shape and layout.
+ * Components must reference tokens; never repeat a literal hex value.
+ */
+
 :root {
   color-scheme: light;
-  --color-white: #ffffff;
-  --color-canvas: #ffffff;
+
+  /* Surfaces */
   --color-surface: #ffffff;
-  --color-surface-subtle: #f7f9fd;
-  --color-surface-selected: #eef4ff;
-  --color-text: #0b1b43;
-  --color-text-secondary: #50638a;
-  --color-text-muted: #7383a2;
-  --color-border: #dfe6f1;
-  --color-border-strong: #ccd7e7;
-  --color-cobalt: #075cf0;
-  --color-cobalt-hover: #004bce;
-  --color-cobalt-soft: #eef4ff;
-  --color-success: #079447;
-  --color-success-soft: #eef9f3;
-  --color-warning: #e78a00;
-  --color-warning-soft: #fff7e9;
-  --color-danger: #e31b31;
-  --color-danger-soft: #fff0f2;
-  --color-info: #47658f;
-  --shadow-panel: 0 2px 10px rgb(28 57 105 / 5%);
-  --shadow-popover: 0 14px 36px rgb(15 34 74 / 16%);
-  --radius-control: 5px;
-  --radius-panel: 6px;
-  --sidebar-width: 270px;
-  --topbar-height: 76px;
-  --focus-ring: 0 0 0 3px rgb(7 92 240 / 23%);
-  --font-ui: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --motion-fast: 150ms;
-  --motion-standard: 220ms;
+  --color-surface-raised: #fafbfc;
+  --color-surface-sunken: #f6f7f9;
+  --color-surface-field: #f4f5f7;
+  --color-surface-muted: #fcfcfd;
+  --color-surface-muted-alt: #fbfcfd;
+  --color-surface-hover: #f0f2f5;
+  --color-backdrop: #e8eaee;
+
+  /* Borders */
+  --color-border: #e8eaee;
+  --color-border-strong: #e3e5ea;
+  --color-border-control: #dcdfe5;
+  --color-border-window: #d7dae0;
+  --color-border-subtle: #f0f1f4;
+  --color-border-inset: #eceef1;
+  --color-border-hairline: #f2f3f5;
+  --color-border-dashed: #c9d3dc;
+
+  /* Text */
+  --color-text: #151a22;
+  --color-text-secondary: #3d434e;
+  --color-text-tertiary: #5c6371;
+  --color-text-quaternary: #7b8290;
+  --color-text-muted: #8b9199;
+  --color-text-faint: #a3a8b2;
+
+  /* Accent */
+  --color-accent: #0684c4;
+  --color-accent-hover: #04628f;
+  --color-accent-tint: #e2f1fb;
+  --color-accent-wash: #f4f9fd;
+  --color-accent-wash-border: #d5e8f6;
+  --color-accent-border: #bcd6e8;
+  --color-accent-selection: #cfe9fb;
+
+  /* Positive */
+  --color-positive: #1f9d55;
+  --color-positive-text: #1f7a45;
+  --color-positive-deep: #186b3c;
+  --color-positive-body: #3d6b52;
+  --color-positive-wash: #f2faf5;
+  --color-positive-wash-alt: #f6fcf8;
+  --color-positive-wash-hover: #eef8f2;
+  --color-positive-border: #cfe9da;
+
+  /* Negative */
+  --color-negative: #b3261e;
+  --color-negative-wash: #fdf8f7;
+  --color-negative-wash-alt: #fdf6f5;
+  --color-negative-wash-hover: #fdf3f1;
+  --color-negative-border: #f0d2cf;
+
+  /* Accents */
+  --color-star: #e0a02c;
+  --color-neutral-chip: #eef1f5;
+
+  /* Scrims */
+  --color-scrim-modal: rgb(21 26 34 / 34%);
+  --color-scrim-panel: rgb(21 26 34 / 32%);
+
+  /* Typography */
+  --font-ui: "Instrument Sans", Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Radii */
+  --radius-window: 10px;
+  --radius-card: 10px;
+  --radius-panel: 9px;
+  --radius-chip: 8px;
+  --radius-control: 7px;
+  --radius-small: 6px;
+  --radius-tag: 5px;
+  --radius-tiny: 4px;
+
+  /* Elevation */
+  --shadow-window: 0 24px 60px rgb(18 24 38 / 14%);
+  --shadow-modal: 0 24px 60px rgb(18 24 38 / 28%);
+  --shadow-drawer: -14px 0 40px rgb(18 24 38 / 20%);
+  --shadow-card-hover: 0 6px 18px rgb(20 28 45 / 7%);
+  --shadow-inset-panel: 0 2px 8px rgb(20 28 45 / 4%);
+
+  /* Layout */
+  --titlebar-height: 38px;
+  --sidebar-width: 236px;
+  --topbar-height: 62px;
+  --detail-rail-width: 262px;
+  --drawer-width: 452px;
+
+  /* Placeholder fills */
+  --fill-thumb: repeating-linear-gradient(135deg, #f2f4f7 0 8px, #e9ecf1 8px 16px);
+  --fill-shot: repeating-linear-gradient(135deg, #f7f8fa 0 8px, #f1f3f6 8px 16px);
+
+  /* Focus + motion */
+  --focus-ring: 0 0 0 3px rgb(6 132 196 / 28%);
+  --motion-fast: 120ms;
+  --motion-standard: 180ms;
 }

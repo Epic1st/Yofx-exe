@@ -1,6 +1,7 @@
 {
   "schema": "yo4x.completion-blocker-ledger.v1",
-  "generatedAtUtc": "2026-08-23T18:20:00.000Z",
+  "generatedAtUtc": "2026-08-24T07:32:46.604Z",
+  "documentationReconciledAtUtc": "2026-08-24T07:32:46.604Z",
   "scope": "Full-tree security-hardening verification pass continuing the 2026-08-23 plan: fail-closed host composition, evidence reconciliation, full sequential verification, MQL artifact reconciliation, MT5 gate evaluation.",
   "verificationRuns": [
     {
@@ -10,7 +11,7 @@
     },
     {
       "name": "Unit suites (13 projects)",
-      "result": "1,101 passed / 0 failed",
+      "result": "1,102 passed / 0 failed / 0 skipped",
       "suites": {
         "YO4X.Admin.Postgres.Tests": 35,
         "YO4X.Api.Tests": 124,
@@ -20,7 +21,7 @@
         "YO4X.GatewayHost.Tests": 38,
         "YO4X.LocalSecrets.Windows.Tests": 62,
         "YO4X.Runtime.Application.Tests": 95,
-        "YO4X.Runtime.Tests": 63,
+        "YO4X.Runtime.Tests": 64,
         "YO4X.RuntimeControl.Postgres.Tests": 78,
         "YO4X.Trading.Application.Tests": 89,
         "YO4X.Trading.Postgres.Tests": 17,
@@ -29,11 +30,11 @@
     },
     {
       "name": "Fresh-cluster PostgreSQL integration (scripts/Test-PostgresIntegration.ps1)",
-      "result": "100 passed / 0 failed (ephemeral PG 18.6 loopback cluster, scram-sha-256, hardened pg_hba)"
+      "result": "106 passed / 0 failed / 0 skipped in 11m38s (ephemeral PG 18.6 loopback cluster, scram-sha-256, hardened pg_hba)"
     },
     {
       "name": "Frontend",
-      "result": "tsc typecheck clean; vitest 55/55 across 5 files; production vite build succeeded"
+      "result": "tsc typecheck clean; vitest 89/89 across 6 files; production vite build succeeded"
     },
     {
       "name": "Dependency audit",
@@ -53,59 +54,90 @@
     {
       "item": "Freeze migration/role hashes; reconcile docs",
       "evidence": [
-        "001_foundation.sql / 002_user_operation_invocation_protocol.sql / Security/least_privilege_roles.sql byte-match the SHA-256 pins in docs/backend/POSTGRESQL_BASELINE_POLICY.md; triangle enforced by PostgresBaselinePolicyTests.",
+        "001_foundation.sql (1de1cad6257edbd1a2c9eacd969171222b950d38b8cfa2f09ea5525506279db6) / 002_user_operation_invocation_protocol.sql (827598ac1aa9924ca1cfe9df383599d608148a44ac4cc6989a78af38ca35a934) / Security/least_privilege_roles.sql (e5c2dd5464c1d2bd3a58f0887a76caa3fc94f4a8fa1c2d747f9669316d5fff8c) byte-match the SHA-256 pins in docs/backend/POSTGRESQL_BASELINE_POLICY.md; triangle enforced by PostgresBaselinePolicyTests.",
+        "The expected catalog semantic fingerprint is 3a0ff8ac15dcaa21234bb6d9f78818ab52af5a51a390cc02543c3a0be087d18e, and a fresh idempotent apply records exactly migrations 001 and 002.",
         "docs/backend/IMPLEMENTATION_STATUS.md stale-count caveat replaced with this pass's verified totals.",
         "docs/backend/POSTGRES_TENANT_CONTEXT_CAPABILITY.md gains status date and centralized connection-security section."
       ]
     },
     {
       "item": "Sequential full-solution, PostgreSQL, frontend, security, dependency verification",
-      "evidence": ["See verificationRuns above; all green on 2026-08-23."]
+      "evidence": ["See verificationRuns above; all green on 2026-08-24."]
     },
     {
       "item": "MQL deterministic outputs indexed",
       "evidence": [
         "artifacts/verification/mql5/mq5-deterministic-outputs-index.v1.json pins SHA-256 + byte length of all five deterministic outputs.",
-        "Corpus arithmetic reconciles: 199 disk .mq5/.mqh = 198 manifest rows + 1 quarantined SourceLikeTextCandidate ('brains.mq5 kgaugelo'); quarantine v2 categories sum to 15; compile plan covers exactly the 166 canonical .mq5 targets."
+        "A fresh non-executing replay regenerated all seven canonical static, conversion, compile-plan, and quarantine evidence/report files byte-for-byte with zero hash or length mismatches; it did not persist, compile, load MT5, load the vendor DLL, or read the demo credential file.",
+        "The security-sanitized current corpus is exactly 198 files and 12,979,438 bytes under SHA-256 9a53e844cfd3ffe5dfcf28544bb4909ce69741ac6a373e80b139f8227779dd47; the compile plan covers exactly 166 canonical .mq5 targets, has 12 intrinsic candidates and 0 locally dispatch-ready targets, and its formatted metadata file is exactly 455,612 bytes.",
+        "All 32 .mqh files have conversion-evidence dispositions: 17 awaiting isolated type-check, 1 missing dependency, 13 unsupported semantics, and 1 external-dependency snapshot."
+      ]
+    },
+    {
+      "item": "Requested-v4 and reconciliation-challenge scaffolding",
+      "evidence": [
+        "Migration 002, strict C# contracts and role adapters, and production PostgresUserOperationWorkStore integration implement requested-v4/result-v5 attempt and challenge scheduling/state transitions.",
+        "The reconciliation SECURITY DEFINER boundary enforces the fixed worker actor before input validation and binds operation correlation before authority/row locking; branch-complete negative facts prove no evidence disclosure, mutation, or retained row lock.",
+        "PG18 integration evidence uses a deterministic non-broker provider; it does not prove authenticated production transport, provider invocation, restart recovery, or a broker outcome."
       ]
     }
   ],
   "openBlockers": [
+    {
+      "id": "OUTBOX-TRANSPORT",
+      "severity": "hard",
+      "detail": "Requested-v4/result-v5 and challenge database/C# scaffolding plus production PostgresUserOperationWorkStore integration exist, but no authenticated outbox consumer/destination or Supervisor/Gateway/credential-boundary ingress, handoff, and return transport is wired. The production secret provider, provider/observer invoker, and restart coordinator are also absent. Protocol remains disabled by design."
+    },
+    {
+      "id": "TRUSTED-RISK-AUTHORITY",
+      "severity": "hard",
+      "detail": "No trusted component authenticates immutable broker observations, derives broker-dependent risk inputs and exposure, binds current policy/risk-day/order-rate state, and authorizes a production broker command. Caller-supplied risk input remains rejected."
+    },
+    {
+      "id": "AUTHENTICATED-RECONCILIATION-PROOF",
+      "severity": "high",
+      "detail": "Database/C# reconciliation-challenge issuance, consumption, canonical result handling, and production work-store scheduling are implemented. No authenticated transport/provider/restart path has exercised them against a real broker, so crash/unknown proof remains unproven; ambiguous operations can remain unknown and readiness unhealthy by design."
+    },
+    {
+      "id": "V2-ENVELOPE-DEADLINES",
+      "severity": "high",
+      "detail": "The legacy v2 mutation envelope lacks database-owned capability expiry, assignment lease, fence, and bounded execution-deadline fields. An execution-enabled receiver must use the requested-v4 claim/attempt boundary and must never consume stale v2 delivery."
+    },
+    {
+      "id": "MT5-PROVENANCE",
+      "severity": "hard",
+      "detail": "The exact vendor mt5api.dll is unsigned and no licence or notice material grants commercial, local, cloud, or SaaS use. Written vendor rights evidence is required."
+    },
+    {
+      "id": "GIT-HISTORY-CREDENTIALS",
+      "severity": "hard",
+      "detail": "Reachable history retains Testing/Mq5.zip in three commits, the credential-bearing vendor Examples.cs in two commits, and one historical Telegram token redacted from current evidence. Affected credentials require revocation or rotation plus coordinated remote history, cache, and fork remediation; no secret values are reproduced."
+    },
     {
       "id": "MT5-ISOLATION",
       "severity": "hard",
       "detail": "artifacts/verification/toolchain/mt5-toolchain-isolation.v4.json verdict is isolated_runner_not_configured: IsolatedRunnerConfigured=False, SafeToCompileUntrustedMqlOnHost=False, SafeToExecuteSuppliedMqlOnHost=False. Per plan rule, MT5 compile/execution stays blocked."
     },
     {
-      "id": "GIT-HISTORY-CREDENTIALS",
-      "severity": "hard",
-      "detail": "Remote git history retains pre-redaction vendor Examples.cs credential tuples and a Telegram bot token; coordinated revoke/rotate/history-scrub still outstanding."
-    },
-    {
       "id": "PLATFORM-SNAPSHOT",
       "severity": "hard",
-      "detail": "0/166 MQL files compile-ready: every target gated on an approved platform-library snapshot (approvalId/snapshotSha null); 108 classified unsupportedSemantics; 13 intrinsically ready await the snapshot only."
+      "detail": "0/166 MQL files are locally dispatch-ready: every target is gated on approved snapshot authority (approvalId/snapshotSha null); 108 are intrinsically unsupportedSemantics and 12 are intrinsic candidates for a later isolated type-check."
     },
     {
-      "id": "MQL-TAXONOMY-CROSSWALK",
-      "severity": "medium",
-      "detail": "conversion-evidence classes (awaitingIsolatedTypeCheck=30, blockedExternalDependencySnapshot=37) lack a documented crosswalk to compile-plan dispositions; 32 .mqh includes have no per-file classification row."
-    },
-    {
-      "id": "OUTBOX-TRANSPORT",
+      "id": "MT5-PARITY",
       "severity": "hard",
-      "detail": "No authenticated Supervisor/Gateway/credential-boundary transport for requested-v4 dispatch; outbox destination, ingress/handoff channels, isolated child, production secret provider, invoker, restart coordinator absent. Protocol remains disabled by design."
+      "detail": "Grammar, type-check, restricted-IR lowering, semantic conversion, MetaEditor compilation, reference-parity, and runtime proof counts are all zero; no strategy may be represented as converted or runnable until the complete evidence chain exists."
     },
     {
-      "id": "RECONCILIATION-CHALLENGE-WORKFLOW",
-      "severity": "high",
-      "detail": "Post-expiry first-proof reconciliation-challenge workflow (24h result-capability expiry) not yet implemented; ambiguous operations can remain unknown and readiness unhealthy by design."
+      "id": "MT5-DEMO-CREDENTIAL-REMEDIATION",
+      "severity": "hard",
+      "detail": "The plaintext demo credential file remains host-local, untracked, and ignored. It was not read by this audit; rotation or removal is not evidenced, and the production secret provider remains unwired even though local DPAPI import evidence exists."
     },
     {
-      "id": "V2-ENVELOPE-DEADLINES",
+      "id": "MQL-ALL-NUL-RECOVERY",
       "severity": "high",
-      "detail": "Legacy v2 mutation envelope lacks fence/deadline fields; execute-only successor contract required before any execution-enabled receiver may consume it."
+      "detail": "Canonical Simple_Classic_Trailing.mq5 bytes are all-NUL while a quarantined source-like candidate exists. Restoring different bytes requires an owner provenance decision followed by a complete inventory, dependency, plan, and persistence re-run."
     }
   ],
-  "verdict": "Code-level hardening and verification objectives for this pass are MET and evidenced. Goal closure remains blocked only by the external/environmental blockers listed above, none of which code changes alone can satisfy."
+  "verdict": "The documented fail-closed foundation and deterministic scaffolding are evidenced, but goal closure remains open. Repository implementation blockers (authenticated requested-v4 transport/consumer/provider/restart wiring, trusted risk authority, and authenticated broker reconciliation proof) remain alongside external provenance, isolation, credential-remediation, compiler, and platform-snapshot actions."
 }

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\YO4X.Mql5.CodeGen\YO4X.Mql5.CodeGen.csproj" />
+    <ProjectReference Include="..\YO4X.Mql5.Runtime\YO4X.Mql5.Runtime.csproj" />
+  </ItemGroup>
+
+</Project>

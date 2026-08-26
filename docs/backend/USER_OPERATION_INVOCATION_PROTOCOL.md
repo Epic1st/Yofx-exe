@@ -47,6 +47,15 @@ must remain mutation-disabled:
   crosses every role-specific adapter with a deterministic in-memory provider,
   then proves exact result replay and persisted target evidence. That provider
   is test evidence only; it is not MT5 or broker connectivity.
+- The production `PostgresUserOperationWorkStore` is integrated with the v4
+  attempt and challenge claims, ambiguity recovery, canonical result handling,
+  target projection, and terminal audit/outbox evidence. Its current destination
+  remains unavailable, so this production persistence path cannot reach a provider.
+- Reconciliation requires the fixed production worker actor and a non-null
+  correlation context before input validation. The operation/correlation binding is
+  checked without taking the global authority or operation row lock, then repeated in
+  the locked lookup. A mismatched correlation therefore returns no row, reveals no
+  evidence branch, and retains no lock against the legitimate worker.
 - There is no production outbox consumer/router or authenticated transport that
   executes requested-v4 envelopes. Supervisor and GatewayHost register only
   role-local unavailable ports while the protocol is disabled; setting
@@ -141,8 +150,10 @@ The protocol assumes:
     outbox payload; later gateway, redemption, and receipt bearers are transient
     bind/return values.
 12. Every authority-changing function is `SECURITY DEFINER`, has
-    `search_path = ''`, validates exact `session_user` and `current_user`, uses
-    database-clock checks, and has `PUBLIC` execution revoked.
+    `search_path = ''`, validates exact `session_user` and `current_user`, binds the
+    authenticated actor/correlation to its durable target before authority-bearing
+    locks or evidence disclosure, uses database-clock checks, and has `PUBLIC`
+    execution revoked.
 
 ## Process and role boundaries
 
@@ -214,6 +225,12 @@ Receipts are append-only. Each receipt binds:
 - broker-confirmed observation digest when applicable;
 - database `occurred_at` and caller observation time;
 - a canonical receipt SHA-256 digest.
+
+The terminal reference `invocation-observation/{attemptId}` is deliberately
+attempt-keyed. An attempt has at most one gateway observation receipt, observed state
+requires that receipt, and the projection record uniquely binds both attempt and
+receipt. The reference cannot select alternate evidence; changing it to a receipt-ID
+resource would require a versioned external contract.
 
 Receipt kinds are allowlisted:
 
@@ -681,7 +698,11 @@ altering a policy, or changing a function definition.
 
 ## Release gate
 
-Until this protocol or a demonstrably equivalent DB-owned handoff is
-implemented and verified, production/demo mutation execution remains disabled.
-Static strategy conversion, proof-only gateway behavior, durable request
-creation, and reconciliation scaffolding do not satisfy this gate.
+The provider-neutral database/C# protocol and production work-store integration
+are implemented, but they do not close the release gate. Production/demo mutation
+execution remains disabled until authenticated transport and consumption across
+Supervisor/Gateway/credential boundaries, the production secret provider and
+provider/observer invoker, restart coordination, trusted risk authority, and real
+authenticated broker-result evidence are implemented and verified. Static strategy
+conversion, proof-only gateway behavior, durable request creation, and
+reconciliation scaffolding do not satisfy this gate.

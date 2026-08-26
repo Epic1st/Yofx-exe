@@ -7,6 +7,7 @@ interface ImportMetaEnv {
   readonly VITE_YO4X_STRATEGY_CORPUS_ID?: string;
   readonly VITE_YO4X_RUNTIME_READINESS_PATH?: string;
   readonly VITE_YO4X_SIGN_IN_URL?: string;
+  readonly VITE_YO4X_DEVELOPMENT_IDENTITY_ENABLED?: string;
 }
 
 interface ImportMeta {
@@ -15,7 +16,7 @@ interface ImportMeta {
 
 interface Yo4xAuthBridge {
   getAccessToken: () => Promise<string | null>;
-  beginLogin?: () => void;
+  beginLogin?: (intent?: 'sign-in' | 'create-account') => Promise<void>;
 }
 
 interface Window {

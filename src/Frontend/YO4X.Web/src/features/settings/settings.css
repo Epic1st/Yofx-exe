@@ -1,0 +1,189 @@
+/*
+ * "Settings" — trading accounts, bridge, security and app preferences.
+ * Shared primitives (.panel, .badge, .btn, .toggle, .dot) come from global.css.
+ */
+
+.settings-page {
+  max-width: 860px;
+}
+
+.settings-intro {
+  margin-bottom: 22px;
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.settings-heading {
+  margin: 0 0 12px;
+}
+
+.settings-block {
+  margin-bottom: 28px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-row:last-child {
+  border-bottom: none;
+}
+
+.settings-row--toggle {
+  gap: 20px;
+}
+
+.settings-row__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-field);
+  color: var(--color-text-tertiary);
+}
+
+.settings-row__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-row__label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-row__hint {
+  margin-top: 3px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-row__action {
+  white-space: nowrap;
+}
+
+.settings-account__logo {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-chip);
+  background: var(--color-surface);
+}
+
+.settings-account__logo img {
+  display: block;
+}
+
+.settings-account__login {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-account__balance {
+  width: 130px;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
+.settings-account__status {
+  width: 150px;
+}
+
+.settings-skeleton {
+  height: 12px;
+  margin-top: 6px;
+}
+
+.settings-skeleton--label {
+  width: 40%;
+  margin-top: 0;
+}
+
+.settings-bridge {
+  padding: 18px;
+  margin-bottom: 28px;
+}
+
+.settings-bridge__skeleton {
+  height: 72px;
+}
+
+.settings-bridge__grid {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.settings-bridge__copy {
+  flex: 1;
+}
+
+.settings-bridge__headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-bridge__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-bridge__body {
+  margin: 7px 0 0;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.settings-bridge__figures {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  width: 230px;
+}
+
+.settings-figure {
+  display: flex;
+  justify-content: space-between;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
+.settings-figure__value {
+  color: var(--color-text);
+}
+
+@media (max-width: 760px) {
+  .settings-bridge__grid {
+    flex-direction: column;
+  }
+
+  .settings-bridge__figures {
+    width: 100%;
+  }
+
+  .settings-account__balance,
+  .settings-account__status {
+    width: auto;
+  }
+}

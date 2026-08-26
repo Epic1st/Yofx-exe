@@ -1,0 +1,47 @@
+<Window x:Class="YO4X.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="YO4X Desktop"
+        Width="1440"
+        Height="940"
+        MinWidth="980"
+        MinHeight="680"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource ShellBackground}">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition x:Name="CommandBarRow" Height="52" />
+      <RowDefinition Height="*" />
+      <RowDefinition x:Name="StatusBarRow" Height="28" />
+    </Grid.RowDefinitions>
+
+    <Border x:Name="CommandBar" Grid.Row="0" Background="White" BorderBrush="{StaticResource ShellBorder}" BorderThickness="0,0,0,1">
+      <Grid Margin="12,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <Button x:Name="BackButton" Grid.Column="0" Content="Back" Click="BackButton_Click" IsEnabled="False" />
+        <Button x:Name="ForwardButton" Grid.Column="1" Content="Forward" Click="ForwardButton_Click" IsEnabled="False" />
+        <Button Grid.Column="2" Content="Refresh" Click="RefreshButton_Click" />
+        <Button Grid.Column="3" Content="Live API" Click="LiveButton_Click" />
+        <Button x:Name="FixtureButton" Grid.Column="4" Content="Development fixture" Click="FixtureButton_Click" Visibility="Collapsed" />
+        <TextBlock Grid.Column="6" Text="YO4X" Foreground="{StaticResource BrandBlue}" FontWeight="Bold" FontSize="20" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
+
+    <Border x:Name="BrowserHost" Grid.Row="1" Margin="10" Background="White" BorderBrush="{StaticResource ShellBorder}" BorderThickness="1" CornerRadius="8">
+      <wv2:WebView2 x:Name="Browser" />
+    </Border>
+
+    <Border x:Name="StatusBar" Grid.Row="2" Background="White" BorderBrush="{StaticResource ShellBorder}" BorderThickness="0,1,0,0">
+      <TextBlock x:Name="StatusText" Margin="12,0" VerticalAlignment="Center" Foreground="#4E6080" Text="Starting secure desktop shell…" />
+    </Border>
+  </Grid>
+</Window>

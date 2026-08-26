@@ -37,6 +37,33 @@ public abstract class UserOperationTargetObservation
     }
 
     /// <summary>
+    /// Parses an exact closed target-observation object from durable database
+    /// evidence. Property order is immaterial because PostgreSQL jsonb does
+    /// not preserve wire order; unknown, duplicate, missing, or incorrectly
+    /// typed fields are rejected.
+    /// </summary>
+    public static UserOperationTargetObservation ParseDatabaseJson(
+        string targetType,
+        string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        using JsonDocument document =
+            UserOperationContractValidation.ParseCanonicalDocument(json);
+        return targetType switch
+        {
+            "broker_account" =>
+                UserOperationBrokerTargetObservation.ParseDatabase(
+                    document.RootElement),
+            "deployment" =>
+                UserOperationDeploymentTargetObservation.ParseDatabase(
+                    document.RootElement),
+            _ => throw UserOperationContractValidation.InvalidPayload(
+                "The target observation discriminator is invalid.")
+        };
+    }
+
+    /// <summary>
     /// Validates that this closed evidence shape and outcome exactly describe
     /// the requested target transition. Provider boundaries use this before a
     /// conclusive observation is allowed to leave the point of no return.
@@ -109,6 +136,17 @@ public sealed class UserOperationBrokerTargetObservation : UserOperationTargetOb
     internal static UserOperationBrokerTargetObservation Parse(JsonElement value)
     {
         UserOperationContractValidation.RequireExactProperties(value, CanonicalProperties);
+        return ParseValues(value);
+    }
+
+    internal static UserOperationBrokerTargetObservation ParseDatabase(JsonElement value)
+    {
+        UserOperationContractValidation.RequireExactPropertySet(value, CanonicalProperties);
+        return ParseValues(value);
+    }
+
+    private static UserOperationBrokerTargetObservation ParseValues(JsonElement value)
+    {
         return Create(
             UserOperationContractValidation.ReadString(value, "accountState"),
             UserOperationContractValidation.ReadString(value, "credentialState"),
@@ -219,6 +257,17 @@ public sealed class UserOperationDeploymentTargetObservation : UserOperationTarg
     internal static UserOperationDeploymentTargetObservation Parse(JsonElement value)
     {
         UserOperationContractValidation.RequireExactProperties(value, CanonicalProperties);
+        return ParseValues(value);
+    }
+
+    internal static UserOperationDeploymentTargetObservation ParseDatabase(JsonElement value)
+    {
+        UserOperationContractValidation.RequireExactPropertySet(value, CanonicalProperties);
+        return ParseValues(value);
+    }
+
+    private static UserOperationDeploymentTargetObservation ParseValues(JsonElement value)
+    {
         return Create(
             UserOperationContractValidation.ReadString(value, "observedState"),
             UserOperationContractValidation.ReadString(value, "observedDigest"),

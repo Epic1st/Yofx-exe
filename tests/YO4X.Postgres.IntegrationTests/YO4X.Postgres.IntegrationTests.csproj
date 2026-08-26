@@ -29,6 +29,7 @@
     <ProjectReference Include="..\..\src\Apps\YO4X.ControlPlane.Api\YO4X.ControlPlane.Api.csproj" />
     <ProjectReference Include="..\..\src\Apps\YO4X.ControlPlane.Workers\YO4X.ControlPlane.Workers.csproj" />
     <ProjectReference Include="..\..\src\Apps\YO4X.Conversion.Worker\YO4X.Conversion.Worker.csproj" />
+    <ProjectReference Include="..\..\src\Apps\YO4X.DevelopmentIdentity\YO4X.DevelopmentIdentity.csproj" />
     <ProjectReference Include="..\..\src\Infrastructure\YO4X.Admin.Postgres\YO4X.Admin.Postgres.csproj" />
     <ProjectReference Include="..\..\src\Infrastructure\YO4X.ControlPlane.Postgres\YO4X.ControlPlane.Postgres.csproj" />
     <ProjectReference Include="..\..\src\Infrastructure\YO4X.Trading.Postgres\YO4X.Trading.Postgres.csproj" />

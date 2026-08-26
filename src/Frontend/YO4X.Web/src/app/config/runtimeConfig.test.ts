@@ -3,6 +3,33 @@ import { readRuntimeConfig } from './runtimeConfig';
 describe('runtime configuration URL boundaries', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    window.sessionStorage.clear();
+    window.localStorage.clear();
+  });
+
+  it('enables only the exact development identity contract behind an explicit flag', () => {
+    vi.stubEnv('DEV', true);
+    vi.stubEnv('VITE_YO4X_DEVELOPMENT_IDENTITY_ENABLED', 'true');
+
+    expect(readRuntimeConfig().developmentOidc).toEqual({
+      authority: 'https://127.0.0.1:7210',
+      clientId: 'yo4x-web-development',
+      redirectUri: 'http://127.0.0.1:4173/auth/callback',
+    });
+  });
+
+  it.each(['false', 'TRUE', '1'])('rejects a non-explicit local identity flag: %s', flag => {
+    vi.stubEnv('VITE_YO4X_DEVELOPMENT_IDENTITY_ENABLED', flag);
+
+    expect(() => readRuntimeConfig()).toThrow('must be exactly true');
+  });
+
+  it('fails closed when local identity is requested in a production build', () => {
+    vi.stubEnv('DEV', false);
+    vi.stubEnv('VITE_YO4X_CONTROL_API_ORIGIN', 'https://control.example');
+    vi.stubEnv('VITE_YO4X_DEVELOPMENT_IDENTITY_ENABLED', 'true');
+
+    expect(() => readRuntimeConfig()).toThrow('only at the exact development loopback origin');
   });
 
   it('accepts the version-7 corpus identifier produced by the backend', () => {
@@ -83,6 +110,7 @@ describe('runtime configuration URL boundaries', () => {
     expect(config.strategyCorpusId).toBeNull();
     expect(config.runtimeReadinessPath).toBeNull();
     expect(config.signInUrl).toBe('/auth/sign-in');
+    expect(config.developmentOidc).toBeNull();
   });
 
   it.each([

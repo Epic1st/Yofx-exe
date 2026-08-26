@@ -1,6 +1,6 @@
 # PostgreSQL baseline and compatibility policy
 
-Status date: 2026-08-23 UTC
+Status date: 2026-08-26 UTC
 
 This repository is explicitly pre-release and greenfield. No durable deployed
 YO4X database or legacy proof-key inventory is available. The current
@@ -11,8 +11,21 @@ The canonical SQL release inputs are UTF-8 with LF line endings. Their SHA-256
 digests are:
 
 - `001_foundation.sql`: `1de1cad6257edbd1a2c9eacd969171222b950d38b8cfa2f09ea5525506279db6`
-- `002_user_operation_invocation_protocol.sql`: `0cdf77558e519e9a1eedd3813d5c92a3d2d67b775a3b7d5829154c0ccb914f74`
-- `least_privilege_roles.sql`: `292286093807f76a4a09bf7535736cdb4d006c6e9ae6accf12cd389d07eefa35`
+- `002_user_operation_invocation_protocol.sql`: `827598ac1aa9924ca1cfe9df383599d608148a44ac4cc6989a78af38ca35a934`
+- `003_pending_demo_broker_account_registration.sql`: `748cd68f378c81ebed6ef6f98673e4b6314ee23494ed50a56c35070bd17ed5d4`
+- `004_local_development_identity_provisioning.sql`: `8803f1b2e6a269cea043962387319b60491e234ba1e0479143a69b3a0f43658c`
+- `005_frontend_projections.sql`: `8811cd182063f9e1b99565918d50e13d459b63a116f45d1b358d8eb9d310a787`
+- `006_strategy_inputs_and_backtests.sql`: `ec5efbabb8747f3fe510b2653912a01ccee7cbde0755926fbbb2e3bbe848bc10`
+- `007_broker_server_catalogue.sql`: `15f5903cf97c1fd4d6eff2180e4afd0631377a5f13e750dd2b01ace960f31e6a`
+- `008_backtest_queue_worker_access.sql`: `da172066c80bca3fc665649933a0c1dccfc442b07afab0fbf140291151e3ed27`
+- `009_backtest_equity_curve.sql`: `4fcc53e9d451600438e68e047cb8631927f304f40f3bcc434ef1b90ec7cd685f`
+- `010_bot_settings_and_broker_symbols.sql`: `bc545183be6187a4e1eec75c6772b4cbed52eb5c406e503c561cc579ecb8f6a2`
+- `least_privilege_roles.sql`: `17de46699761981c7747be190d8b91f178ade24662ad25bfd2774b13a7bc8c1d`
+
+The expected catalog semantic fingerprint is
+`8772e5e7b8044ef68e185772d569128e771a11fb4b6f06dca7df1260b3822eba`.
+It is derived from the migrated catalog and effective role capabilities; it is
+not a substitute for any exact SQL-file checksum above.
 
 `.gitattributes` pins every SQL file to LF so a clean checkout cannot change an
 embedded migration checksum. Once this baseline is released or applied to a
@@ -66,7 +79,14 @@ rebuild is never treated as an upgrade.
 
 - The LF migration and role-script checksum test must match the values above.
 - Applying the baseline to a fresh PostgreSQL database and applying it again
-  must produce one recorded migration and no domain seed rows.
+  must produce exactly the ten recorded migrations listed above, in that
+  order, and no domain seed rows. The MetaTrader 5 broker-server directory that
+  `007_broker_server_catalogue.sql` creates is deliberately left empty: rows
+  arrive only from an offline `YO4X.Mt5.BrokerCatalogueImport` run. The two
+  tables `010_bot_settings_and_broker_symbols.sql` adds are empty for the same
+  reason: `bots.bot_inputs` gains a row only when an operator changes an EA
+  input away from the value the strategy source declares, and
+  `bots.broker_symbols` only when a broker's own instrument list is imported.
 - A tampered recorded checksum must fail without changing the recorded value or
   applying schema work.
 - Runtime readiness must verify the current schema and exact role capabilities.

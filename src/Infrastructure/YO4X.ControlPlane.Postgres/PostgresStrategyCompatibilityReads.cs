@@ -6,6 +6,79 @@ namespace YO4X.ControlPlane.Postgres;
 
 public sealed partial class PostgresControlPlaneApplication
 {
+    /// <summary>
+    /// Lists every MQL5 source corpus the actor has imported, newest first.
+    /// </summary>
+    /// <remarks>
+    /// The compatibility projection is addressed by corpus identifier, and nothing else in the API
+    /// hands one out — without this the identifier had to be known before it could be used, which
+    /// meant the projection could not be reached from the application at all.
+    /// </remarks>
+    public async Task<IReadOnlyList<StrategySourceCorpusSummary>> GetStrategySourceCorporaAsync(
+        UserActor actor,
+        CancellationToken cancellationToken)
+    {
+        (var transaction, _) = await BeginAuthorizedAsync(
+                actor,
+                Guid.CreateVersion7(),
+                cancellationToken)
+            .ConfigureAwait(false);
+        await using (transaction.ConfigureAwait(false))
+        {
+            await using NpgsqlCommand command = transaction.CreateCommand(
+                """
+                select
+                    corpus.id,
+                    corpus.source_label,
+                    corpus.file_count,
+                    corpus.total_bytes,
+                    corpus.created_at,
+                    count(source_file.id)
+                from governance.strategy_source_corpora as corpus
+                left join governance.strategy_source_files as source_file
+                  on source_file.tenant_id = corpus.tenant_id
+                 and source_file.corpus_id = corpus.id
+                 and source_file.user_id = corpus.user_id
+                where corpus.tenant_id = @tenant_id
+                  and corpus.user_id = @user_id
+                  and corpus.state = 'static_analyzed'
+                group by corpus.id, corpus.source_label, corpus.file_count,
+                         corpus.total_bytes, corpus.created_at
+                order by corpus.created_at desc, corpus.id desc
+                """);
+            command.Parameters.AddWithValue("tenant_id", NpgsqlDbType.Uuid, actor.TenantId);
+            command.Parameters.AddWithValue("user_id", NpgsqlDbType.Uuid, actor.UserId);
+
+            var summaries = new List<StrategySourceCorpusSummary>();
+            {
+                await using NpgsqlDataReader reader = await command
+                    .ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    int fileCount = reader.GetInt32(2);
+                    long analyzed = reader.GetInt64(5);
+                    if (analyzed > fileCount)
+                    {
+                        throw new InvalidOperationException(
+                            "A strategy source corpus records more analyzed files than it contains.");
+                    }
+
+                    summaries.Add(new StrategySourceCorpusSummary(
+                        reader.GetGuid(0),
+                        reader.GetString(1),
+                        fileCount,
+                        reader.GetInt64(3),
+                        (int)analyzed,
+                        reader.GetFieldValue<DateTimeOffset>(4)));
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return summaries.AsReadOnly();
+        }
+    }
+
     public async Task<StrategyCompatibilityProjection?> GetStrategyCompatibilityAsync(
         UserActor actor,
         Guid corpusId,

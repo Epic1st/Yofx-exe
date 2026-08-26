@@ -265,6 +265,73 @@ public sealed class IsolatedBrokerProcessClientTests
         }
     }
 
+    [Fact]
+    public async Task ConnectionOnlyClientAcceptsAuthenticatedProbeResponse()
+    {
+        var client = new IsolatedBrokerConnectionProbeClient(
+            WorkerOptions(TimeSpan.FromSeconds(5)),
+            TestProbeEnvironment());
+
+        GatewayOperationResult<BrokerConnectionProbeObservation> result =
+            await client.ProbeAsync(
+                ConnectProbe("Synthetic-Demo"),
+                TestContext.Current.CancellationToken);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(BrokerWorkerProtocolContract.ConnectProbeUnavailableCode, result.Code);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task ConnectionOnlyClientHardDeadlineTerminatesHangingWorker()
+    {
+        var observer = new RecordingProcessObserver();
+        var client = new IsolatedBrokerConnectionProbeClient(
+            WorkerOptions(TimeSpan.FromMilliseconds(500)),
+            TestProbeEnvironment(),
+            TimeProvider.System,
+            observer);
+
+        GatewayOperationResult<BrokerConnectionProbeObservation> result =
+            await client.ProbeAsync(
+                ConnectProbe("__YO4X_TEST_HANG__"),
+                CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(BrokerWorkerProtocolContract.ConnectProbeFailedCode, result.Code);
+        Assert.True(observer.ProcessId > 0);
+        Assert.True(observer.ProcessTreeKillRequested);
+        await AssertProcessExitedAsync(observer.ProcessId);
+    }
+
+    [Fact]
+    public void ConnectionOnlyClientRejectsUnscopedWorkerEnvironment()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new IsolatedBrokerConnectionProbeClient(
+                WorkerOptions(TimeSpan.FromSeconds(5)),
+                new Dictionary<string, string>
+                {
+                    ["BROKER_PASSWORD"] = "must-not-cross-boundary"
+                }));
+    }
+
+    private static BrokerWorkerConnectProbeRequest ConnectProbe(string serverName) => new(
+        Guid.CreateVersion7(),
+        Guid.CreateVersion7(),
+        new string('a', 64),
+        new string('b', 64),
+        new string('c', 64),
+        new BrokerServerIdentity("Synthetic Broker", serverName),
+        BrokerEnvironment.Demo,
+        DateTimeOffset.UtcNow);
+
+    private static Dictionary<string, string> TestProbeEnvironment() =>
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["YO4X_MT5_PROBE_ARTIFACT_ID"] = Guid.CreateVersion7().ToString("D")
+        };
+
     private static IsolatedBrokerProcessOptions WorkerOptions(TimeSpan timeout)
     {
         TestWorkerDeployment deployment = TestWorker.Value;

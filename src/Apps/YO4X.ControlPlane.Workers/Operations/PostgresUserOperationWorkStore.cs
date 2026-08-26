@@ -7,6 +7,7 @@ using YO4X.BuildingBlocks;
 using YO4X.ControlPlane.Workers.Outbox;
 using YO4X.Outbox;
 using YO4X.Persistence.Postgres;
+using YO4X.Runtime.Contracts;
 
 namespace YO4X.ControlPlane.Workers.Operations;
 
@@ -1189,6 +1190,12 @@ internal sealed class PostgresUserOperationWorkStore(
             return invocationChanged;
         }
 
+        if (operation.InvocationProtocolVersion == 4)
+        {
+            throw new InvalidOperationException(
+                "The active invocation protocol returned no reconciliation evidence.");
+        }
+
         string? dispatchState = await ReadDispatchStateAsync(transaction, operation, cancellationToken)
             .ConfigureAwait(false);
         PersistedProof? proof = operation.TargetType == "deployment"
@@ -1289,7 +1296,12 @@ internal sealed class PostgresUserOperationWorkStore(
                 route_deployment_id,
                 fence_generation,
                 worker_assignment_id,
-                worker_instance_id
+                worker_instance_id,
+                target_type,
+                target_id,
+                target_observation::text,
+                projection_status,
+                projected_target_row_version
             from control.reconcile_user_operation_invocation_attempt(
                 @operation_id,
                 @claim_token,
@@ -1330,34 +1342,29 @@ internal sealed class PostgresUserOperationWorkStore(
         long fenceGeneration = reader.GetInt64(14);
         Guid workerAssignmentId = reader.GetGuid(15);
         Guid workerInstanceId = reader.GetGuid(16);
+        string? targetType = ReadNullableString(reader, 17);
+        Guid? targetId = reader.IsDBNull(18) ? null : reader.GetGuid(18);
+        string? targetObservationJson = ReadNullableString(reader, 19);
+        string? projectionStatus = ReadNullableString(reader, 20);
+        long? projectedTargetRowVersion = reader.IsDBNull(21)
+            ? null
+            : reader.GetInt64(21);
+        bool targetObservationValid = TryParseTargetObservation(
+            targetType,
+            targetObservationJson,
+            out UserOperationTargetObservation? targetObservation);
 
-        bool conclusive = status is
-            "conclusive_result" or "conclusive_gateway_receipt";
-        bool commonConclusiveEvidenceValid = outcome is "succeeded" or "diverged"
-            && IsSha256(observationSha256)
-            && observedAt is not null
-            && receivedAt is not null
-            && receivedAt.Value >= observedAt.Value;
-        bool conclusiveEvidenceValid = !conclusive
-            || commonConclusiveEvidenceValid
-                && (status == "conclusive_result"
-                    ? (proofSource is
-                            "gateway_result_v5" or "reconciliation_result_v5")
-                        && resultId is not null
-                        && resultRecordId is not null
-                        && IsSha256(requestSha256)
-                    : proofSource == "gateway_observation_receipt"
-                        && resultId is null
-                        && resultRecordId is null
-                        && requestSha256 is null);
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             || status is not (
-                "conclusive_result" or
-                "conclusive_gateway_receipt" or
+                "conclusive_projected_result" or
+                "conclusive_diverged_result" or
+                "projection_blocked" or
                 "not_sent" or
                 "challenge_outstanding" or
                 "awaiting_evidence")
             || attemptId == Guid.Empty
+            || operation.InvocationProtocolVersion != 4
+            || operation.CurrentInvocationAttemptId != attemptId
             || attemptNumber <= 0
             || attemptState is not (
                 "pending" or
@@ -1375,7 +1382,28 @@ internal sealed class PostgresUserOperationWorkStore(
             || status == "not_sent" && attemptState != "not_sent"
             || status == "challenge_outstanding"
                 && attemptState is not ("authorized" or "ambiguous")
-            || !conclusiveEvidenceValid)
+            || !targetObservationValid
+            || !InvocationReconciliationShapeIsValid(
+                operation,
+                status,
+                attemptState,
+                proofSource,
+                outcome,
+                observationSha256,
+                observedAt,
+                receivedAt,
+                resultId,
+                resultRecordId,
+                requestSha256,
+                targetType,
+                targetId,
+                targetObservation,
+                projectionStatus,
+                projectedTargetRowVersion,
+                routeDeploymentId,
+                fenceGeneration,
+                workerAssignmentId,
+                workerInstanceId))
         {
             throw new InvalidOperationException(
                 "PostgreSQL returned invalid invocation-reconciliation evidence.");
@@ -1398,7 +1426,12 @@ internal sealed class PostgresUserOperationWorkStore(
             routeDeploymentId,
             fenceGeneration,
             workerAssignmentId,
-            workerInstanceId);
+            workerInstanceId,
+            targetType,
+            targetId,
+            targetObservation,
+            projectionStatus,
+            projectedTargetRowVersion);
     }
 
     private async Task<bool> HandleInvocationReconciliationAsync(
@@ -1455,20 +1488,39 @@ internal sealed class PostgresUserOperationWorkStore(
         }
 
         if (invocation.Status is
-            "conclusive_result" or "conclusive_gateway_receipt")
+            "conclusive_projected_result" or
+            "conclusive_diverged_result" or
+            "projection_blocked")
         {
-            // Result.v5 currently authenticates invocation/observation but
-            // does not carry the actual target-state fields required for a
-            // truthful broker/deployment projection. Preserve the proof and
-            // keep the operation non-terminal until that strict projection
-            // contract is available.
-            return await DeferAsync(
+            string reference = invocation.ResultRecordId is Guid resultRecordId
+                ? $"invocation-result/{resultRecordId:D}"
+                : $"invocation-observation/{invocation.AttemptId:D}";
+            var proof = new PersistedProof(
+                invocation.Status == "conclusive_projected_result"
+                    ? "succeeded"
+                    : "partial",
+                invocation.Status switch
+                {
+                    "conclusive_diverged_result" =>
+                        "runtime_reconciliation_diverged",
+                    "projection_blocked" => "invocation_projection_blocked",
+                    _ => null
+                },
+                reference,
+                invocation.WorkerAssignmentId,
+                invocation.WorkerInstanceId,
+                RouteDeploymentId: invocation.RouteDeploymentId,
+                FenceGeneration: invocation.FenceGeneration);
+            await FinishAsync(
                 transaction,
                 operation,
                 claimToken,
-                "reconciling",
-                "invocation_result_projection_required",
-                cancellationToken).ConfigureAwait(false);
+                proof.Outcome,
+                proof.ErrorCode,
+                proof.Reference,
+                cancellationToken,
+                proof).ConfigureAwait(false);
+            return true;
         }
 
         if (invocation.Status == "challenge_outstanding")
@@ -1702,6 +1754,8 @@ internal sealed class PostgresUserOperationWorkStore(
                 operation.dispatch_target_binding_sha256,
                 operation.dispatch_policy_snapshot_sha256,
                 operation.row_version, operation.created_at, operation.dispatched_at,
+                operation.invocation_protocol_version,
+                operation.current_invocation_attempt_id,
                 authority_time.authority_now
             """);
         AddClaimParameters(command, candidate, claimToken);
@@ -1746,6 +1800,8 @@ internal sealed class PostgresUserOperationWorkStore(
                 operation.dispatch_target_binding_sha256,
                 operation.dispatch_policy_snapshot_sha256,
                 operation.row_version, operation.created_at, operation.dispatched_at,
+                operation.invocation_protocol_version,
+                operation.current_invocation_attempt_id,
                 authority_time.authority_now
             """);
         AddClaimParameters(command, candidate, claimToken);
@@ -1776,7 +1832,22 @@ internal sealed class PostgresUserOperationWorkStore(
             return null;
         }
 
-        return new PersistedOperation(
+        short? invocationProtocolVersion = reader.IsDBNull(25)
+            ? null
+            : reader.GetInt16(25);
+        Guid? currentInvocationAttemptId = reader.IsDBNull(26)
+            ? null
+            : reader.GetGuid(26);
+        if ((invocationProtocolVersion is null) !=
+                (currentInvocationAttemptId is null)
+            || invocationProtocolVersion is not null and not 4
+            || currentInvocationAttemptId == Guid.Empty)
+        {
+            throw new InvalidOperationException(
+                "PostgreSQL returned an invalid user-operation protocol binding.");
+        }
+
+        var operation = new PersistedOperation(
             reader.GetGuid(0),
             reader.GetGuid(1),
             reader.GetString(2),
@@ -1802,7 +1873,16 @@ internal sealed class PostgresUserOperationWorkStore(
             reader.GetInt64(22),
             reader.GetFieldValue<DateTimeOffset>(23),
             reader.IsDBNull(24) ? null : reader.GetFieldValue<DateTimeOffset>(24),
-            reader.GetFieldValue<DateTimeOffset>(25));
+            invocationProtocolVersion,
+            currentInvocationAttemptId,
+            reader.GetFieldValue<DateTimeOffset>(27));
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "PostgreSQL returned duplicate user-operation claims.");
+        }
+
+        return operation;
     }
 
     private async Task<TargetSnapshot?> ReadTargetSnapshotAsync(
@@ -3098,6 +3178,225 @@ internal sealed class PostgresUserOperationWorkStore(
         value is { Length: 64 }
         && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
+    private static bool TryParseTargetObservation(
+        string? targetType,
+        string? json,
+        out UserOperationTargetObservation? value)
+    {
+        value = null;
+        if (targetType is null && json is null)
+        {
+            return true;
+        }
+
+        if (targetType is null || json is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            value = UserOperationTargetObservation.ParseDatabaseJson(targetType, json);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    private static bool InvocationReconciliationShapeIsValid(
+        PersistedOperation operation,
+        string status,
+        string attemptState,
+        string? proofSource,
+        string? outcome,
+        string? observationSha256,
+        DateTimeOffset? observedAt,
+        DateTimeOffset? receivedAt,
+        Guid? resultId,
+        Guid? resultRecordId,
+        string? requestSha256,
+        string? targetType,
+        Guid? targetId,
+        UserOperationTargetObservation? targetObservation,
+        string? projectionStatus,
+        long? projectedTargetRowVersion,
+        Guid routeDeploymentId,
+        long fenceGeneration,
+        Guid workerAssignmentId,
+        Guid workerInstanceId)
+    {
+        bool terminal = status is
+            "conclusive_projected_result" or
+            "conclusive_diverged_result" or
+            "projection_blocked";
+        if (!terminal)
+        {
+            return proofSource is null
+                && outcome is null
+                && observationSha256 is null
+                && observedAt is null
+                && receivedAt is null
+                && resultId is null
+                && resultRecordId is null
+                && requestSha256 is null
+                && targetType is null
+                && targetId is null
+                && targetObservation is null
+                && projectionStatus is null
+                && projectedTargetRowVersion is null
+                && (status != "awaiting_evidence"
+                    || attemptState is not ("observed" or "not_sent"));
+        }
+
+        bool proofShapeValid = proofSource switch
+        {
+            "gateway_result_v5" or "reconciliation_result_v5" =>
+                resultId is Guid persistedResultId
+                    && persistedResultId != Guid.Empty
+                    && resultRecordId is Guid persistedResultRecordId
+                    && persistedResultRecordId != Guid.Empty
+                    && IsSha256(requestSha256),
+            "gateway_observation_receipt" =>
+                resultId is null
+                    && resultRecordId is null
+                    && requestSha256 is null,
+            _ => false
+        };
+        bool commonEvidenceValid = attemptState == "observed"
+            && outcome is "succeeded" or "diverged"
+            && IsSha256(observationSha256)
+            && observedAt is not null
+            && receivedAt is not null
+            && observedAt.Value != default
+            && receivedAt.Value != default
+            && receivedAt.Value >= observedAt.Value
+            && string.Equals(targetType, operation.TargetType, StringComparison.Ordinal)
+            && targetId == operation.TargetId
+            && targetObservation is not null
+            && FixedDigestEquals(
+                targetObservation.ComputeCanonicalSha256(),
+                observationSha256)
+            && TargetObservationIsConsistent(
+                operation,
+                outcome,
+                targetObservation)
+            && InvocationProofRouteIsValid(
+                operation,
+                proofSource,
+                routeDeploymentId,
+                fenceGeneration,
+                workerAssignmentId,
+                workerInstanceId)
+            && proofShapeValid;
+        if (!commonEvidenceValid)
+        {
+            return false;
+        }
+
+        return status switch
+        {
+            "conclusive_projected_result" => outcome == "succeeded"
+                && projectionStatus is "projected" or "already_projected"
+                && projectedTargetRowVersion is >= 0,
+            "conclusive_diverged_result" => outcome == "diverged"
+                && projectionStatus == "not_applicable"
+                && projectedTargetRowVersion is null,
+            "projection_blocked" => outcome == "succeeded"
+                && projectionStatus == "blocked"
+                && projectedTargetRowVersion is null,
+            _ => false
+        };
+    }
+
+    private static bool TargetObservationIsConsistent(
+        PersistedOperation operation,
+        string? outcome,
+        UserOperationTargetObservation observation)
+    {
+        if (IsSha256(operation.DispatchTargetBindingSha256))
+        {
+            try
+            {
+                observation.ValidateResultConsistency(
+                    operation.TargetType,
+                    operation.RequestedTargetState,
+                    operation.DispatchTargetBindingSha256!,
+                    outcome == "succeeded"
+                        ? UserOperationObservationOutcome.Succeeded
+                        : UserOperationObservationOutcome.Diverged);
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        // Requested.v4 keeps the immutable target-binding digest on the
+        // current attempt rather than duplicating it onto the legacy operation
+        // columns. The SECURITY DEFINER reconciliation function has already
+        // validated that exact digest binding. Repeat every consistency check
+        // available from the closed returned evidence without inventing a
+        // replacement digest.
+        bool visibleTargetMatches = observation switch
+        {
+            UserOperationBrokerTargetObservation broker => string.Equals(
+                operation.RequestedTargetState,
+                $"{broker.AccountState}:{broker.CredentialState}",
+                StringComparison.Ordinal),
+            UserOperationDeploymentTargetObservation deployment =>
+                string.Equals(
+                    operation.RequestedTargetState,
+                    deployment.ObservedState,
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    operation.RequestedTargetState,
+                    deployment.BrokerExecutionState,
+                    StringComparison.Ordinal)
+                && (operation.RequestedTargetState != "stopped"
+                    || deployment.BrokerPositionState == "flat"),
+            _ => false
+        };
+        return outcome switch
+        {
+            "succeeded" => visibleTargetMatches,
+            "diverged" when observation is UserOperationBrokerTargetObservation =>
+                !visibleTargetMatches,
+            "diverged" => true,
+            _ => false
+        };
+    }
+
+    private static bool InvocationProofRouteIsValid(
+        PersistedOperation operation,
+        string? proofSource,
+        Guid routeDeploymentId,
+        long fenceGeneration,
+        Guid workerAssignmentId,
+        Guid workerInstanceId)
+    {
+        if (proofSource == "reconciliation_result_v5")
+        {
+            // The SECURITY DEFINER protocol function binds this route to the
+            // consumed challenge. The operation is bound independently below
+            // when the terminal lifecycle evidence is persisted.
+            return true;
+        }
+
+        bool legacyRouteUnpopulated = operation.DispatchRouteDeploymentId is null
+            && operation.DispatchFenceGeneration is null
+            && operation.DispatchWorkerAssignmentId is null
+            && operation.DispatchWorkerInstanceId is null;
+        return legacyRouteUnpopulated
+            || operation.DispatchRouteDeploymentId == routeDeploymentId
+                && operation.DispatchFenceGeneration == fenceGeneration
+                && operation.DispatchWorkerAssignmentId == workerAssignmentId
+                && operation.DispatchWorkerInstanceId == workerInstanceId;
+    }
+
     private static string CreateResultCapability()
     {
         byte[] randomBytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
@@ -3225,7 +3524,12 @@ internal sealed class PostgresUserOperationWorkStore(
         Guid RouteDeploymentId,
         long FenceGeneration,
         Guid WorkerAssignmentId,
-        Guid WorkerInstanceId);
+        Guid WorkerInstanceId,
+        string? TargetType,
+        Guid? TargetId,
+        UserOperationTargetObservation? TargetObservation,
+        string? ProjectionStatus,
+        long? ProjectedTargetRowVersion);
 
     private sealed record PersistedOperation(
         Guid Id,
@@ -3253,6 +3557,8 @@ internal sealed class PostgresUserOperationWorkStore(
         long RowVersion,
         DateTimeOffset CreatedAt,
         DateTimeOffset? DispatchedAt,
+        short? InvocationProtocolVersion,
+        Guid? CurrentInvocationAttemptId,
         DateTimeOffset AuthorizationNow);
 
     private sealed record TargetSnapshot(

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>YO4X.Mql5.Engine</RootNamespace>
+    <Description>Deterministic offline MQL5 strategy execution engine: bar feeds, simulated broker, indicators and run loop. Simulation only - never reaches a broker.</Description>
+  </PropertyGroup>
+
+</Project>

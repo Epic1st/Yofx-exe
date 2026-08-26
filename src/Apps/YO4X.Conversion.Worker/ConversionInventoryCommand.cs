@@ -35,6 +35,7 @@ public static class ConversionInventoryCommand
             string? compilePackagePlanOutput = GetOptionalOption(
                 arguments,
                 "--compile-package-plan-output");
+            string? restrictedIrOutput = GetOptionalOption(arguments, "--restricted-ir-output");
             if ((conversionEvidenceOutput is null) != (conversionEvidenceReportOutput is null))
             {
                 throw new ArgumentException(
@@ -42,15 +43,26 @@ public static class ConversionInventoryCommand
             }
 
             var requestedOutputs = new List<string> { manifestOutput, reportOutput };
+            int? conversionEvidenceIndex = null;
+            int? compilePackagePlanIndex = null;
+            int? restrictedIrIndex = null;
             if (conversionEvidenceOutput is not null)
             {
+                conversionEvidenceIndex = requestedOutputs.Count;
                 requestedOutputs.Add(conversionEvidenceOutput);
                 requestedOutputs.Add(conversionEvidenceReportOutput!);
             }
 
             if (compilePackagePlanOutput is not null)
             {
+                compilePackagePlanIndex = requestedOutputs.Count;
                 requestedOutputs.Add(compilePackagePlanOutput);
+            }
+
+            if (restrictedIrOutput is not null)
+            {
+                restrictedIrIndex = requestedOutputs.Count;
+                requestedOutputs.Add(restrictedIrOutput);
             }
 
             Mql5ArtifactPathSet paths = Mql5ArtifactOutputGuard.Resolve(
@@ -61,14 +73,18 @@ public static class ConversionInventoryCommand
             reportOutput = paths.OutputPaths[1];
             if (conversionEvidenceOutput is not null)
             {
-                conversionEvidenceOutput = paths.OutputPaths[2];
-                conversionEvidenceReportOutput = paths.OutputPaths[3];
+                conversionEvidenceOutput = paths.OutputPaths[conversionEvidenceIndex!.Value];
+                conversionEvidenceReportOutput = paths.OutputPaths[conversionEvidenceIndex.Value + 1];
             }
-
 
             if (compilePackagePlanOutput is not null)
             {
-                compilePackagePlanOutput = paths.OutputPaths[^1];
+                compilePackagePlanOutput = paths.OutputPaths[compilePackagePlanIndex!.Value];
+            }
+
+            if (restrictedIrOutput is not null)
+            {
+                restrictedIrOutput = paths.OutputPaths[restrictedIrIndex!.Value];
             }
 
             var job = new Mql5CorpusInventoryJob(new Mql5StaticInventoryAnalyzer());
@@ -76,7 +92,8 @@ public static class ConversionInventoryCommand
                 .AnalyzeDirectoryForPersistenceAsync(sourceRoot, cancellationToken)
                 .ConfigureAwait(false);
             bool requiresConversionEvidence = conversionEvidenceOutput is not null
-                || compilePackagePlanOutput is not null;
+                || compilePackagePlanOutput is not null
+                || restrictedIrOutput is not null;
             Mql5ConversionCorpusEvidence? conversionEvidence = !requiresConversionEvidence
                 ? null
                 : new Mql5ConversionEvidenceAnalyzer().Analyze(corpus.Documents);
@@ -87,6 +104,12 @@ public static class ConversionInventoryCommand
                     conversionEvidence!,
                     corpus.Documents,
                     approvedPlatformLibrarySnapshot: null);
+            Mql5RestrictedCorpusArtifact? restrictedArtifact = restrictedIrOutput is null
+                ? null
+                : Mql5RestrictedCorpusCompiler.Compile(
+                    corpus.Manifest,
+                    conversionEvidence!,
+                    corpus.Documents);
             await Mql5CorpusInventoryJob.WriteArtifactsAsync(
                     corpus.Manifest,
                     sourceRoot,
@@ -116,6 +139,16 @@ public static class ConversionInventoryCommand
                             cancellationToken)
                         .ConfigureAwait(false);
                 }
+
+                if (restrictedArtifact is not null)
+                {
+                    await Mql5CorpusInventoryJob.WriteRestrictedCorpusArtifactAsync(
+                            restrictedArtifact,
+                            sourceRoot,
+                            restrictedIrOutput!,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
 
             if (HasSwitch(arguments, "--persist-postgres"))
@@ -136,6 +169,12 @@ public static class ConversionInventoryCommand
             {
                 Console.WriteLine(
                     $"Compile-package planning complete: {compilePackagePlan.Targets.Count} targets, plan {compilePackagePlan.PlanSha256}; no compile or runtime proof is claimed.");
+            }
+
+            if (restrictedArtifact is not null)
+            {
+                Console.WriteLine(
+                    $"Restricted compilation complete: {restrictedArtifact.AttemptedCount} attempted, {restrictedArtifact.LoweredCount} lowered, artifact {restrictedArtifact.ArtifactSha256}; no runtime proof is claimed.");
             }
 
             return 0;

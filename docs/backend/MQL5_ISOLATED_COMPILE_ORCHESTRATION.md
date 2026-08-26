@@ -1,6 +1,6 @@
 # MQL5 isolated compile orchestration
 
-Status date: 2026-08-23 UTC
+Status date: 2026-08-24 UTC
 
 ## Result
 
@@ -17,7 +17,7 @@ Consequently, zero supplied targets are dispatch-ready locally. A syntactically 
 
 ## Exact no-execution corpus result
 
-The planner rebuilt and exact-bound the supplied source snapshots, static manifest, and conversion evidence before constructing one dossier per `.mq5` target.
+The planner rebuilt and exact-bound the security-sanitized current source bytes, static manifest, and conversion evidence before constructing one dossier per `.mq5` target. The exact byte total below binds those current sanitized bytes; it is not a claim about the untouched credential-bearing original intake.
 
 | Measurement | Exact result |
 |---|---:|
@@ -32,6 +32,15 @@ The planner rebuilt and exact-bound the supplied source snapshots, static manife
 | Metadata-only formatted JSON SHA-256 | `51e88beddabc6e2d11f00a6b8a2671a27642f58f2d302453f16199da368569e7` |
 | Metadata-only formatted JSON bytes | 455,612 |
 | Locally dispatch-ready targets | 0 |
+
+All 32 `.mqh` dependency files have a conversion-evidence disposition:
+
+| Header disposition | Files |
+|---|---:|
+| Awaiting isolated type-check | 17 |
+| Blocked on a missing dependency | 1 |
+| Blocked on unsupported semantics | 13 |
+| Blocked on an external-dependency snapshot | 1 |
 
 Target-level intrinsic classifications are:
 

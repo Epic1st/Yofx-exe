@@ -278,6 +278,35 @@ internal static class UserOperationContractValidation
         }
     }
 
+    public static void RequireExactPropertySet(
+        JsonElement root,
+        IReadOnlyList<string> names)
+    {
+        JsonProperty[] properties = root.EnumerateObject().ToArray();
+        if (properties.Length != names.Count)
+        {
+            throw InvalidPayload(
+                "The protocol payload has missing, duplicate, or unknown properties.");
+        }
+
+        var expected = new HashSet<string>(names, StringComparer.Ordinal);
+        var actual = new HashSet<string>(StringComparer.Ordinal);
+        foreach (JsonProperty property in properties)
+        {
+            if (!actual.Add(property.Name))
+            {
+                throw InvalidPayload(
+                    "The protocol payload has missing, duplicate, or unknown properties.");
+            }
+        }
+
+        if (!actual.SetEquals(expected))
+        {
+            throw InvalidPayload(
+                "The protocol payload has missing, duplicate, or unknown properties.");
+        }
+    }
+
     public static string ReadString(JsonElement root, string name) =>
         ReadStringValue(RequireProperty(root, name), name);
 

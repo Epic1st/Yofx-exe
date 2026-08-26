@@ -175,6 +175,7 @@ internal static class ControlPlanePostgresRegistration
             services.TryAddSingleton(_ => registeredStrategyImportKeyRing);
             services.TryAddSingleton<StrategyImportProofIssuer>();
             services.TryAddScoped<IControlPlaneApplication, PostgresControlPlaneApplication>();
+            services.TryAddScoped<IFrontendProjectionApplication, PostgresFrontendProjections>();
 
             proofKeyRing = null;
             strategyImportKeyRing = null;

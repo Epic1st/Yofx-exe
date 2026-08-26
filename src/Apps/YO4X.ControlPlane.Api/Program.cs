@@ -24,12 +24,20 @@ builder.Services.AddRequestTimeouts(options =>
     {
         Timeout = ControlPlanePostgresOptions.ProofKeyReplayRequestSafetyMargin
     });
-builder.Services.AddYo4xUserAndWorkloadAuthentication(builder.Configuration);
+builder.Services.AddYo4xUserAndWorkloadAuthentication(builder.Configuration, builder.Environment);
 builder.Services.TryAddControlPlanePostgres(builder.Configuration, builder.Environment);
 builder.Services.TryAddRuntimeControlPostgres(builder.Configuration, builder.Environment);
 builder.Services.TryAddScoped<IControlPlaneApplication, UnavailableControlPlaneApplication>();
+builder.Services.TryAddScoped<IFrontendProjectionApplication, UnavailableFrontendProjectionApplication>();
 builder.Services.TryAddScoped<IRuntimeControlPlaneApplication, UnavailableRuntimeControlPlaneApplication>();
 builder.Services.AddSingleton<ControlPlaneReadinessProbe>();
+builder.Services.AddDevelopmentMt5ConnectionProbe(builder.Configuration, builder.Environment);
+builder.Services.AddLocalBrokerCredentialVault(builder.Configuration);
+
+// Password members bind straight from the request bytes into a buffer this
+// process can erase, so no broker password is ever materialized as a string.
+builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(json =>
+    json.SerializerOptions.Converters.Add(new Utf8SecretJsonConverter()));
 
 WebApplication app = builder.Build();
 app.UseYo4xApiFoundation();
@@ -42,7 +50,18 @@ app.UseAuthorization();
 ControlPlaneReadinessProbe readiness = app.Services.GetRequiredService<ControlPlaneReadinessProbe>();
 app.MapYo4xHealth(
     _ => ValueTask.FromResult(true),
-    readiness.IsReadyAsync);
+    readiness.IsReadyAsync,
+    health =>
+    {
+        // The control-plane readiness probe re-attests four least-privilege logins
+        // and recomputes the whole-catalog semantic manifest for each, so it costs
+        // seconds rather than milliseconds. The outer deadline must sit above the
+        // probe's own bound so the probe's fail-closed result is what is published,
+        // and the snapshot must live long enough that anonymous polling cannot pin
+        // a database connection to continuous re-attestation.
+        health.ProbeTimeout = TimeSpan.FromSeconds(12);
+        health.SnapshotLifetime = TimeSpan.FromSeconds(5);
+    });
 
 RouteGroupBuilder user = app.MapGroup("/v1").RequireAuthorization("user");
 
@@ -141,6 +160,91 @@ user.MapPost("/strategy-source-import-sessions/{importJobId:guid}/revoke", async
         cancellationToken);
     return Results.NoContent();
 }).AddEndpointFilter(new MutationPreconditionFilter(requireExpectedVersion: true));
+
+user.MapPost("/broker-accounts", async (
+    CreateBrokerAccountBody request,
+    HttpContext context,
+    IControlPlaneApplication application,
+    ILocalBrokerCredentialVault credentialVault,
+    CancellationToken cancellationToken) =>
+{
+    // The plaintext lives in this one scope and is erased when it leaves, on
+    // every path including a rejected request or a failed vault write.
+    using Utf8Secret password = request.Password;
+
+    // A broker password may only be handed to a control plane running on the
+    // same device as the DPAPI vault it is destined for. Anything reached over
+    // a network has no vault to write to and must not hold the secret at all.
+    if (context.Connection.RemoteIpAddress is null
+        || !IPAddress.IsLoopback(context.Connection.RemoteIpAddress))
+    {
+        return ApiProblems.Create(
+            context,
+            StatusCodes.Status403Forbidden,
+            "LOCAL_CREDENTIAL_BOUNDARY_REQUIRES_LOOPBACK",
+            "A broker password can be submitted only to a control plane running on this device.");
+    }
+
+    BrokerAccountLinkRequest link = BrokerAccountLinkValidation.Validate(request);
+    BrokerAccountView account = await application.CreateBrokerAccountAsync(
+        ToUserActor(context.User),
+        BrokerAccountLinkValidation.ToApplicationRequest(request, link),
+        ToMetadata(context),
+        cancellationToken);
+
+    // Authorization first, secret second: the account row proves this tenant may
+    // link this server before any password reaches disk, and it records only the
+    // opaque binding reference that names the vault entry.
+    await credentialVault.StoreAsync(
+        link.Login,
+        link.Server,
+        link.CredentialKey,
+        password,
+        cancellationToken);
+    context.Response.Headers.CacheControl = "no-store";
+    context.Response.Headers.Pragma = "no-cache";
+    return Results.Created($"/v1/broker-accounts/{account.Id:D}", account);
+})
+// Added before the precondition filter so it wraps it: a request rejected for a
+// missing idempotency key has already been bound, and its password must be
+// erased even though the handler never ran.
+.AddEndpointFilter(async (context, next) =>
+{
+    try
+    {
+        return await next(context);
+    }
+    finally
+    {
+        foreach (object? argument in context.Arguments)
+        {
+            (argument as CreateBrokerAccountBody)?.Dispose();
+        }
+    }
+})
+.AddEndpointFilter(new MutationPreconditionFilter());
+
+// Approving a directory server is what makes it linkable for the caller's own
+// tenant. It is deliberately one server per request: there is no bulk route.
+user.MapPost("/broker-server-approvals", async (
+    ApproveBrokerServer request,
+    HttpContext context,
+    IControlPlaneApplication application,
+    CancellationToken cancellationToken) =>
+{
+    BrokerAccountRegistrationOption option = await application.ApproveBrokerServerAsync(
+        ToUserActor(context.User),
+        request,
+        ToMetadata(context),
+        cancellationToken);
+    return Results.Created(
+        $"/v1/broker-account-registration-options?query={Uri.EscapeDataString(option.Server)}",
+        option);
+}).AddEndpointFilter(new MutationPreconditionFilter());
+
+user.MapBrokerAccountDiscovery();
+user.MapFrontendProjections();
+user.MapDevelopmentMt5ConnectionProbe(builder.Configuration, builder.Environment);
 
 user.MapGet("/broker-accounts/{brokerAccountId:guid}", async (
     Guid brokerAccountId,
@@ -245,6 +349,13 @@ user.MapGet("/deployments/{deploymentId:guid}/activity", async (
     return Results.Ok(await application.GetDeploymentActivityAsync(
         ToUserActor(context.User), deploymentId, boundedLimit, before, cancellationToken));
 });
+
+user.MapGet("/strategy-source-corpora", async (
+    HttpContext context,
+    IControlPlaneApplication application,
+    CancellationToken cancellationToken) =>
+    Results.Ok(await application.GetStrategySourceCorporaAsync(
+        ToUserActor(context.User), cancellationToken)));
 
 user.MapGet("/strategy-source-corpora/{corpusId:guid}/compatibility", async (
     Guid corpusId,

@@ -208,6 +208,22 @@ public sealed class Mql5CorpusInventoryJob
             cancellationToken);
     }
 
+    internal static Task WriteRestrictedCorpusArtifactAsync(
+        Mql5RestrictedCorpusArtifact artifact,
+        string sourceRoot,
+        string outputPath,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
+        return WriteAtomicallyAsync(
+            sourceRoot,
+            Path.GetFullPath(outputPath),
+            Mql5RestrictedCorpusArtifactFormatter.ToJson(artifact),
+            cancellationToken);
+    }
+
     private static IEnumerable<FileInfo> EnumerateAllowedFiles(
         DirectoryInfo root,
         CancellationToken cancellationToken) => EnumerateAllowedFilesBounded(

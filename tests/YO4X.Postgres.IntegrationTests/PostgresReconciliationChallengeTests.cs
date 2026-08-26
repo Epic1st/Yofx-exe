@@ -841,7 +841,10 @@ public sealed partial class PostgresFoundationTests
             "submitted_resource_version",
             NpgsqlDbType.Bigint,
             fixture.SubmittedResourceVersion);
-        command.Parameters.AddWithValue("requested_target_state", "active:ready");
+        command.Parameters.AddWithValue(
+            "requested_target_state",
+            NpgsqlDbType.Text,
+            fixture.RequestedTargetState);
         command.Parameters.AddWithValue("binding_sha256", NpgsqlDbType.Text, bindingSha256);
         command.Parameters.AddWithValue(
             "policy_snapshot_sha256",
@@ -962,7 +965,10 @@ public sealed partial class PostgresFoundationTests
             "submitted_resource_version",
             NpgsqlDbType.Bigint,
             fixture.SubmittedResourceVersion);
-        command.Parameters.AddWithValue("requested_target_state", "active:ready");
+        command.Parameters.AddWithValue(
+            "requested_target_state",
+            NpgsqlDbType.Text,
+            fixture.RequestedTargetState);
         command.Parameters.AddWithValue("binding_sha256", NpgsqlDbType.Text, bindingSha256);
         command.Parameters.AddWithValue(
             "policy_snapshot_sha256",

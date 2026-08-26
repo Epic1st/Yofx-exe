@@ -1,0 +1,222 @@
+/*
+ * The sign-in entry page and its brand mark.
+ *
+ * These rules did not exist. `AuthEntry` and `BrandMark` were written against class names nothing
+ * defined, so the first screen of the application rendered unstyled — most visibly the brand SVG,
+ * which without a width fills the viewport. Everything here is a token; nothing is a literal
+ * colour.
+ */
+
+.auth-entry {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 28px 40px 40px;
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+
+.auth-entry__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 28px;
+}
+
+.auth-entry__header > span {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+/* Two columns on a desktop window: the pitch on the left, the action on the right. */
+.auth-entry__layout {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  align-items: center;
+  gap: 56px;
+  max-width: 1180px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.auth-entry__eyebrow {
+  display: inline-block;
+  margin-bottom: 18px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--color-accent);
+}
+
+.auth-entry__intro h1 {
+  margin: 0 0 18px;
+  font-size: 44px;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+}
+
+.auth-entry__intro > p {
+  max-width: 56ch;
+  margin: 0 0 26px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.auth-entry__intro ul {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.auth-entry__intro li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+  color: var(--color-text-secondary);
+}
+
+.auth-entry__intro li svg {
+  flex: none;
+  color: var(--color-accent);
+}
+
+.auth-entry__card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 30px 30px 26px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.auth-entry__card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 18px;
+  border: 1px solid var(--color-accent-wash-border);
+  border-radius: var(--radius-card);
+  background: var(--color-accent-wash);
+  color: var(--color-accent);
+}
+
+.auth-entry__card h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+.auth-entry__card > p {
+  margin: 0 0 22px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--color-text-tertiary);
+}
+
+/* The two actions fill the card so neither reads as the lesser option by width. */
+.auth-entry__primary,
+.auth-entry__secondary {
+  width: 100%;
+  height: 40px;
+  justify-content: center;
+  font-size: 13.5px;
+}
+
+.auth-entry__secondary {
+  margin-top: 10px;
+}
+
+.auth-entry__card small {
+  margin-top: 16px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-text-faint);
+}
+
+.auth-entry__error {
+  width: 100%;
+  padding: 10px 12px;
+  margin: 0 0 16px;
+  border: 1px solid var(--color-negative-border);
+  border-radius: var(--radius-control);
+  background: var(--color-negative-wash);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-negative);
+}
+
+/* ------------------------------------------------------------------ brand mark */
+
+.brand-mark {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brand-mark__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand-mark__word {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text);
+}
+
+/*
+ * The mark is an inline SVG with a viewBox and no intrinsic size, so it expands to whatever the
+ * layout offers unless it is given one. That is why the unstyled page showed a full-screen shape.
+ */
+.brand-mark__horse {
+  flex: none;
+  width: 26px;
+  height: 20px;
+  fill: var(--color-text);
+  stroke: none;
+}
+
+.brand-mark__horse path + path {
+  fill: none;
+  stroke: var(--color-surface-raised);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.brand-mark__descriptor {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+@media (max-width: 1000px) {
+  .auth-entry {
+    padding: 24px;
+  }
+
+  .auth-entry__layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+
+  .auth-entry__intro h1 {
+    font-size: 34px;
+  }
+}

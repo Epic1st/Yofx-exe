@@ -1,0 +1,78 @@
+/*
+ * "Journal" — one table of every order the bridge sent, with a range filter and
+ * a client-side CSV export. Shared primitives come from global.css.
+ */
+
+.journal-head {
+  margin-bottom: 18px;
+}
+
+.journal-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.journal-range {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.journal-range__select {
+  height: 34px;
+  padding: 0 30px 0 12px;
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.journal-range__select:hover {
+  background: var(--color-surface-sunken);
+}
+
+.journal-range__chevron {
+  position: absolute;
+  right: 11px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.journal-cell {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
+.journal-bot {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.journal-side {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.journal-result {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.journal-skeleton {
+  height: 12px;
+  margin-right: 16px;
+}
+
+.journal-error {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+}
+
+.journal-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
