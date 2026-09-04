@@ -331,7 +331,7 @@ ol {
 .thumb__label {
   padding: 3px 7px;
   border-radius: var(--radius-tiny);
-  background: rgb(255 255 255 / 86%);
+  background: color-mix(in srgb, var(--color-surface) 86%, transparent);
   color: var(--color-text-tertiary);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -845,14 +845,40 @@ ol {
 
 .titlebar__dots {
   display: flex;
+  flex: none;
+  align-items: center;
   gap: 8px;
 }
 
 .titlebar__dot {
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 50%;
   background: var(--color-border-control);
+  cursor: pointer;
+}
+
+.titlebar__dot--close {
+  background: var(--color-negative);
+}
+
+.titlebar__dot--minimise {
+  background: var(--color-star);
+}
+
+.titlebar__dot--maximise {
+  background: var(--color-positive);
+}
+
+.titlebar__dot:hover {
+  filter: brightness(0.92);
+}
+
+.titlebar__dot:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .titlebar__label {
@@ -873,21 +899,23 @@ ol {
 
 .titlebar__controls {
   display: flex;
+  flex: none;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
+  margin-left: 8px;
 }
 
 .titlebar__control {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 22px;
+  width: 36px;
+  height: 26px;
   padding: 0;
-  border: none;
+  border: 1px solid var(--color-border-control);
   border-radius: var(--radius-tiny);
-  background: none;
-  color: var(--color-text-muted);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
   cursor: pointer;
   transition:
     background var(--motion-fast) ease,

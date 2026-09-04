@@ -25,6 +25,7 @@ const strategy = (n, name, category, symbol, timeframe, rating, ratingCount, use
 });
 
 const strategies = [
+  strategy(10, 'Straddle_1.1.36.yo4x', 'Grid', 'XAUUSD', 'M1', 0, 0, 0),
   strategy(11, 'Aurora Trend v4', 'Trend following', 'XAUUSD', 'M15', 4.82, 212, 9412),
   strategy(12, 'APEX M15 Scalper', 'Scalping', 'EURUSD', 'M15', 4.41, 88, 3120),
   strategy(13, 'Bollinger Grid Hedge', 'Grid', 'GBPUSD', 'H1', 4.05, 51, 1870),
@@ -84,7 +85,7 @@ const routes = {
     totalDowntimeMinutes: 380,
     samples: Array.from({ length: 28 }, (_, index) => ({
       ordinal: index,
-      sampledOn: `2026-07-${String(28 + index).padStart(2, '0')}`.replace('2026-07-3', '2026-08-0'),
+      sampledOn: new Date(Date.UTC(2026, 6, 28 + index)).toISOString().slice(0, 10),
       uptimeRatio: index % 9 === 0 ? 0.62 : index % 5 === 0 ? 0.94 : 1,
       downtimeMinutes: index % 9 === 0 ? 540 : index % 5 === 0 ? 86 : 0,
     })),
@@ -158,7 +159,14 @@ const routes = {
     },
   ],
   '/v1/broker-account-registration-options': [
-    { brokerProfileId: id(92), server: 'MetaQuotes-Demo', environment: 'DEMO' },
+    {
+      brokerProfileId: id(92),
+      directoryServerId: id(93),
+      brokerCompany: 'MetaQuotes Software Corp.',
+      server: 'MetaQuotes-Demo',
+      environment: 'DEMO',
+      approved: true,
+    },
   ],
   '/v1/me/sessions': [
     {
@@ -218,6 +226,53 @@ function reviews() {
   ];
 }
 
+function strategyInputs(url) {
+  const match = /\/v1\/catalog\/strategies\/([0-9a-f-]{36})\/inputs/u.exec(new URL(url).pathname);
+  const item = strategies.find((candidate) => candidate.id === match?.[1]) ?? strategies[0];
+  return {
+    strategyId: item.id,
+    strategyName: item.name,
+    inputs: [
+      {
+        ordinal: 0,
+        name: 'TakeProfit_L',
+        label: 'Take profit (long), points',
+        groupLabel: 'Risk management',
+        declaredType: 'int',
+        valueKind: 'WHOLE',
+        defaultValue: '390',
+        enumTypeName: null,
+        enumMembers: [],
+        sourceLine: 10,
+      },
+      {
+        ordinal: 1,
+        name: 'Lots',
+        label: 'Fixed lot size',
+        groupLabel: 'Risk management',
+        declaredType: 'double',
+        valueKind: 'REAL',
+        defaultValue: '0.10',
+        enumTypeName: null,
+        enumMembers: [],
+        sourceLine: 11,
+      },
+      {
+        ordinal: 2,
+        name: 'TrailingStop',
+        label: 'Trailing stop, points',
+        groupLabel: 'Risk management',
+        declaredType: 'int',
+        valueKind: 'WHOLE',
+        defaultValue: '150',
+        enumTypeName: null,
+        enumMembers: [],
+        sourceLine: 12,
+      },
+    ],
+  };
+}
+
 /** Preview mode opens a real window and stays open so the design can be clicked through. */
 const preview = process.env.YO4X_QA_PREVIEW === '1';
 
@@ -228,7 +283,8 @@ export async function stubRoutes(context) {
     let body;
     if (pathname === '/v1/catalog/strategies') body = catalogPage(url);
     else if (/\/reviews$/u.test(pathname)) body = reviews();
-    else if (/^\/v1\/catalog\/strategies\//u.test(pathname)) body = strategyDetail(url);
+    else if (/\/inputs$/u.test(pathname)) body = strategyInputs(url);
+    else if (/^\/v1\/catalog\/strategies\/[0-9a-f-]{36}$/u.test(pathname)) body = strategyDetail(url);
     else if (/^\/v1\/broker-accounts\/[^/]+\/credential-state$/u.test(pathname)) {
       body = { exists: true, state: 'READY', lastAuthorizedWorkerUse: now, maskedAccountBinding: '*****193' };
     } else body = routes[pathname];

@@ -13,6 +13,7 @@
     <ProjectReference Include="..\YO4X.Mql5.Engine\YO4X.Mql5.Engine.csproj" />
     <ProjectReference Include="..\YO4X.Mql5.Runtime\YO4X.Mql5.Runtime.csproj" />
     <ProjectReference Include="..\YO4X.Mt5.ConnectionProbe.Windows\YO4X.Mt5.ConnectionProbe.Windows.csproj" />
+    <ProjectReference Include="..\..\Modules\StrategyGovernance\YO4X.StrategyGovernance\YO4X.StrategyGovernance.csproj" />
   </ItemGroup>
 
 </Project>

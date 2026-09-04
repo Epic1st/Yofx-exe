@@ -37,10 +37,10 @@ public partial interface IMql5Runtime
     bool OrderCheck(Mql5TradeRequest request, Mql5TradeCheckResult result);
 
     /// <summary>MQL5 <c>OrderCalcMargin</c>. EngineBound.</summary>
-    bool OrderCalcMargin(int action, string? symbol, double volume, double price, out double margin);
+    bool OrderCalcMargin(int orderType, string? symbol, double volume, double price, out double margin);
 
     /// <summary>MQL5 <c>OrderCalcProfit</c>. EngineBound.</summary>
-    bool OrderCalcProfit(int action, string? symbol, double volume, double priceOpen, double priceClose, out double profit);
+    bool OrderCalcProfit(int orderType, string? symbol, double volume, double priceOpen, double priceClose, out double profit);
 
     /// <summary>MQL5 <c>PositionsTotal</c>: open positions, not pending orders. EngineBound.</summary>
     int PositionsTotal();
@@ -196,6 +196,11 @@ public sealed partial class Mql5Runtime
 
         if (!accepted)
         {
+            if (result.Retcode == 0)
+            {
+                result.Retcode = (uint)Mql5Constants.TradeRetcode.Invalid;
+            }
+
             SetError(Mql5ErrorCodes.TradeSendFailed);
         }
 
@@ -237,17 +242,37 @@ public sealed partial class Mql5Runtime
             result.MarginLevel = produced.MarginLevel;
             result.Comment = produced.Comment;
         }
+        else
+        {
+            result.Clear();
+        }
 
         return ok;
     }
 
     /// <inheritdoc />
-    public bool OrderCalcMargin(int action, string? symbol, double volume, double price, out double margin)
-        => context.OrderCalcMargin(action, Resolve(symbol), volume, price, out margin);
+    public bool OrderCalcMargin(int orderType, string? symbol, double volume, double price, out double margin)
+    {
+        bool ok = context.OrderCalcMargin(orderType, Resolve(symbol), volume, price, out margin);
+        if (!ok)
+        {
+            SetError(Mql5ErrorCodes.InvalidParameter);
+        }
+
+        return ok;
+    }
 
     /// <inheritdoc />
-    public bool OrderCalcProfit(int action, string? symbol, double volume, double priceOpen, double priceClose, out double profit)
-        => context.OrderCalcProfit(action, Resolve(symbol), volume, priceOpen, priceClose, out profit);
+    public bool OrderCalcProfit(int orderType, string? symbol, double volume, double priceOpen, double priceClose, out double profit)
+    {
+        bool ok = context.OrderCalcProfit(orderType, Resolve(symbol), volume, priceOpen, priceClose, out profit);
+        if (!ok)
+        {
+            SetError(Mql5ErrorCodes.InvalidParameter);
+        }
+
+        return ok;
+    }
 
     /// <inheritdoc />
     public int PositionsTotal() => context.PositionsTotal();

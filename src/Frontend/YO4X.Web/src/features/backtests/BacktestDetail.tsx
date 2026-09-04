@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { BacktestDetailView, BacktestEquityCurveView } from '../../api/contracts';
 import { userFacingProblem } from '../../api/problemDetails';
 import { useControlPlaneClient } from '../../app/ClientContext';
@@ -33,6 +33,10 @@ const curveHeight = 190;
 const curveTopPad = 10;
 const curveBottomPad = 10;
 
+const initialPollDelayMs = 1_500;
+const maxPollDelayMs = 10_000;
+const pollBackoffFactor = 1.5;
+
 interface CurveGeometry {
   readonly line: string;
   readonly area: string;
@@ -65,14 +69,16 @@ function buildCurve(curve: BacktestEquityCurveView): CurveGeometry | null {
 
   const span = maximum - minimum;
   const plotHeight = curveHeight - curveTopPad - curveBottomPad;
-  const lastIndex = points.length - 1;
+  const firstOrdinal = points[0]?.sourceOrdinal ?? 0;
+  const lastOrdinal = points[points.length - 1]?.sourceOrdinal ?? (curve.sampleCount - 1);
+  const ordinalSpan = Math.max(1, lastOrdinal - firstOrdinal);
   const project = (value: number) => {
     const ratio = span === 0 ? 0.5 : (value - minimum) / span;
     return curveHeight - curveBottomPad - ratio * plotHeight;
   };
 
-  const coordinates = points.map((point, index) => {
-    const x = (index / lastIndex) * curveWidth;
+  const coordinates = points.map((point) => {
+    const x = ((point.sourceOrdinal - firstOrdinal) / ordinalSpan) * curveWidth;
     return `${x.toFixed(2)},${project(point.equity).toFixed(2)}`;
   });
 
@@ -138,8 +144,19 @@ export function BacktestDetail({ backtestId, onBack, onOpenStrategy }: BacktestD
     backtestId,
   ]);
 
-  const detail = backtest.state.status === 'ready' ? backtest.state.value : null;
+  const [polledDetail, setPolledDetail] = useState<BacktestDetailView | null>(null);
+
+  useEffect(() => {
+    setPolledDetail(null);
+  }, [backtestId]);
+
+  const detail = backtest.state.status === 'ready'
+    ? (polledDetail !== null && polledDetail.summary.id === backtestId
+      ? polledDetail
+      : backtest.state.value)
+    : null;
   const summary = detail?.summary ?? null;
+  const status = summary?.status ?? null;
   const statusNote = summary === null ? null : backtestStatusNote(summary.status);
   const equityCurve = detail?.equityCurve ?? null;
   const curve = useMemo(
@@ -151,6 +168,45 @@ export function BacktestDetail({ backtestId, onBack, onOpenStrategy }: BacktestD
     [equityCurve],
   );
   const finalEquity = equityCurve?.points[equityCurve.points.length - 1]?.equity ?? null;
+
+  useEffect(() => {
+    if (status !== 'QUEUED' && status !== 'RUNNING') {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let timer: number | undefined;
+    let delay = initialPollDelayMs;
+
+    const poll = async () => {
+      try {
+        const next = await client.getBacktest(backtestId, controller.signal);
+        if (controller.signal.aborted) {
+          return;
+        }
+        setPolledDetail(next);
+        if (next.summary.status === 'COMPLETE' || next.summary.status === 'FAILED') {
+          return;
+        }
+        delay = Math.min(Math.round(delay * pollBackoffFactor), maxPollDelayMs);
+        timer = window.setTimeout(() => void poll(), delay);
+      } catch {
+        if (controller.signal.aborted) {
+          return;
+        }
+        delay = Math.min(Math.round(delay * pollBackoffFactor), maxPollDelayMs);
+        timer = window.setTimeout(() => void poll(), delay);
+      }
+    };
+
+    timer = window.setTimeout(() => void poll(), delay);
+    return () => {
+      controller.abort();
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [client, backtestId, status]);
 
   return (
     <div className="page">

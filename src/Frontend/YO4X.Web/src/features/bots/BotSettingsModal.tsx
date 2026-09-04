@@ -46,9 +46,34 @@ function controlId(name: string): string {
   return `bot-setting-${name.replace(/[^A-Za-z0-9_-]/gu, '_')}`;
 }
 
-/** The label MetaTrader would show: the trailing source comment, else the identifier. */
-function inputLabel(input: StrategyInputView): string {
-  return input.label ?? input.name;
+interface InputPresentation {
+  readonly title: string;
+  readonly description: string | null;
+}
+
+function humanizeInputName(name: string): string {
+  const words = name
+    .replace(/^Inp(?=[A-Z_])/u, '')
+    .replaceAll('_', ' ')
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/gu, '$1 $2')
+    .trim();
+  if (words === '') return name;
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Keeps useful source prose without letting parser-like comments become field labels. */
+function inputPresentation(input: StrategyInputView): InputPresentation {
+  const sourceLabel = input.label?.trim() ?? '';
+  const machineLike = sourceLabel.length > 72
+    || /(?:^|[\s,;])(?:true|false)\s*=/iu.test(sourceLabel)
+    || /^[=:0-9]/u.test(sourceLabel);
+  if (sourceLabel === '') {
+    return { title: humanizeInputName(input.name), description: null };
+  }
+  return machineLike
+    ? { title: humanizeInputName(input.name), description: sourceLabel }
+    : { title: sourceLabel, description: null };
 }
 
 /**
@@ -72,18 +97,20 @@ function lockedReason(status: BotStatus): string | null {
 
 function serverForBot(accounts: readonly BrokerAccountView[], bot: BotView): string | null {
   const owned = accounts.find((account) => account.id === bot.brokerAccountId);
-  return (owned ?? accounts[0])?.server ?? null;
+  return owned?.server ?? null;
 }
 
 export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProps) {
   const client = useControlPlaneClient();
-  const locked = lockedReason(bot.status);
+  const [currentStatus, setCurrentStatus] = useState<BotStatus>(bot.status);
+  const locked = lockedReason(currentStatus);
   const readOnly = locked !== null;
 
   const settings = useResource((signal) => client.getBotSettings(bot.id, signal), [client, bot.id]);
   const accounts = useResource((signal) => client.getBrokerAccounts(signal), [client]);
 
   const [draft, setDraft] = useState<BotRunSettingsDraft | null>(null);
+  const [cachedInstrument, setCachedInstrument] = useState<BrokerSymbolView | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
@@ -95,6 +122,10 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
   const view = settings.state.status === 'ready' ? settings.state.value : null;
   const accountList = accounts.state.status === 'ready' ? accounts.state.value : [];
   const server = serverForBot(accountList, bot);
+
+  useEffect(() => {
+    setCurrentStatus(bot.status);
+  }, [bot.status]);
 
   // The stored settings seed the controls once, and again after a reload. Everything
   // the operator has typed since is discarded with them, because it was typed against
@@ -109,6 +140,7 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
       volume: String(view.volume),
       magicNumber: String(view.magicNumber),
     });
+    setCachedInstrument(null);
     setEdits(editorValuesFromOverrides(view.declared, view.overrides));
     setSearch(view.symbol);
     setAttempted(false);
@@ -146,7 +178,21 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
   );
 
   const available = symbols.state.status === 'ready' ? symbols.state.value : [];
-  const instrument = draft === null ? null : findInstrument(available, draft.symbol);
+
+  useEffect(() => {
+    if (draft === null) {
+      setCachedInstrument(null);
+      return;
+    }
+    const match = findInstrument(available, draft.symbol);
+    if (match !== null) {
+      setCachedInstrument(match);
+    }
+  }, [available, draft?.symbol]);
+
+  const instrument = (draft !== null && cachedInstrument?.symbol === draft.symbol)
+    ? cachedInstrument
+    : (draft === null ? null : findInstrument(available, draft.symbol));
   const volumeLimits = describeVolumeLimits(instrument);
 
   const runErrors = useMemo(
@@ -202,6 +248,15 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
       const request = buildUpdateBotSettings(draft, view.declared, resolved, defaults);
       setSaving(true);
       try {
+        if (typeof client.getBot === 'function') {
+          const liveBot = await client.getBot(bot.id);
+          const liveLocked = lockedReason(liveBot.status);
+          if (liveLocked !== null) {
+            setCurrentStatus(liveBot.status);
+            setSaveError(liveLocked);
+            return;
+          }
+        }
         await client.updateBotSettings(bot.id, request);
         onSaved();
         onClose();
@@ -229,8 +284,8 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
   return (
     <Modal
       title="Bot settings"
-      subtitle={`${bot.name} · ${bot.strategyName}`}
-      width={620}
+      subtitle={`${bot.name} · ${bot.symbol}`}
+      width={760}
       onClose={onClose}
       footer={(
         <>
@@ -306,6 +361,11 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
                   placeholder="Search the broker's instruments, for example EURUSD"
                   aria-describedby="bot-settings-symbol-hint"
                   onChange={(event) => setSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                    }
+                  }}
                 />
                 <p id="bot-settings-symbol-hint" className="bots-settings__hint">
                   Trading: <span className="mono">{draft.symbol}</span>
@@ -344,7 +404,10 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
                             type="button"
                             className={`bots-settings__symbol${chosen ? ' bots-settings__symbol--selected' : ''}`}
                             aria-pressed={chosen}
-                            onClick={() => setDraft({ ...draft, symbol: entry.symbol })}
+                            onClick={() => {
+                              setDraft({ ...draft, symbol: entry.symbol });
+                              setCachedInstrument(entry);
+                            }}
                           >
                             <span className="bots-settings__symbol-code mono">{entry.symbol}</span>
                             <span className="bots-settings__symbol-name">
@@ -467,6 +530,7 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
                       const value = resolved[input.name] ?? '';
                       const message = inputError(input.name);
                       const id = controlId(input.name);
+                      const presentation = inputPresentation(input);
                       return (
                         <div
                           className={kind === 'CHECKBOX'
@@ -474,9 +538,14 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
                             : 'bots-settings__field'}
                           key={input.name}
                         >
-                          <label className="bots-settings__label" htmlFor={id}>
-                            {inputLabel(input)}
-                          </label>
+                          <div className="bots-settings__field-head">
+                            <label className="bots-settings__label" htmlFor={id}>
+                              {presentation.title}
+                            </label>
+                            {presentation.description === null ? null : (
+                              <p className="bots-settings__description">{presentation.description}</p>
+                            )}
+                          </div>
 
                           {kind === 'CHECKBOX' ? (
                             <input
@@ -563,8 +632,7 @@ export function BotSettingsModal({ bot, onClose, onSaved }: BotSettingsModalProp
                           ) : null}
 
                           <p className="bots-settings__hint">
-                            <span className="mono">{input.declaredType}</span>
-                            {' · source default '}
+                            {'Default: '}
                             <span className="mono">
                               {input.defaultValue === '' ? '(empty)' : input.defaultValue}
                             </span>

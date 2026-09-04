@@ -26,6 +26,7 @@ interface AppShellProps {
   readonly user: TopBarUser;
   readonly onOpenAccount: () => void;
   readonly onOpenSettings: () => void;
+  readonly onSignOut?: (() => void) | undefined;
 
   readonly children: ReactNode;
   readonly overlay?: ReactNode;
@@ -46,6 +47,7 @@ export function AppShell({
   user,
   onOpenAccount,
   onOpenSettings,
+  onSignOut,
   children,
   overlay,
 }: AppShellProps) {
@@ -71,6 +73,7 @@ export function AppShell({
               user={user}
               onOpenAccount={onOpenAccount}
               onOpenSettings={onOpenSettings}
+              {...(onSignOut !== undefined ? { onSignOut } : {})}
             />
             <main className="app-frame__main" id="main-content">{children}</main>
           </div>

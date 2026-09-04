@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\YO4X.Mql5.CodeGen\YO4X.Mql5.CodeGen.csproj" />
     <ProjectReference Include="..\YO4X.Mql5.Runtime\YO4X.Mql5.Runtime.csproj" />
+    <ProjectReference Include="..\..\Modules\StrategyGovernance\YO4X.StrategyGovernance\YO4X.StrategyGovernance.csproj" />
   </ItemGroup>
 
 </Project>

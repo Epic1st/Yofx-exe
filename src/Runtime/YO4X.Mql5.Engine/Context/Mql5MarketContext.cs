@@ -110,6 +110,7 @@ public sealed class Mql5MarketContext : IMql5MarketContext
             Mql5SymbolInfoDouble.VolumeMin => spec.VolumeMin,
             Mql5SymbolInfoDouble.VolumeMax => spec.VolumeMax,
             Mql5SymbolInfoDouble.VolumeStep => spec.VolumeStep,
+            Mql5SymbolInfoDouble.VolumeLimit => 0.0,
             Mql5SymbolInfoDouble.SwapLong => spec.SwapLong,
             Mql5SymbolInfoDouble.SwapShort => spec.SwapShort,
             _ => 0.0,
@@ -131,6 +132,14 @@ public sealed class Mql5MarketContext : IMql5MarketContext
             Mql5SymbolInfoInteger.Spread => broker.SpreadPoints,
             Mql5SymbolInfoInteger.StopsLevel => spec.StopsLevelPoints,
             Mql5SymbolInfoInteger.FreezeLevel => spec.FreezeLevelPoints,
+            // This simulated symbol supports the complete order surface implemented by the
+            // broker. Returning zero here means SYMBOL_TRADE_MODE_DISABLED in MQL5 and causes
+            // production experts to refuse initialization even though OrderSend is available.
+            Mql5SymbolInfoInteger.TradeMode => 4L, // SYMBOL_TRADE_MODE_FULL
+            Mql5SymbolInfoInteger.TradeExecutionMode => 2L, // SYMBOL_TRADE_EXECUTION_MARKET
+            Mql5SymbolInfoInteger.FillingMode => 3L, // SYMBOL_FILLING_FOK | SYMBOL_FILLING_IOC
+            Mql5SymbolInfoInteger.ExpirationMode => 15L,
+            Mql5SymbolInfoInteger.OrderMode => 127L,
             Mql5SymbolInfoInteger.Time => ToUnixSeconds(broker.Time),
             Mql5SymbolInfoInteger.Select => 1L,
             _ => 0L,
@@ -155,10 +164,58 @@ public sealed class Mql5MarketContext : IMql5MarketContext
     public long AccountInfoInteger(int propertyId) => propertyId switch
     {
         Mql5AccountInfoInteger.Login => 0L,
+        Mql5AccountInfoInteger.TradeMode => 0L, // ACCOUNT_TRADE_MODE_DEMO
+        Mql5AccountInfoInteger.TradeAllowed => 1L,
+        Mql5AccountInfoInteger.TradeExpert => 1L,
         Mql5AccountInfoInteger.Leverage => options.Leverage,
+        Mql5AccountInfoInteger.CurrencyDigits => 2L,
+        Mql5AccountInfoInteger.LimitOrders => options.MaxPendingOrders,
+        Mql5AccountInfoInteger.MarginStopoutMode => 0L, // ACCOUNT_STOPOUT_MODE_PERCENT
+        Mql5AccountInfoInteger.FifoClose => 0L,
+        Mql5AccountInfoInteger.HedgeAllowed => options.MarginMode == Mql5MarginMode.Hedging ? 1L : 0L,
         Mql5AccountInfoInteger.MarginMode => (long)options.MarginMode,
         _ => 0L,
     };
+
+    /// <summary>Calculates simulated margin using the same symbol contract and leverage as fills.</summary>
+    public bool OrderCalcMargin(int orderType, string symbol, double volume, double price, out double margin)
+    {
+        margin = 0.0;
+        if (!IsKnownSymbol(symbol) || orderType is < 0 or > 7
+            || !double.IsFinite(volume) || volume <= 0.0
+            || !double.IsFinite(price) || price <= 0.0
+            || options.Leverage <= 0)
+        {
+            return false;
+        }
+
+        margin = options.Symbol.MarginOf(volume, price, options.Leverage);
+        return double.IsFinite(margin) && margin >= 0.0;
+    }
+
+    /// <summary>Calculates directional simulated profit using the same symbol contract as fills.</summary>
+    public bool OrderCalcProfit(
+        int orderType,
+        string symbol,
+        double volume,
+        double priceOpen,
+        double priceClose,
+        out double profit)
+    {
+        profit = 0.0;
+        if (!IsKnownSymbol(symbol) || orderType is < 0 or > 7
+            || !double.IsFinite(volume) || volume <= 0.0
+            || !double.IsFinite(priceOpen) || priceOpen <= 0.0
+            || !double.IsFinite(priceClose) || priceClose <= 0.0)
+        {
+            return false;
+        }
+
+        bool buy = orderType is 0 or 2 or 4 or 6;
+        double delta = buy ? priceClose - priceOpen : priceOpen - priceClose;
+        profit = options.Symbol.ProfitOf(delta, volume);
+        return double.IsFinite(profit);
+    }
 
     /// <summary>Gets the deposit currency of the simulated account.</summary>
     public string AccountCurrency => options.DepositCurrency;

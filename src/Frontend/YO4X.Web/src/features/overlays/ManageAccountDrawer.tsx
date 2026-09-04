@@ -170,6 +170,8 @@ export function ManageAccountDrawer({
       return [];
     }
     const credentialValue = credential.state.status === 'ready' ? credential.state.value : null;
+    const credentialFailed =
+      credential.state.status === 'error' || credential.state.status === 'unauthorized';
     return [
       { label: 'Broker server', value: account.server },
       { label: 'Login', value: account.maskedLogin },
@@ -178,21 +180,32 @@ export function ManageAccountDrawer({
       { label: 'Capability state', value: account.capabilityState },
       {
         label: 'Credential',
-        value:
-          credentialValue === null
-            ? 'Loading…'
-            : credentialValue.exists
-              ? credentialValue.state
-              : 'Not ingested',
+        value: credentialFailed ? (
+          <>
+            Failed to load{' '}
+            <button type="button" className="btn btn--link" onClick={credential.reload}>
+              Try again
+            </button>
+          </>
+        ) : credentialValue === null ? (
+          'Loading…'
+        ) : credentialValue.exists ? (
+          credentialValue.state
+        ) : (
+          'Not ingested'
+        ),
       },
       {
         label: 'Last worker use',
-        value:
-          credentialValue === null ? 'Loading…' : formatMoment(credentialValue.lastAuthorizedWorkerUse),
+        value: credentialFailed
+          ? 'Failed to load'
+          : credentialValue === null
+            ? 'Loading…'
+            : formatMoment(credentialValue.lastAuthorizedWorkerUse),
       },
       { label: 'Updated', value: formatMoment(account.updatedAt) },
     ];
-  }, [account, credential.state]);
+  }, [account, credential.state, credential.reload]);
 
   if (!open) {
     return null;

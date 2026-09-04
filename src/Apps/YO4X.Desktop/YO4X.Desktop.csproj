@@ -7,11 +7,40 @@
     <PlatformTarget>x64</PlatformTarget>
     <AssemblyName>YO4X</AssemblyName>
     <RootNamespace>YO4X.Desktop</RootNamespace>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" />
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Runtime\YO4X.Mql5.Runtime\YO4X.Mql5.Runtime.csproj" />
+    <ProjectReference Include="..\..\Runtime\YO4X.Mql5.Compilation\YO4X.Mql5.Compilation.csproj" />
+    <ProjectReference Include="..\..\Runtime\YO4X.Mql5.Engine\YO4X.Mql5.Engine.csproj" />
+    <ProjectReference Include="..\..\Runtime\YO4X.Mql5.Live\YO4X.Mql5.Live.csproj" />
+    <ProjectReference Include="..\..\Modules\StrategyGovernance\YO4X.StrategyGovernance\YO4X.StrategyGovernance.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\YO4X.LocalSecrets.Windows\YO4X.LocalSecrets.Windows.csproj" />
+    <ProjectReference Include="..\..\Runtime\YO4X.Mt5.ConnectionProbe.Windows\YO4X.Mt5.ConnectionProbe.Windows.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\..\mt5-net-api-full-binaries-main\mt5api.dll"
+          Link="mt5api.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          Condition="Exists('..\..\..\mt5-net-api-full-binaries-main\mt5api.dll')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="app.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="RemovePublishedWebViewDocumentation" AfterTargets="Publish">

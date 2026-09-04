@@ -4,7 +4,7 @@ This is a real, local-only OpenID Connect provider for frontend development. It
 uses ASP.NET Core Identity password hashing and lockout, SQLite persistence,
 HTTP-only secure authentication and antiforgery cookies, and OpenIddict 7.6.0.
 It supports only authorization-code flow with PKCE for one public client at
-`http://127.0.0.1:4173`; it has no password grant, client secret, static bearer,
+`http://127.0.0.1:5173`; it has no password grant, client secret, static bearer,
 production mode, or non-loopback client.
 
 The app refuses to start unless the environment is `Development` and the
@@ -20,8 +20,8 @@ dotnet run --project src/Apps/YO4X.DevelopmentIdentity
 Discovery is served from
 `https://127.0.0.1:7210/.well-known/openid-configuration`. The client identifier
 is `yo4x-web-development`, its redirect URI is
-`http://127.0.0.1:4173/auth/callback`, and its post-logout redirect is
-`http://127.0.0.1:4173/`. A browser client must use PKCE with a fresh verifier,
+`http://127.0.0.1:5173/auth/callback`, and its post-logout redirect is
+`http://127.0.0.1:5173/`. A browser client must use PKCE with a fresh verifier,
 state, and nonce, and keep access tokens in memory only.
 
 Registration is deliberately local and marks the submitted address confirmed

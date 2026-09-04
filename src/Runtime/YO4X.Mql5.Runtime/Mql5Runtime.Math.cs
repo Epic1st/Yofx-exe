@@ -125,11 +125,20 @@ public partial interface IMql5Runtime
     /// <summary>MQL5 <c>MathSwap</c>: reverses the byte order of a 16-bit value. Native.</summary>
     ushort MathSwap(ushort value);
 
+    /// <summary>MQL5 <c>MathSwap</c>: reverses the byte order of a 16-bit signed value. Native.</summary>
+    short MathSwap(short value);
+
     /// <summary>MQL5 <c>MathSwap</c>: reverses the byte order of a 32-bit value. Native.</summary>
     uint MathSwap(uint value);
 
+    /// <summary>MQL5 <c>MathSwap</c>: reverses the byte order of a 32-bit signed value. Native.</summary>
+    int MathSwap(int value);
+
     /// <summary>MQL5 <c>MathSwap</c>: reverses the byte order of a 64-bit value. Native.</summary>
     ulong MathSwap(ulong value);
+
+    /// <summary>MQL5 <c>MathSwap</c>: reverses the byte order of a 64-bit signed value. Native.</summary>
+    long MathSwap(long value);
 
     // MQL5 documents each of the following as an alias of the Math function above it.
     // They are declared rather than folded away because the corpus calls them.
@@ -325,10 +334,10 @@ public sealed partial class Mql5Runtime
     public double MathArctanh(double value) => Math.Atanh(value);
 
     /// <inheritdoc />
-    public double MathExpm1(double value) => Exp1M(value);
+    public double MathExpm1(double value) => double.ExpM1(value);
 
     /// <inheritdoc />
-    public double MathLog1p(double value) => Log1PCore(value);
+    public double MathLog1p(double value) => double.LogP1(value);
 
     /// <inheritdoc />
     public bool MathIsValidNumber(double number) => !double.IsNaN(number) && !double.IsInfinity(number);
@@ -337,10 +346,19 @@ public sealed partial class Mql5Runtime
     public ushort MathSwap(ushort value) => System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(value);
 
     /// <inheritdoc />
+    public short MathSwap(short value) => System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(value);
+
+    /// <inheritdoc />
     public uint MathSwap(uint value) => System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(value);
 
     /// <inheritdoc />
+    public int MathSwap(int value) => System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(value);
+
+    /// <inheritdoc />
     public ulong MathSwap(ulong value) => System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(value);
+
+    /// <inheritdoc />
+    public long MathSwap(long value) => System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(value);
 
     /// <inheritdoc />
     public double Fabs(double value) => MathAbs(value);
@@ -428,35 +446,4 @@ public sealed partial class Mql5Runtime
 
     /// <inheritdoc />
     public double Log1p(double value) => MathLog1p(value);
-
-    // exp(x) - 1 computed so that the leading 1 does not cancel the whole result for
-    // small x, which is the only reason MQL5 documents expm1 separately from exp.
-    private static double Exp1M(double value)
-    {
-        double raised = Math.Exp(value);
-        if (raised == 1.0)
-        {
-            return value;
-        }
-
-        if (raised - 1.0 == -1.0)
-        {
-            return -1.0;
-        }
-
-        return (raised - 1.0) * value / Math.Log(raised);
-    }
-
-    // log(1 + x), likewise arranged so that adding 1 does not lose the low bits of a
-    // small x.
-    private static double Log1PCore(double value)
-    {
-        double sum = 1.0 + value;
-        if (sum == 1.0)
-        {
-            return value;
-        }
-
-        return Math.Log(sum) * value / (sum - 1.0);
-    }
 }

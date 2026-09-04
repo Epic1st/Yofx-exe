@@ -19,6 +19,43 @@ public enum Mt5TradingEnvironment
     Live = 1,
 }
 
+/// <summary>The position-accounting model declared for the connected MT5 account.</summary>
+public enum Mt5AccountMarginMode
+{
+    Unknown = -1,
+    RetailNetting = 0,
+    Exchange = 1,
+    RetailHedging = 2,
+}
+
+/// <summary>A point-in-time account view exposed to a translated live strategy.</summary>
+public sealed record Mt5LiveAccountSnapshot(
+    ulong Login,
+    string Company,
+    string Currency,
+    string Server,
+    double Balance,
+    double Equity,
+    double Margin,
+    double FreeMargin,
+    double Profit,
+    long Leverage,
+    Mt5TradingEnvironment Environment,
+    Mt5AccountMarginMode MarginMode,
+    bool TradingEnabled);
+
+/// <summary>Broker-reported trading properties for the client's bound symbol.</summary>
+public sealed record Mt5LiveSymbolSnapshot(
+    int Digits,
+    double Point,
+    double TickSize,
+    double TickValue,
+    double ContractSize,
+    double VolumeMin,
+    double VolumeMax,
+    double VolumeStep,
+    int TradeMode);
+
 /// <summary>The side, and for a pending order the trigger shape, of an order.</summary>
 public enum Mt5DemoSide
 {
@@ -118,10 +155,10 @@ public sealed record Mt5DemoOrderReceipt(
 /// exist. A missing file refuses the send — absence is a stop, never a default.
 /// </para>
 /// </summary>
-public sealed class Mt5NetApiDemoTradeClient : IDisposable
+public sealed class Mt5NetApiDemoTradeClient : IMt5TradeGateway, IDisposable
 {
-    /// <summary>The largest order this client will ever submit, in lots.</summary>
-    public const double MaximumVolume = 0.01;
+    /// <summary>The largest single volume this client will transmit: 10.00 lots.</summary>
+    public const double MaximumVolume = 10.0;
 
     private static readonly double TicksToMicroseconds = 1_000_000.0 / Stopwatch.Frequency;
 
@@ -131,6 +168,7 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
     private readonly string enableFilePath;
     private readonly Action<string> journal;
     private readonly Mt5TradingEnvironment environment;
+    private readonly Mt5AccountMarginMode marginMode;
     private bool connected;
     private Delegate? quoteHandler;
     private readonly Dictionary<string, MethodInfo> vendorMethods = [];
@@ -145,13 +183,23 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
     private long enableFileCheckedAt;
     /// <summary>Latest bid and ask, replaced whole so a reader never sees a torn pair.</summary>
     private volatile object? cachedQuote;
+    private Action<DateTime, double, double>? quoteObserver;
 
     /// <summary>
     /// Called for every quote the broker pushes, on the vendor's own thread. A live strategy
     /// needs the stream itself, not just the newest value, because a bar is built from what
     /// arrived rather than from what happened to be current when someone looked.
     /// </summary>
-    public Action<DateTime, double, double>? QuoteObserver { get; set; }
+    public Action<DateTime, double, double>? QuoteObserver
+    {
+        get => Volatile.Read(ref quoteObserver);
+        set
+        {
+            Volatile.Write(ref quoteObserver, value);
+            if (value is not null && latestQuote is { } cached)
+                value(DateTime.UtcNow, cached.Bid, cached.Ask);
+        }
+    }
 
     private Mt5NetApiDemoTradeClient(
         Type apiType,
@@ -159,9 +207,11 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
         string symbol,
         string enableFilePath,
         Action<string> journal,
-        Mt5TradingEnvironment environment)
+        Mt5TradingEnvironment environment,
+        Mt5AccountMarginMode marginMode)
     {
         this.environment = environment;
+        this.marginMode = marginMode;
         this.apiType = apiType;
         this.instance = instance;
         this.symbol = symbol;
@@ -194,7 +244,8 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
         string symbol,
         string enableFilePath,
         Action<string> journal,
-        Mt5TradingEnvironment environment = Mt5TradingEnvironment.Demo)
+        Mt5TradingEnvironment environment = Mt5TradingEnvironment.Demo,
+        Mt5AccountMarginMode marginMode = Mt5AccountMarginMode.Unknown)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactPath);
         ArgumentNullException.ThrowIfNull(password);
@@ -220,7 +271,8 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
             symbol.Trim(),
             Path.GetFullPath(enableFilePath),
             journal,
-            environment);
+            environment,
+            marginMode);
     }
 
     /// <summary>The one instrument this client is permitted to trade.</summary>
@@ -232,6 +284,104 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
     /// <summary>The broker's name, as the server reports it.</summary>
     public string? AccountCompanyName =>
         apiType.GetProperty("AccountCompanyName")?.GetValue(instance) as string;
+
+    /// <summary>Reads account properties already held by the connected vendor session.</summary>
+    public Mt5LiveAccountSnapshot ReadAccountSnapshot()
+    {
+        RequireConnectedSession();
+        bool tradingEnabled;
+        try
+        {
+            RequireDeclaredEnvironment();
+            tradingEnabled = EnableFilePresent();
+        }
+        catch (InvalidOperationException)
+        {
+            tradingEnabled = false;
+        }
+
+        return new Mt5LiveAccountSnapshot(
+            Property<ulong>("User"),
+            Property<string>("AccountCompanyName") ?? string.Empty,
+            Property<string>("AccountCurrency") ?? string.Empty,
+            apiType.GetField("Server")?.GetValue(instance) as string ?? string.Empty,
+            Property<double>("AccountBalance"),
+            Property<double>("AccountEquity"),
+            Property<double>("AccountMargin"),
+            Property<double>("AccountFreeMargin"),
+            Property<double>("AccountProfit"),
+            Property<long>("AccountLeverage"),
+            environment,
+            ResolveMarginMode(),
+            tradingEnabled);
+    }
+
+    private Mt5AccountMarginMode ResolveMarginMode()
+    {
+        if (marginMode != Mt5AccountMarginMode.Unknown) return marginMode;
+        object? raw = apiType.GetProperty("AccountMethod")?.GetValue(instance)
+            ?? apiType.GetField("AccountMethod")?.GetValue(instance);
+        string method = Convert.ToString(raw, CultureInfo.InvariantCulture) ?? string.Empty;
+        if (method.Contains("hedg", StringComparison.OrdinalIgnoreCase))
+            return Mt5AccountMarginMode.RetailHedging;
+        if (method.Contains("exchange", StringComparison.OrdinalIgnoreCase))
+            return Mt5AccountMarginMode.Exchange;
+        if (method.Contains("net", StringComparison.OrdinalIgnoreCase))
+            return Mt5AccountMarginMode.RetailNetting;
+        return Mt5AccountMarginMode.Unknown;
+    }
+
+    /// <summary>Reads the bound symbol's specification from the broker catalogue.</summary>
+    public Mt5LiveSymbolSnapshot? ReadSymbolSnapshot()
+    {
+        RequireConnectedSession();
+        object? catalogue = apiType.GetField("Symbols")?.GetValue(instance)
+            ?? apiType.GetProperty("Symbols")?.GetValue(instance);
+        if (catalogue is null) return null;
+        MethodInfo? getInfo = catalogue.GetType().GetMethod("GetInfo", [typeof(string)]);
+        object? detail = getInfo?.Invoke(catalogue, [symbol]);
+        if (detail is null) return null;
+        Type type = detail.GetType();
+        int reportedDigits = Number<int>(type, detail, "Digits");
+        double point = reportedDigits > 0 ? 1.0 / Math.Pow(10.0, reportedDigits) : 0.0;
+        double tickSize = Number<double>(type, detail, "TickSize");
+        double tickValue = Number<double>(type, detail, "TickValue");
+        double contractSize = Number<double>(type, detail, "ContractSize");
+        double volumeMin = FirstPositive(type, detail, "VolumeMin", "LotsMin", "LotMin");
+        double volumeMax = FirstPositive(type, detail, "VolumeMax", "LotsMax", "LotMax");
+        double volumeStep = FirstPositive(type, detail, "VolumeStep", "LotsStep", "LotStep");
+        return new Mt5LiveSymbolSnapshot(
+            reportedDigits,
+            point,
+            tickSize,
+            tickValue,
+            contractSize,
+            volumeMin > 0 ? volumeMin : 0.01,
+            volumeMax > 0 ? Math.Min(volumeMax, MaximumVolume) : MaximumVolume,
+            volumeStep > 0 ? volumeStep : 0.01,
+            4);
+    }
+
+    private static double FirstPositive(Type type, object instance, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            double value = Number<double>(type, instance, name);
+            if (value > 0) return value;
+        }
+        return 0.0;
+    }
+
+    private static T Number<T>(Type type, object instance, string name)
+    {
+        object? value = type.GetField(name)?.GetValue(instance)
+            ?? type.GetProperty(name)?.GetValue(instance);
+        if (value is T exact) return exact;
+        if (value is null) return default!;
+        try { return (T)Convert.ChangeType(value, typeof(T), CultureInfo.InvariantCulture); }
+        catch (Exception exception) when (exception is InvalidCastException or FormatException or OverflowException)
+        { return default!; }
+    }
 
     /// <summary>Sets the vendor connect timeout, in milliseconds, before connecting.</summary>
     /// <param name="milliseconds">The timeout to apply.</param>
@@ -606,6 +756,56 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
         journal($"quote stream started for {symbol}");
     }
 
+    /// <summary>
+    /// Pulls one quote through the open session and notifies <see cref="QuoteObserver"/>.
+    /// Used when the vendor event stream is quiet so a live strategy still gets ticks.
+    /// </summary>
+    public void RefreshQuote()
+    {
+        RequireConnectedSession();
+        FetchQuote();
+    }
+
+    /// <summary>Downloads validated closed bars through the already authenticated session.</summary>
+    public IReadOnlyList<Mt5HistoryBar> DownloadHistory(
+        DateTime fromUtc,
+        DateTime toUtc,
+        Mt5HistoryPeriod period)
+    {
+        RequireConnectedSession();
+        if (toUtc < fromUtc)
+            throw new ArgumentException("The history interval is reversed.", nameof(toUtc));
+        MethodInfo download = apiType.GetMethod(
+            "DownloadQuoteHistory",
+            [typeof(string), typeof(DateTime), typeof(DateTime), typeof(int)])
+            ?? throw new MissingMethodException(apiType.FullName, "DownloadQuoteHistory(string,DateTime,DateTime,int)");
+        if (download.Invoke(instance, [symbol, fromUtc, toUtc, (int)period]) is not Array raw)
+            return [];
+
+        var result = new List<Mt5HistoryBar>(raw.Length);
+        DateTime previous = DateTime.MinValue;
+        foreach (object? item in raw)
+        {
+            if (item is null) continue;
+            Type type = item.GetType();
+            var bar = new Mt5HistoryBar(
+                Read<DateTime>(type, item, "Time"),
+                Read<double>(type, item, "OpenPrice"),
+                Read<double>(type, item, "HighPrice"),
+                Read<double>(type, item, "LowPrice"),
+                Read<double>(type, item, "ClosePrice"),
+                checked((long)Read<ulong>(type, item, "TickVolume")),
+                Read<int>(type, item, "Spread"));
+            if (bar.Time <= previous || bar.Open <= 0 || bar.High <= 0 || bar.Low <= 0
+                || bar.Close <= 0 || bar.High < Math.Max(bar.Open, bar.Close)
+                || bar.Low > Math.Min(bar.Open, bar.Close))
+                throw new InvalidDataException("The broker returned invalid or unordered history.");
+            previous = bar.Time;
+            result.Add(bar);
+        }
+        return result;
+    }
+
     private Delegate BuildQuoteHandler(Type handlerType)
     {
         MethodInfo invoke = handlerType.GetMethod("Invoke")
@@ -719,6 +919,24 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
         return value is T typed ? typed : default!;
     }
 
+    private T Property<T>(string name)
+    {
+        object? value = apiType.GetProperty(name)?.GetValue(instance)
+            ?? apiType.GetField(name)?.GetValue(instance);
+        if (value is T exact)
+            return exact;
+        if (value is null)
+            return default!;
+        try
+        {
+            return (T)Convert.ChangeType(value, typeof(T), CultureInfo.InvariantCulture);
+        }
+        catch (Exception exception) when (exception is InvalidCastException or FormatException or OverflowException)
+        {
+            return default!;
+        }
+    }
+
     private static FileStream OpenVerifiedArtifact(string artifactPath)
     {
         var stream = new FileStream(
@@ -752,14 +970,10 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
     /// <summary>Closes the session if one was opened.</summary>
     public void Dispose()
     {
-        if (!connected)
-        {
-            return;
-        }
-
         try
         {
-            apiType.GetMethod("Disconnect", Type.EmptyTypes)?.Invoke(instance, null);
+            if (connected)
+                apiType.GetMethod("Disconnect", Type.EmptyTypes)?.Invoke(instance, null);
         }
         catch (TargetInvocationException)
         {
@@ -768,6 +982,8 @@ public sealed class Mt5NetApiDemoTradeClient : IDisposable
         finally
         {
             connected = false;
+            if (instance is IDisposable disposable)
+                disposable.Dispose();
         }
     }
 }

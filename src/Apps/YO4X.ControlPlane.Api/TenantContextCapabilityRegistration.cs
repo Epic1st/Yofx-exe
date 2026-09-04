@@ -36,7 +36,7 @@ internal static class TenantContextCapabilityRegistration
 
         if (existingProvider is not null)
         {
-            return true;
+            return false;
         }
 
         if (!PostgresTenantContextCapabilityProvider.TryNormalizeIssuerConnectionString(

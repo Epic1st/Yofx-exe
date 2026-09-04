@@ -7,6 +7,8 @@
         Height="940"
         MinWidth="980"
         MinHeight="680"
+        WindowStyle="SingleBorderWindow"
+        ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource ShellBackground}">
   <Grid>

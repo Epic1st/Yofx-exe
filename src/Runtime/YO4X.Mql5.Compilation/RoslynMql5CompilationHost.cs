@@ -103,12 +103,17 @@ public sealed class RoslynMql5CompilationHost : IMql5CompilationHost
             }
 
             FileLinePositionSpan span = diagnostic.Location.GetLineSpan();
+            string rawMessage = diagnostic.GetMessage(CultureInfo.InvariantCulture);
+            string message = !string.IsNullOrEmpty(span.Path)
+                ? $"{span.Path}: {rawMessage}"
+                : rawMessage;
+
             translated.Add(new Mql5RestrictedDiagnostic(
                 diagnostic.Id,
                 diagnostic.Severity == DiagnosticSeverity.Error
                     ? Mql5RestrictedDiagnosticSeverity.Error
                     : Mql5RestrictedDiagnosticSeverity.Information,
-                diagnostic.GetMessage(CultureInfo.InvariantCulture),
+                message,
                 span.StartLinePosition.Line + 1,
                 span.StartLinePosition.Character + 1));
         }
@@ -134,13 +139,22 @@ public sealed class RoslynMql5CompilationHost : IMql5CompilationHost
         // netstandard and System.Runtime are facade assemblies the compiler resolves type
         // forwards through; without them a reference to a BCL type can bind at runtime and
         // still fail to compile.
-        string directory = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
-        foreach (string facade in (string[])["System.Runtime.dll", "netstandard.dll"])
+        string? location = typeof(object).Assembly.Location;
+        string? directory = !string.IsNullOrEmpty(location) ? Path.GetDirectoryName(location) : null;
+        if (string.IsNullOrEmpty(directory))
         {
-            string candidate = Path.Combine(directory, facade);
-            if (File.Exists(candidate))
+            directory = AppContext.BaseDirectory;
+        }
+
+        if (!string.IsNullOrEmpty(directory))
+        {
+            foreach (string facade in (string[])["System.Runtime.dll", "netstandard.dll"])
             {
-                paths.Add(candidate);
+                string candidate = Path.Combine(directory, facade);
+                if (File.Exists(candidate))
+                {
+                    paths.Add(candidate);
+                }
             }
         }
 

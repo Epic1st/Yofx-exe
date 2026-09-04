@@ -897,6 +897,25 @@ internal sealed partial class Mql5GeneratorRun
                 return CommonType(TypeOf(conditional.WhenTrue), TypeOf(conditional.WhenFalse));
             case Mql5IrIndexExpression index:
                 return Infer(index.Target, depth + 1).ElementType();
+            case Mql5IrMemberExpression member:
+            {
+                if (Mql5ClrTypes.RuntimeMemberClrType(member.Member) is string clrType)
+                {
+                    return clrType switch
+                    {
+                        "int" => Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Whole32),
+                        "uint" => Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Natural32),
+                        "long" => Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Whole64),
+                        "ulong" => Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Natural64),
+                        "double" => Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Real64),
+                        "float" => Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Real32),
+                        "string" => Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Text),
+                        "bool" => Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Logical),
+                        _ => Mql5ResolvedType.Unknown
+                    };
+                }
+                return Mql5ResolvedType.Unknown;
+            }
             default:
                 return Mql5ResolvedType.Unknown;
         }
@@ -971,12 +990,18 @@ internal sealed partial class Mql5GeneratorRun
             // A shift takes the promoted type of its left operand; the right operand only says how
             // far, and MQL5 does not widen the result to accommodate it.
             case "<<" or ">>":
-                return TypeOf(binary.Left);
+                return PromoteNarrow(TypeOf(binary.Left));
 
             default:
-                return CommonType(TypeOf(binary.Left), TypeOf(binary.Right));
+                return PromoteNarrow(CommonType(TypeOf(binary.Left), TypeOf(binary.Right)));
         }
     }
+
+    private static Mql5ResolvedType PromoteNarrow(Mql5ResolvedType type) =>
+        type.Kind == Mql5ResolvedTypeKind.Scalar
+        && type.Scalar is Mql5IrScalarKind.Whole8 or Mql5IrScalarKind.Natural8 or Mql5IrScalarKind.Whole16 or Mql5IrScalarKind.Natural16
+            ? Mql5ResolvedType.ForScalar(Mql5IrScalarKind.Whole32)
+            : type;
 
     private Mql5ResolvedType InferCall(Mql5IrNameExpression name, int argumentCount)
     {
@@ -1137,6 +1162,8 @@ internal sealed partial class Mql5GeneratorRun
                 return "(!" + Truthy(unary.Operand, depth + 1) + ")";
             case "~":
                 return "(~" + Arith(unary.Operand, depth + 1) + ")";
+            case "-" when TypeOf(unary.Operand).Scalar == Mql5IrScalarKind.Natural64 && !TypeOf(unary.Operand).IsArray:
+                return "unchecked((ulong)(-(long)(" + Arith(unary.Operand, depth + 1) + ")))";
             case "-":
             case "+":
                 return "(" + unary.Operator + " " + Arith(unary.Operand, depth + 1) + ")";
@@ -1185,9 +1212,11 @@ internal sealed partial class Mql5GeneratorRun
             case "+" when leftIsText || rightIsText:
                 return "Mql5Ops.Concat(" + Expr(binary.Left, depth + 1) + ", "
                     + Expr(binary.Right, depth + 1) + ")";
-            case "<" or ">" or "<=" or ">=" when leftIsText && rightIsText:
-                return "(string.CompareOrdinal(" + Expr(binary.Left, depth + 1) + ", "
-                    + Expr(binary.Right, depth + 1) + ") " + op + " 0)";
+            case "<" or ">" or "<=" or ">=" when leftIsText || rightIsText:
+                return "(string.CompareOrdinal("
+                    + (leftIsText ? Expr(binary.Left, depth + 1) : "Mql5Ops.ToText(" + Expr(binary.Left, depth + 1) + ")") + ", "
+                    + (rightIsText ? Expr(binary.Right, depth + 1) : "Mql5Ops.ToText(" + Expr(binary.Right, depth + 1) + ")") + ") "
+                    + op + " 0)";
             case "==" or "!=" when leftIsText != rightIsText:
                 return "(Mql5Ops.ToText(" + Expr(binary.Left, depth + 1) + ") " + op
                     + " Mql5Ops.ToText(" + Expr(binary.Right, depth + 1) + "))";
@@ -1212,6 +1241,11 @@ internal sealed partial class Mql5GeneratorRun
             {
                 (string balancedLeft, string balancedRight) = Balanced(binary, depth + 1);
                 return "(" + balancedLeft + " " + op + " " + balancedRight + ")";
+            }
+            case ",":
+            {
+                (string balancedLeft, string balancedRight) = Balanced(binary, depth + 1);
+                return "Mql5Ops.Comma(" + balancedLeft + ", " + balancedRight + ")";
             }
             default:
                 return Fail(
@@ -1674,10 +1708,14 @@ internal sealed partial class Mql5GeneratorRun
         if (target.Kind is Mql5ResolvedTypeKind.Scalar or Mql5ResolvedTypeKind.Enumeration)
         {
             if (source.Kind is Mql5ResolvedTypeKind.Structure or Mql5ResolvedTypeKind.Class
-                or Mql5ResolvedTypeKind.Unknown or Mql5ResolvedTypeKind.Function
-                or Mql5ResolvedTypeKind.TypeName)
+                or Mql5ResolvedTypeKind.Function or Mql5ResolvedTypeKind.TypeName)
             {
                 return explicitCast ? NarrowingCast(clr, text) : text;
+            }
+
+            if (source.Kind == Mql5ResolvedTypeKind.Unknown)
+            {
+                return NarrowingCast(clr, text);
             }
 
             // MQL5's conversion from a string to a number is a parse, not a reinterpretation:
@@ -1689,11 +1727,6 @@ internal sealed partial class Mql5GeneratorRun
                     ? "Mql5Ops.ToDouble(" + text + ")"
                     : "Mql5Ops.ToLong(" + text + ")";
                 return NarrowingCast(clr, parsed);
-            }
-
-            if (source.Scalar == Mql5IrScalarKind.Text && !explicitCast)
-            {
-                return text;
             }
 
             return NarrowingCast(clr, Promote(source, text));

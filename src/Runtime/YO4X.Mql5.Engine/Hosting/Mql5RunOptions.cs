@@ -29,6 +29,12 @@ public sealed class Mql5RunOptions
     public int SpreadPoints { get; init; } = 10;
 
     /// <summary>
+    /// Optional quote visible during <c>OnInit</c>. Zero preserves the no-quote state; live-like
+    /// package characterization can provide the first known bid without consuming a feed bar.
+    /// </summary>
+    public double InitialBid { get; init; }
+
+    /// <summary>
     /// Gets the adverse slippage in points applied to every market fill. Deterministic: the same
     /// number of points is always given up, never a random amount.
     /// </summary>

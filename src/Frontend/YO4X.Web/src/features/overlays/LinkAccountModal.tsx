@@ -46,6 +46,8 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
   const [selected, setSelected] = useState<BrokerAccountRegistrationOption | null>(null);
   const [approvingKey, setApprovingKey] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(submitting);
+  submittingRef.current = submitting;
   const [error, setError] = useState<string | null>(null);
 
   // Typing must not fire one request per keystroke against a directory this
@@ -110,7 +112,9 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation();
-        onClose();
+        if (!submittingRef.current) {
+          onClose();
+        }
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -124,7 +128,7 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
 
   const approve = useCallback(
     async (option: BrokerAccountRegistrationOption) => {
-      if (option.directoryServerId === null || approvingKey !== null) {
+      if (option.directoryServerId === null || approvingKey !== null || submitting) {
         return;
       }
       setApprovingKey(optionKey(option));
@@ -146,12 +150,15 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
         setApprovingKey(null);
       }
     },
-    [approvingKey, client, options],
+    [approvingKey, client, options, submitting],
   );
 
   const submit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      if (submitting) {
+        return;
+      }
       if (selected === null || !selected.approved) {
         setError('Choose an approved broker server first.');
         return;
@@ -193,7 +200,7 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
         setSubmitting(false);
       }
     },
-    [selected, login, password, onSubmit, onClose],
+    [selected, login, password, onSubmit, onClose, submitting],
   );
 
   const stopPropagation = useCallback((event: MouseEvent<HTMLElement>) => {
@@ -210,7 +217,7 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
     : 'No broker server is approved for your account yet. Search for your broker above.';
 
   return (
-    <div className="scrim scrim--center" role="presentation" onMouseDown={onClose}>
+    <div className="scrim scrim--center" role="presentation" onMouseDown={submitting ? undefined : onClose}>
       <div
         className="modal link"
         role="dialog"
@@ -231,6 +238,7 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
             ref={closeRef}
             type="button"
             className="overlay-close"
+            disabled={submitting}
             onClick={onClose}
             aria-label="Close the link account dialog"
           >
@@ -262,6 +270,7 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
               autoComplete="off"
               spellCheck={false}
               maxLength={20}
+              disabled={submitting}
               value={login}
               placeholder="8420193"
               onChange={(event) => setLogin(event.target.value)}
@@ -279,6 +288,7 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
               autoComplete="new-password"
               spellCheck={false}
               maxLength={maximumPasswordLength}
+              disabled={submitting}
               value={password}
               placeholder="MT5 account password"
               onChange={(event) => setPassword(event.target.value)}
@@ -301,6 +311,7 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
               autoComplete="off"
               spellCheck={false}
               maxLength={maximumSearchLength}
+              disabled={submitting}
               value={search}
               placeholder="Search your broker, for example Vantage"
               onChange={(event) => setSearch(event.target.value)}
@@ -341,7 +352,7 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
                         <button
                           type="button"
                           className="btn btn--secondary server-picker__approve"
-                          disabled={approvingKey !== null}
+                          disabled={approvingKey !== null || submitting}
                           onClick={() => void approve(option)}
                         >
                           {approvingKey === key ? 'Approving…' : 'Approve'}
@@ -374,7 +385,12 @@ export function LinkAccountModal({ open, onClose, onSubmit }: LinkAccountModalPr
         {error !== null ? <p className="link__error">{error}</p> : null}
 
         <div className="link__actions">
-          <button type="button" className="btn btn--secondary link__cancel" onClick={onClose}>
+          <button
+            type="button"
+            className="btn btn--secondary link__cancel"
+            disabled={submitting}
+            onClick={onClose}
+          >
             Cancel
           </button>
           <button

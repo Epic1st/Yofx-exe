@@ -1,4 +1,5 @@
 import { Icon, type IconName } from '../shared/ui/Icon';
+import { TitleBar } from './shell/TitleBar';
 
 interface FullPageStateProps {
   readonly icon: IconName;
@@ -11,20 +12,25 @@ interface FullPageStateProps {
 /** A whole-window message used before the shell can render (config or auth failure). */
 export function FullPageState({ icon, title, detail, actionLabel, onAction }: FullPageStateProps) {
   return (
-    <main className="full-page-state">
-      <section className="full-page-state__card" aria-labelledby="full-page-state-title">
-        <span className="full-page-state__icon">
-          <Icon name={icon} size={22} />
-        </span>
-        <h1 id="full-page-state-title">{title}</h1>
-        <p>{detail}</p>
-        {actionLabel !== undefined && onAction !== undefined ? (
-          <button type="button" className="btn btn--primary" onClick={onAction}>
-            {actionLabel}
-          </button>
-        ) : null}
-      </section>
-    </main>
+    <div className="app-viewport">
+      <div className="app-frame">
+        <TitleBar version="0.1.0" latencyMs={null} connected={false} />
+        <main className="full-page-state">
+          <section className="full-page-state__card" aria-labelledby="full-page-state-title">
+            <span className="full-page-state__icon">
+              <Icon name={icon} size={22} />
+            </span>
+            <h1 id="full-page-state-title">{title}</h1>
+            <p>{detail}</p>
+            {actionLabel !== undefined && onAction !== undefined ? (
+              <button type="button" className="btn btn--primary" onClick={onAction}>
+                {actionLabel}
+              </button>
+            ) : null}
+          </section>
+        </main>
+      </div>
+    </div>
   );
 }
 
@@ -33,14 +39,7 @@ export function ShellLoading() {
   return (
     <div className="app-viewport">
       <div className="app-frame" aria-busy="true" aria-label="Loading Yo4x">
-        <div className="titlebar">
-          <div className="titlebar__dots">
-            <span className="titlebar__dot" />
-            <span className="titlebar__dot" />
-            <span className="titlebar__dot" />
-          </div>
-          <div className="titlebar__label">Yo4x Desktop</div>
-        </div>
+        <TitleBar version="0.1.0" latencyMs={null} connected={false} />
         <div className="app-frame__body">
           <aside className="sidebar">
             <div className="sidebar__brand">

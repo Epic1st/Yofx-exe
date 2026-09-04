@@ -26,13 +26,16 @@ public sealed class LiveBarSeries
     private readonly List<IMql5Indicator> handles = [];
     private readonly TimeSpan period;
     private readonly int maximumBars;
+    private readonly double point;
 
+    private int inferredDigits;
     private DateTime formingOpenTime;
     private double formingOpen;
     private double formingHigh;
     private double formingLow;
     private double formingClose;
     private long formingTicks;
+    private int formingSpread;
     private bool forming;
 
     /// <summary>Creates a series for one symbol and period.</summary>
@@ -40,11 +43,13 @@ public sealed class LiveBarSeries
     /// <param name="periodMinutes">The bar period, in minutes.</param>
     /// <param name="seed">Closed bars already known, oldest first.</param>
     /// <param name="maximumBars">How many bars to retain.</param>
+    /// <param name="point">The symbol point size, or zero to infer from seed or quotes.</param>
     public LiveBarSeries(
         string symbol,
         int periodMinutes,
         IEnumerable<Mql5Bar> seed,
-        int maximumBars = 5_000)
+        int maximumBars = 5_000,
+        double point = 0.0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(symbol);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(periodMinutes);
@@ -55,8 +60,27 @@ public sealed class LiveBarSeries
         PeriodMinutes = periodMinutes;
         period = TimeSpan.FromMinutes(periodMinutes);
         this.maximumBars = maximumBars;
+        this.point = point > 0.0 ? point : 0.0;
         bars = [.. seed];
+        if (this.point <= 0.0)
+        {
+            foreach (Mql5Bar bar in bars)
+            {
+                inferredDigits = Math.Max(inferredDigits, InferDigits(bar.Open));
+                inferredDigits = Math.Max(inferredDigits, InferDigits(bar.High));
+                inferredDigits = Math.Max(inferredDigits, InferDigits(bar.Low));
+                inferredDigits = Math.Max(inferredDigits, InferDigits(bar.Close));
+            }
+        }
+
         Trim();
+        if (bars.Count > 0)
+        {
+            Mql5Bar latest = bars[^1];
+            Bid = latest.Close;
+            Ask = latest.Close + Math.Max(0, latest.Spread) * Point;
+            LastQuoteTime = latest.Time;
+        }
     }
 
     /// <summary>The instrument this series carries.</summary>
@@ -64,6 +88,9 @@ public sealed class LiveBarSeries
 
     /// <summary>The bar period, in minutes.</summary>
     public int PeriodMinutes { get; }
+
+    /// <summary>The size of one point for this symbol.</summary>
+    public double Point => point > 0.0 ? point : (inferredDigits > 0 ? 1.0 / Math.Pow(10.0, inferredDigits) : 1.0);
 
     /// <summary>How many closed bars are held.</summary>
     public int Count => bars.Count;
@@ -101,17 +128,25 @@ public sealed class LiveBarSeries
         Ask = ask;
         LastQuoteTime = time;
 
+        if (point <= 0.0)
+        {
+            inferredDigits = Math.Max(inferredDigits, Math.Max(InferDigits(bid), InferDigits(ask)));
+        }
+
+        double pt = Point;
+        int spread = pt > 0.0 ? Math.Max(0, (int)Math.Round((ask - bid) / pt)) : 0;
+
         DateTime slot = FloorToPeriod(time);
         if (!forming)
         {
-            StartBar(slot, bid);
+            StartBar(slot, bid, spread);
             return false;
         }
 
         if (slot > formingOpenTime)
         {
             Publish();
-            StartBar(slot, bid);
+            StartBar(slot, bid, spread);
             return true;
         }
 
@@ -119,10 +154,11 @@ public sealed class LiveBarSeries
         formingLow = Math.Min(formingLow, bid);
         formingClose = bid;
         formingTicks++;
+        formingSpread = spread;
         return false;
     }
 
-    private void StartBar(DateTime slot, double price)
+    private void StartBar(DateTime slot, double price, int spread)
     {
         formingOpenTime = slot;
         formingOpen = price;
@@ -130,6 +166,7 @@ public sealed class LiveBarSeries
         formingLow = price;
         formingClose = price;
         formingTicks = 1;
+        formingSpread = spread;
         forming = true;
     }
 
@@ -142,7 +179,7 @@ public sealed class LiveBarSeries
             formingLow,
             formingClose,
             formingTicks,
-            0);
+            formingSpread);
         bars.Add(bar);
         foreach (IMql5Indicator indicator in handles)
         {
@@ -227,5 +264,22 @@ public sealed class LiveBarSeries
         }
 
         return count;
+    }
+
+    private static int InferDigits(double value)
+    {
+        if (value <= 0.0 || double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return 0;
+        }
+
+        try
+        {
+            return ((decimal)value).Scale;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 }

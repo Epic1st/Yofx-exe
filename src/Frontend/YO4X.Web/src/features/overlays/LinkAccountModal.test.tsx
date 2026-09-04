@@ -51,13 +51,14 @@ function renderModal(
     _option: BrokerAccountRegistrationOption,
     _password: string,
   ) => Promise.resolve(true)),
+  onClose = vi.fn(),
 ) {
   const result = render(
     <ControlPlaneClientProvider client={client}>
-      <LinkAccountModal open onClose={vi.fn()} onSubmit={onSubmit} />
+      <LinkAccountModal open onClose={onClose} onSubmit={onSubmit} />
     </ControlPlaneClientProvider>,
   );
-  return { ...result, onSubmit };
+  return { ...result, onSubmit, onClose };
 }
 
 describe('link account modal', () => {
@@ -239,5 +240,45 @@ describe('link account modal', () => {
 
     expect(await screen.findByText('The broker server could not be approved.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /VantageGlobalPrimeLLP-Demo/u })).toBeDisabled();
+  });
+
+  it('reports linking failure when submission returns false while preserving dialog state', async () => {
+    const onSubmit = vi.fn((
+      _login: string,
+      _option: BrokerAccountRegistrationOption,
+      _password: string,
+    ) => Promise.resolve(false));
+    const { onClose } = renderModal(createClient(), onSubmit);
+    await screen.findByText('MetaQuotes-Demo');
+    fireEvent.change(screen.getByLabelText('Login ID'), { target: { value: '8420193' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: secret } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect account' }));
+
+    expect(
+      await screen.findByText(
+        'The account was not linked. Check the login and password, then try again.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Login ID')).toHaveValue('8420193');
+    expect(screen.getByLabelText('Password')).toHaveValue(secret);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('displays the error message when linking rejects with an exception', async () => {
+    const onSubmit = vi.fn((
+      _login: string,
+      _option: BrokerAccountRegistrationOption,
+      _password: string,
+    ) => Promise.reject(new Error('The broker rejected the credentials.')));
+    const { onClose } = renderModal(createClient(), onSubmit);
+    await screen.findByText('MetaQuotes-Demo');
+    fireEvent.change(screen.getByLabelText('Login ID'), { target: { value: '8420193' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: secret } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect account' }));
+
+    expect(await screen.findByText('The broker rejected the credentials.')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

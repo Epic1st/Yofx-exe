@@ -63,12 +63,16 @@ export type InputEditorValues = Readonly<Record<string, string>>;
 export type TouchedInputs = Readonly<Record<string, boolean>>;
 
 const wholeNumberPattern = /^[+-]?[0-9]+$/u;
+const decimalNumberPattern = /^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/u;
 const colourLiteralPattern = /^[cC]'\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*'$/u;
 const hexColourPattern = /^#([0-9a-fA-F]{6})$/u;
+const hexIntegerPattern = /^0[xX][0-9a-fA-F]{1,8}$/u;
+const mqlIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u;
 const momentLiteralPattern = /^[dD]'([^']*)'$/u;
 const calendarDatePattern = /^([0-9]{4})[.\-/]([0-9]{2})[.\-/]([0-9]{2})/u;
 const int64Minimum = -9223372036854775808n;
 const int64Maximum = 9223372036854775807n;
+const uintMaximum = 4294967295n;
 
 function isCalendarDate(value: string): boolean {
   if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u.test(value)) {
@@ -76,6 +80,24 @@ function isCalendarDate(value: string): boolean {
   }
   const instant = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(instant.getTime()) && instant.toISOString().slice(0, 10) === value;
+}
+
+function isColour(value: string): boolean {
+  const literal = colourLiteralPattern.exec(value);
+  if (literal !== null) {
+    const channels = [literal[1], literal[2], literal[3]].map((part) => Number(part ?? ''));
+    return channels.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+  }
+  if (mqlIdentifierPattern.test(value)) {
+    return true;
+  }
+  if (hexIntegerPattern.test(value)) {
+    return true;
+  }
+  if (/^[0-9]+$/u.test(value)) {
+    return BigInt(value) <= uintMaximum;
+  }
+  return false;
 }
 
 /**
@@ -270,7 +292,7 @@ export function validateInputValue(
       return null;
     }
     case 'REAL':
-      return Number.isFinite(Number(trimmed)) && trimmed !== ''
+      return decimalNumberPattern.test(trimmed) && Number.isFinite(Number(trimmed))
         ? null
         : `${input.declaredType} takes a decimal number.`;
     case 'LOGICAL':
@@ -293,9 +315,12 @@ export function validateInputValue(
         ? 'Choose a calendar date.'
         : null;
     case 'COLOUR':
+      return isColour(trimmed)
+        ? null
+        : `${input.declaredType} takes a named colour, a C'r,g,b' triplet or an integer.`;
     case 'TEXT':
     default:
-      return submitted.length > 2_000 ? 'That value is too long to record.' : null;
+      return submitted.length > 4_000 ? 'That value is too long to record.' : null;
   }
 }
 
@@ -323,7 +348,7 @@ export function validateInputValues(
 export function validateFormValues(values: BacktestFormValues): Record<string, string> {
   const errors: Record<string, string> = {};
 
-  if (values.strategyId === '') {
+  if (values.strategyId.trim() === '') {
     errors.strategyId = 'Choose the strategy to test.';
   }
   if (!isCalendarDate(values.periodStart)) {

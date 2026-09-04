@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { StrategyCatalogPage, StrategyCatalogSort } from '../../api/contracts';
 import { strategyCatalogSortValues } from '../../api/contracts';
 import { userFacingProblem } from '../../api/problemDetails';
@@ -41,31 +41,38 @@ function pageWindow(page: number, totalPages: number): readonly number[] {
 
 export interface CatalogPageProps {
   readonly onNavigate: (view: AppView, strategyId?: string) => void;
+  readonly searchTerm?: string;
 }
 
 /**
  * The full strategy catalog: facet chips, sort, a six-column grid and a pager.
  * Every filter change refetches through the control-plane client.
  */
-export function CatalogPage({ onNavigate }: CatalogPageProps) {
+export function CatalogPage({ onNavigate, searchTerm }: CatalogPageProps) {
   const client = useControlPlaneClient();
   const [page, setPage] = useState(1);
   const [category, setCategory] = useState<string | null>(null);
   const [symbol, setSymbol] = useState<string | null>(null);
   const [sort, setSort] = useState<StrategyCatalogSort>('MOST_USED');
 
+  useEffect(() => {
+    setPage(1);
+  }, [searchTerm]);
+
   const load = useCallback(
     (signal: AbortSignal) => {
+      const trimmedSearch = searchTerm?.trim();
       const query: StrategyCatalogQuery = {
         page,
         pageSize,
         sort,
         ...(category !== null ? { category } : {}),
         ...(symbol !== null ? { symbol } : {}),
+        ...(trimmedSearch ? { query: trimmedSearch } : {}),
       };
       return client.getStrategyCatalog(query, signal);
     },
-    [client, page, sort, category, symbol],
+    [client, page, sort, category, symbol, searchTerm],
   );
 
   const { state, reload } = useResource<StrategyCatalogPage>(load, [
@@ -74,9 +81,22 @@ export function CatalogPage({ onNavigate }: CatalogPageProps) {
     sort,
     category,
     symbol,
+    searchTerm,
   ]);
 
+  const [cachedCategories, setCachedCategories] = useState<readonly string[]>([]);
+  const [cachedSymbols, setCachedSymbols] = useState<readonly string[]>([]);
+
+  useEffect(() => {
+    if (state.status === 'ready') {
+      setCachedCategories(state.value.categories);
+      setCachedSymbols(state.value.symbols);
+    }
+  }, [state]);
+
   const value = state.status === 'ready' ? state.value : null;
+  const categories = state.status === 'ready' ? state.value.categories : cachedCategories;
+  const symbols = state.status === 'ready' ? state.value.symbols : cachedSymbols;
   const openStrategy = (strategyId: string) => onNavigate('strategy-detail', strategyId);
 
   const selectCategory = (next: string | null) => {
@@ -136,7 +156,7 @@ export function CatalogPage({ onNavigate }: CatalogPageProps) {
         >
           All
         </button>
-        {(value?.categories ?? []).map((name) => (
+        {categories.map((name) => (
           <button
             key={name}
             type="button"
@@ -156,7 +176,7 @@ export function CatalogPage({ onNavigate }: CatalogPageProps) {
         >
           ALL
         </button>
-        {(value?.symbols ?? []).map((code) => (
+        {symbols.map((code) => (
           <button
             key={code}
             type="button"

@@ -57,7 +57,7 @@ public partial interface IMql5Runtime
     /// <summary>MQL5 <c>TimeToStruct</c>. Native.</summary>
     bool TimeToStruct(long value, out Mql5DateTime moment);
 
-    /// <summary>MQL5 <c>StructToTime</c>. Returns 0 for a structure that is not a real date. Native.</summary>
+    /// <summary>MQL5 <c>StructToTime</c>. Returns -1 for a structure that is not a real date. Native.</summary>
     long StructToTime(in Mql5DateTime moment);
 }
 
@@ -123,6 +123,13 @@ public sealed partial class Mql5Runtime
     /// <inheritdoc />
     public bool TimeToStruct(long value, out Mql5DateTime moment)
     {
+        if (value < 0 || value > 253402300799L)
+        {
+            moment = default;
+            SetError(Mql5ErrorCodes.InvalidDatetime);
+            return false;
+        }
+
         Mql5Time.ToStruct(value, out moment);
         return true;
     }
@@ -130,12 +137,21 @@ public sealed partial class Mql5Runtime
     /// <inheritdoc />
     public long StructToTime(in Mql5DateTime moment)
     {
-        long value = Mql5Time.FromStruct(moment);
-        if (value == 0)
+        try
+        {
+            DateTime dt = new(moment.Year, moment.Month, moment.Day, moment.Hour, moment.Minute, moment.Second, DateTimeKind.Utc);
+            if (dt < Mql5Time.Epoch)
+            {
+                SetError(Mql5ErrorCodes.InvalidDatetime);
+                return -1;
+            }
+
+            return (long)(dt - Mql5Time.Epoch).TotalSeconds;
+        }
+        catch (ArgumentOutOfRangeException)
         {
             SetError(Mql5ErrorCodes.InvalidDatetime);
+            return -1;
         }
-
-        return value;
     }
 }

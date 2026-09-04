@@ -14,7 +14,7 @@ describe('runtime configuration URL boundaries', () => {
     expect(readRuntimeConfig().developmentOidc).toEqual({
       authority: 'https://127.0.0.1:7210',
       clientId: 'yo4x-web-development',
-      redirectUri: 'http://127.0.0.1:4173/auth/callback',
+      redirectUri: 'http://127.0.0.1:5173/auth/callback',
     });
   });
 

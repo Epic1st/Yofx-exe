@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '127.0.0.1',
-    port: 4173,
+    port: 5173,
     strictPort: true,
     proxy: {
       '/v1': {
@@ -18,6 +18,11 @@ export default defineConfig({
         changeOrigin: false,
         secure: false,
       },
+      '/internal': {
+        target: 'https://127.0.0.1:7209',
+        changeOrigin: false,
+        secure: false,
+      },
     },
   },
   preview: {
@@ -26,7 +31,7 @@ export default defineConfig({
     strictPort: true,
   },
   build: {
-    sourcemap: true,
+    sourcemap: false,
     reportCompressedSize: true,
   },
   test: {
@@ -39,7 +44,7 @@ export default defineConfig({
     maxWorkers: 1,
     environmentOptions: {
       jsdom: {
-        url: 'http://127.0.0.1:4173/',
+        url: 'http://127.0.0.1:5173/',
       },
     },
   },

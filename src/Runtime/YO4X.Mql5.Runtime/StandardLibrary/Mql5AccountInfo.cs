@@ -132,12 +132,12 @@ public sealed class Mql5AccountInfo(IMql5Runtime runtime)
             return runtime.SymbolInfoDouble(symbol, Mql5TradeConstants.SymbolVolumeMax);
         }
 
-        double volume = Math.Round(FreeMargin() * percent / 100.0 / margin, 2, MidpointRounding.AwayFromZero);
+        double volume = FreeMargin() * percent / 100.0 / margin;
 
         double step = runtime.SymbolInfoDouble(symbol, Mql5TradeConstants.SymbolVolumeStep);
         if (step > 0.0)
         {
-            volume = step * Math.Floor(volume / step);
+            volume = Math.Round(step * Math.Floor((volume / step) + 1e-9), 8, MidpointRounding.AwayFromZero);
         }
 
         if (volume < runtime.SymbolInfoDouble(symbol, Mql5TradeConstants.SymbolVolumeMin))

@@ -15,8 +15,14 @@ public sealed class Mql5SymbolSpec
     /// <summary>Gets the size of one point.</summary>
     public double Point => 1.0 / Math.Pow(10.0, Digits);
 
+    private readonly double tickSize;
+
     /// <summary>Gets the minimal price change. Equal to <see cref="Point"/> for forex symbols.</summary>
-    public double TickSize => Point;
+    public double TickSize
+    {
+        get => tickSize > 0.0 ? tickSize : Point;
+        init => tickSize = value;
+    }
 
     /// <summary>Gets the units of base currency in one lot.</summary>
     public double ContractSize { get; init; } = 100_000.0;
@@ -52,7 +58,18 @@ public sealed class Mql5SymbolSpec
     public double TickValue => ContractSize * TickSize * QuoteToDepositRate;
 
     /// <summary>Rounds a price to the symbol's digits.</summary>
-    public double NormalizePrice(double price) => Math.Round(price, Digits, MidpointRounding.AwayFromZero);
+    public double NormalizePrice(double price)
+    {
+        int digits = Math.Max(0, Digits);
+        double tick = TickSize;
+        if (tick <= 0.0)
+        {
+            return Math.Round(price, digits, MidpointRounding.AwayFromZero);
+        }
+
+        double steps = Math.Round(price / tick, MidpointRounding.AwayFromZero);
+        return Math.Round(steps * tick, digits, MidpointRounding.AwayFromZero);
+    }
 
     /// <summary>Rounds a volume to the symbol's volume step.</summary>
     public double NormalizeVolume(double volume)
@@ -62,7 +79,7 @@ public sealed class Mql5SymbolSpec
             return volume;
         }
 
-        double steps = Math.Round(volume / VolumeStep, MidpointRounding.AwayFromZero);
+        double steps = Math.Floor((volume / VolumeStep) + 1e-9);
         return Math.Round(steps * VolumeStep, 8, MidpointRounding.AwayFromZero);
     }
 

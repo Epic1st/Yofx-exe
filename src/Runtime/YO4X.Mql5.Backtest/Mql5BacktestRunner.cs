@@ -130,28 +130,72 @@ public static class Mql5BacktestRunner
                 null);
         }
 
+        return RunCompiledAssembly(
+            compiled.AssemblyBytes,
+            generated.FullTypeName,
+            feed,
+            options,
+            periodMinutes,
+            compiled.Diagnostics,
+            assemblyName);
+    }
+
+    /// <summary>Runs an already authenticated package assembly without compiling source.</summary>
+    public static Mql5BacktestResult RunCompiledAssembly(
+        byte[] assemblyBytes,
+        string entryTypeName,
+        IMql5MarketFeed feed,
+        Mql5RunOptions options,
+        int periodMinutes,
+        IMql5LogSink? logSink = null)
+    {
+        ArgumentNullException.ThrowIfNull(assemblyBytes);
+        ArgumentException.ThrowIfNullOrWhiteSpace(entryTypeName);
+        ArgumentNullException.ThrowIfNull(feed);
+        ArgumentNullException.ThrowIfNull(options);
+        return RunCompiledAssembly(
+            assemblyBytes,
+            entryTypeName,
+            feed,
+            options,
+            periodMinutes,
+            [],
+            "YO4X.PackageBacktest." + Guid.NewGuid().ToString("N"),
+            logSink);
+    }
+
+    private static Mql5BacktestResult RunCompiledAssembly(
+        byte[] assemblyBytes,
+        string entryTypeName,
+        IMql5MarketFeed feed,
+        Mql5RunOptions options,
+        int periodMinutes,
+        IReadOnlyList<Mql5RestrictedDiagnostic> diagnostics,
+        string assemblyName,
+        IMql5LogSink? logSink = null)
+    {
         var context = new AssemblyLoadContext(assemblyName, isCollectible: true);
         try
         {
-            Assembly assembly = context.LoadFromStream(new MemoryStream(compiled.AssemblyBytes));
-            Type? strategyType = assembly.GetType(generated.FullTypeName, throwOnError: false);
+            Assembly assembly = context.LoadFromStream(new MemoryStream(assemblyBytes, writable: false));
+            Type? strategyType = assembly.GetType(entryTypeName, throwOnError: false, ignoreCase: false);
             if (strategyType is null)
             {
                 return new Mql5BacktestResult(
                     Mql5BacktestOutcome.NotLoadable,
                     null,
-                    compiled.Diagnostics,
-                    "The compiled assembly does not declare " + generated.FullTypeName + ".");
+                    diagnostics,
+                    "The compiled assembly does not declare " + entryTypeName + ".");
             }
 
-            var adapter = new GeneratedStrategyAdapter(strategyType, periodMinutes);
+            var adapter = new GeneratedStrategyAdapter(strategyType, periodMinutes, logSink);
             Mql5RunReport report = Mql5StrategyHost.Run(adapter, feed, options);
             return new Mql5BacktestResult(
                 report.InitRetcode == Mql5InitCode.Succeeded
                     ? Mql5BacktestOutcome.Completed
                     : Mql5BacktestOutcome.InitRefused,
                 report,
-                compiled.Diagnostics,
+                diagnostics,
                 adapter.ConstructionFault);
         }
         finally
@@ -187,7 +231,10 @@ public static class Mql5BacktestRunner
     /// which is why it is built on the first <c>OnInit</c> rather than up front.
     /// </para>
     /// </summary>
-    private sealed class GeneratedStrategyAdapter(Type strategyType, int periodMinutes) : EngineStrategy
+    private sealed class GeneratedStrategyAdapter(
+        Type strategyType,
+        int periodMinutes,
+        IMql5LogSink? logSink) : EngineStrategy
     {
         private RuntimeStrategy? strategy;
         private MethodInfo? declaredInit;
@@ -206,7 +253,12 @@ public static class Mql5BacktestRunner
 
             try
             {
-                var runtime = new Mql5Runtime(new EngineRuntimeContext(engineContext, periodMinutes));
+                var runtime = new Mql5Runtime(
+                    new EngineRuntimeContext(engineContext, periodMinutes),
+                    new Mql5RuntimeOptions
+                    {
+                        LogSink = logSink ?? NullMql5LogSink.Instance
+                    });
                 instance = Activator.CreateInstance(strategyType, runtime);
                 strategy = instance as RuntimeStrategy;
             }

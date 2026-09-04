@@ -1,8 +1,11 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using System.Windows;
+using System.Windows.Interop;
 using Microsoft.Web.WebView2.Core;
 
 namespace YO4X.Desktop;
@@ -19,6 +22,7 @@ public partial class MainWindow : Window
             options.ApplicationUri,
             options.IdentityProviderUri);
         InitializeComponent();
+        ApplyWindowIcon();
         bool showDevelopmentChrome = options.StartInDevelopmentFixture;
         CommandBar.Visibility = showDevelopmentChrome ? Visibility.Visible : Visibility.Collapsed;
         StatusBar.Visibility = showDevelopmentChrome ? Visibility.Visible : Visibility.Collapsed;
@@ -28,7 +32,73 @@ public partial class MainWindow : Window
         BrowserHost.BorderThickness = showDevelopmentChrome ? new Thickness(1) : new Thickness(0);
         BrowserHost.CornerRadius = showDevelopmentChrome ? new CornerRadius(8) : new CornerRadius(0);
         FixtureButton.Visibility = showDevelopmentChrome ? Visibility.Visible : Visibility.Collapsed;
+        SourceInitialized += MainWindow_SourceInitialized;
         Loaded += MainWindow_Loaded;
+    }
+
+    private void MainWindow_SourceInitialized(object? sender, EventArgs e)
+    {
+        SourceInitialized -= MainWindow_SourceInitialized;
+        ApplyNativeWindowIcon();
+    }
+
+    private void ApplyNativeWindowIcon()
+    {
+        string icoPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
+        if (!File.Exists(icoPath))
+        {
+            return;
+        }
+
+        nint hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == 0)
+        {
+            return;
+        }
+
+        nint big = LoadImage(0, icoPath, ImageIcon, 256, 256, LoadFromFile);
+        nint small = LoadImage(0, icoPath, ImageIcon, 16, 16, LoadFromFile);
+        if (big != 0)
+        {
+            SendMessage(hwnd, WmSetIcon, IconBig, big);
+        }
+
+        if (small != 0)
+        {
+            SendMessage(hwnd, WmSetIcon, IconSmall, small);
+        }
+    }
+
+    private void ApplyWindowIcon()
+    {
+        string[] iconCandidates =
+        [
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wwwroot", "assets", "yo4x-icon.png"),
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico"),
+        ];
+        foreach (string iconPath in iconCandidates)
+        {
+            if (!File.Exists(iconPath))
+            {
+                continue;
+            }
+
+            try
+            {
+                using FileStream stream = File.OpenRead(iconPath);
+                var image = new System.Windows.Media.Imaging.BitmapImage();
+                image.BeginInit();
+                image.StreamSource = stream;
+                image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                image.EndInit();
+                image.Freeze();
+                Icon = image;
+                return;
+            }
+            catch
+            {
+            }
+        }
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -45,6 +115,8 @@ public partial class MainWindow : Window
                 userDataFolder: userDataFolder);
             await Browser.EnsureCoreWebView2Async(environment);
             ConfigureBrowser(Browser.CoreWebView2);
+            await Browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+                "Object.defineProperty(window,'__YO4X_DESKTOP_SHELL__',{value:true,writable:false,configurable:false});");
             Navigate(options.InitialUri);
         }
         catch (WebView2RuntimeNotFoundException)
@@ -65,7 +137,7 @@ public partial class MainWindow : Window
         core.Settings.AreHostObjectsAllowed = false;
         core.Settings.IsPasswordAutosaveEnabled = false;
         core.Settings.IsStatusBarEnabled = false;
-        core.Settings.IsWebMessageEnabled = false;
+        core.Settings.IsWebMessageEnabled = true;
         core.Settings.IsZoomControlEnabled = true;
 #if !DEBUG
         core.Settings.AreBrowserAcceleratorKeysEnabled = false;
@@ -82,6 +154,59 @@ public partial class MainWindow : Window
         core.NavigationCompleted += Core_NavigationCompleted;
         core.HistoryChanged += Core_HistoryChanged;
         core.ProcessFailed += Core_ProcessFailed;
+        core.WebMessageReceived += Core_WebMessageReceived;
+    }
+
+    private void Core_WebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        string raw;
+        try
+        {
+            raw = e.WebMessageAsJson;
+        }
+        catch
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(raw);
+            JsonElement root = document.RootElement;
+            if (!root.TryGetProperty("type", out JsonElement type)
+                || !string.Equals(type.GetString(), "yo4x-window", StringComparison.Ordinal)
+                || !root.TryGetProperty("command", out JsonElement command))
+            {
+                return;
+            }
+
+            string? windowCommand = command.GetString();
+            _ = Dispatcher.InvokeAsync(() =>
+            {
+                switch (windowCommand)
+                {
+                    case "minimise":
+                        WindowState = WindowState.Minimized;
+                        break;
+                    case "maximise":
+                        WindowState = WindowState == WindowState.Maximized
+                            ? WindowState.Normal
+                            : WindowState.Maximized;
+                        break;
+                    case "close":
+                        Close();
+                        break;
+                }
+            });
+        }
+        catch (JsonException)
+        {
+        }
     }
 
     private void Core_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
@@ -275,4 +400,16 @@ public partial class MainWindow : Window
         StatusText.Text = message;
         MessageBox.Show(message, "YO4X Desktop", MessageBoxButton.OK, MessageBoxImage.Error);
     }
+
+    private const int WmSetIcon = 0x0080;
+    private const int IconSmall = 0;
+    private const int IconBig = 1;
+    private const uint ImageIcon = 1;
+    private const uint LoadFromFile = 0x0010;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern nint LoadImage(nint hInst, string name, uint type, int cx, int cy, uint fuLoad);
+
+    [DllImport("user32.dll")]
+    private static extern nint SendMessage(nint hWnd, int msg, nint wParam, nint lParam);
 }

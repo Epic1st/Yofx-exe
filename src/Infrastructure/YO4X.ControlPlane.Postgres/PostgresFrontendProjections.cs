@@ -146,6 +146,36 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
             strategy.updated_at
         from catalog.strategies as strategy
         where strategy.tenant_id = @tenant_id
+          and (
+              (strategy.package_format_version >= 2 and lower(btrim(strategy.name)) like '%.yo4x')
+              or not exists
+              (
+                  select 1
+                  from catalog.strategies as packaged
+                  where packaged.tenant_id = strategy.tenant_id
+                    and packaged.id <> strategy.id
+                    and packaged.package_format_version >= 2
+                    and lower(btrim(packaged.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(packaged.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+              )
+          )
+          and (
+              coalesce(strategy.package_format_version, 1) < 2
+              or not exists
+              (
+                  select 1
+                  from catalog.strategies as newer_package
+                  where newer_package.tenant_id = strategy.tenant_id
+                    and newer_package.id <> strategy.id
+                    and newer_package.package_format_version >= 2
+                    and lower(btrim(newer_package.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(newer_package.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+                    and (newer_package.updated_at, newer_package.id)
+                        > (strategy.updated_at, strategy.id)
+              )
+          )
           and (@category is null or strategy.category = @category)
           and (@symbol is null or strategy.symbol = @symbol)
           and (
@@ -161,6 +191,34 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         select count(*)
         from catalog.strategies as strategy
         where strategy.tenant_id = @tenant_id
+          and (
+              (strategy.package_format_version >= 2 and lower(btrim(strategy.name)) like '%.yo4x')
+              or not exists
+              (
+                  select 1 from catalog.strategies as packaged
+                  where packaged.tenant_id = strategy.tenant_id
+                    and packaged.id <> strategy.id
+                    and packaged.package_format_version >= 2
+                    and lower(btrim(packaged.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(packaged.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+              )
+          )
+          and (
+              coalesce(strategy.package_format_version, 1) < 2
+              or not exists
+              (
+                  select 1 from catalog.strategies as newer_package
+                  where newer_package.tenant_id = strategy.tenant_id
+                    and newer_package.id <> strategy.id
+                    and newer_package.package_format_version >= 2
+                    and lower(btrim(newer_package.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(newer_package.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+                    and (newer_package.updated_at, newer_package.id)
+                        > (strategy.updated_at, strategy.id)
+              )
+          )
           and (@category is null or strategy.category = @category)
           and (@symbol is null or strategy.symbol = @symbol)
           and (
@@ -196,6 +254,34 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         from catalog.strategies as strategy
         where strategy.tenant_id = @tenant_id
           and strategy.id = @strategy_id
+          and (
+              (strategy.package_format_version >= 2 and lower(btrim(strategy.name)) like '%.yo4x')
+              or not exists
+              (
+                  select 1 from catalog.strategies as packaged
+                  where packaged.tenant_id = strategy.tenant_id
+                    and packaged.id <> strategy.id
+                    and packaged.package_format_version >= 2
+                    and lower(btrim(packaged.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(packaged.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+              )
+          )
+          and (
+              coalesce(strategy.package_format_version, 1) < 2
+              or not exists
+              (
+                  select 1 from catalog.strategies as newer_package
+                  where newer_package.tenant_id = strategy.tenant_id
+                    and newer_package.id <> strategy.id
+                    and newer_package.package_format_version >= 2
+                    and lower(btrim(newer_package.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(newer_package.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+                    and (newer_package.updated_at, newer_package.id)
+                        > (strategy.updated_at, strategy.id)
+              )
+          )
         """;
 
     private const string StrategyCategoryFacet =
@@ -203,6 +289,34 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         select distinct strategy.category
         from catalog.strategies as strategy
         where strategy.tenant_id = @tenant_id
+          and (
+              (strategy.package_format_version >= 2 and lower(btrim(strategy.name)) like '%.yo4x')
+              or not exists
+              (
+                  select 1 from catalog.strategies as packaged
+                  where packaged.tenant_id = strategy.tenant_id
+                    and packaged.id <> strategy.id
+                    and packaged.package_format_version >= 2
+                    and lower(btrim(packaged.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(packaged.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+              )
+          )
+          and (
+              coalesce(strategy.package_format_version, 1) < 2
+              or not exists
+              (
+                  select 1 from catalog.strategies as newer_package
+                  where newer_package.tenant_id = strategy.tenant_id
+                    and newer_package.id <> strategy.id
+                    and newer_package.package_format_version >= 2
+                    and lower(btrim(newer_package.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(newer_package.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+                    and (newer_package.updated_at, newer_package.id)
+                        > (strategy.updated_at, strategy.id)
+              )
+          )
         order by 1
         limit @limit
         """;
@@ -212,6 +326,34 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         select distinct strategy.symbol
         from catalog.strategies as strategy
         where strategy.tenant_id = @tenant_id
+          and (
+              (strategy.package_format_version >= 2 and lower(btrim(strategy.name)) like '%.yo4x')
+              or not exists
+              (
+                  select 1 from catalog.strategies as packaged
+                  where packaged.tenant_id = strategy.tenant_id
+                    and packaged.id <> strategy.id
+                    and packaged.package_format_version >= 2
+                    and lower(btrim(packaged.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(packaged.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+              )
+          )
+          and (
+              coalesce(strategy.package_format_version, 1) < 2
+              or not exists
+              (
+                  select 1 from catalog.strategies as newer_package
+                  where newer_package.tenant_id = strategy.tenant_id
+                    and newer_package.id <> strategy.id
+                    and newer_package.package_format_version >= 2
+                    and lower(btrim(newer_package.name)) like '%.yo4x'
+                    and regexp_replace(lower(btrim(newer_package.name)), '\.(mq5|yo4x)$', '')
+                        = regexp_replace(lower(btrim(strategy.name)), '\.(mq5|yo4x)$', '')
+                    and (newer_package.updated_at, newer_package.id)
+                        > (strategy.updated_at, strategy.id)
+              )
+          )
         order by 1
         limit @limit
         """;
@@ -220,7 +362,12 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         """
         select
             bot.id,
-            bot.name,
+            case
+                when strategy.package_format_version = 2
+                 and lower(strategy.name) like '%.yo4x'
+                then strategy.name
+                else bot.name
+            end,
             bot.strategy_id,
             strategy.name,
             bot.broker_account_id,
@@ -229,6 +376,8 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
             bot.risk_label,
             bot.status,
             bot.host,
+            bot.last_error_code,
+            bot.last_error_message,
             bot.created_at,
             bot.updated_at
         from bots.bots as bot
@@ -242,6 +391,30 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         where bot.tenant_id = @tenant_id
           and bot.user_id = @user_id
           and (@bot_id is null or bot.id = @bot_id)
+          and (
+              (
+                  strategy.package_format_version = 2
+                  and lower(strategy.name) like '%.yo4x'
+              )
+              or bot.status in ('RUNNING', 'STARTING')
+              or not exists
+              (
+                  select 1
+                  from bots.bots as packaged_bot
+                  join catalog.strategies as packaged_strategy
+                    on packaged_strategy.tenant_id = packaged_bot.tenant_id
+                   and packaged_strategy.id = packaged_bot.strategy_id
+                  where packaged_bot.tenant_id = bot.tenant_id
+                    and packaged_bot.user_id = bot.user_id
+                    and packaged_bot.broker_account_id is not distinct from bot.broker_account_id
+                    and packaged_bot.symbol = bot.symbol
+                    and packaged_bot.host = bot.host
+                    and packaged_strategy.package_format_version = 2
+                    and lower(packaged_strategy.name) like '%.yo4x'
+                    and regexp_replace(lower(packaged_strategy.name), '\.yo4x$', '')
+                        = regexp_replace(lower(bot.name), '\.(mq5|yo4x)$', '')
+              )
+          )
         order by bot.created_at desc, bot.id desc
         limit @limit
         """;
@@ -2183,11 +2356,13 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
                     reader.GetString(7),
                     ParseBotStatus(reader.GetString(8)),
                     ParseBotHost(reader.GetString(9)),
+                    reader.IsDBNull(10) ? null : reader.GetString(10),
+                    reader.IsDBNull(11) ? null : reader.GetString(11),
                     metrics.TryGetValue(currentBotId, out List<BotMetricView>? windows)
                         ? windows.AsReadOnly()
                         : [],
-                    reader.GetFieldValue<DateTimeOffset>(10),
-                    reader.GetFieldValue<DateTimeOffset>(11)));
+                    reader.GetFieldValue<DateTimeOffset>(12),
+                    reader.GetFieldValue<DateTimeOffset>(13)));
             }
         }
 
@@ -2225,10 +2400,15 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         Guid strategyId,
         CancellationToken cancellationToken)
     {
-        Dictionary<string, List<StrategyEnumMemberView>> members = await LoadStrategyEnumMembersAsync(
+        Guid declarationStrategyId = await ResolveInputDeclarationStrategyIdAsync(
             transaction,
             actor,
             strategyId,
+            cancellationToken).ConfigureAwait(false);
+        Dictionary<string, List<StrategyEnumMemberView>> members = await LoadStrategyEnumMembersAsync(
+            transaction,
+            actor,
+            declarationStrategyId,
             cancellationToken).ConfigureAwait(false);
 
         var inputs = new List<StrategyInputView>();
@@ -2251,7 +2431,7 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
             limit @limit
             """);
         AddUuid(command, "tenant_id", actor.TenantId);
-        AddUuid(command, "strategy_id", strategyId);
+        AddUuid(command, "strategy_id", declarationStrategyId);
         AddInteger(command, "limit", StrategyInputLimit);
 
         await using NpgsqlDataReader reader = await command
@@ -2279,6 +2459,68 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         }
 
         return inputs.AsReadOnly();
+    }
+
+    /// <summary>
+    /// A converted package normally owns a materialized copy of its source inputs. During the
+    /// short interval before that copy exists, resolve the declaration from the closest earlier
+    /// package generation with the same canonical filename. Direct declarations always win.
+    /// </summary>
+    private static async Task<Guid> ResolveInputDeclarationStrategyIdAsync(
+        TenantPostgresTransaction transaction,
+        UserActor actor,
+        Guid strategyId,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand command = transaction.CreateCommand(
+            """
+            select
+                case
+                    when exists
+                    (
+                        select 1
+                        from catalog.strategy_inputs as direct
+                        where direct.tenant_id = target.tenant_id
+                          and direct.strategy_id = target.id
+                    )
+                    then target.id
+                    else coalesce
+                    (
+                        (
+                            select source.id
+                            from catalog.strategies as source
+                            where source.tenant_id = target.tenant_id
+                              and source.id <> target.id
+                              and target.package_format_version >= 2
+                              and coalesce(source.package_format_version, 1)
+                                  < target.package_format_version
+                              and regexp_replace(lower(source.name), '\.(mq5|yo4x)$', '')
+                                  = regexp_replace(lower(target.name), '\.(mq5|yo4x)$', '')
+                              and exists
+                              (
+                                  select 1
+                                  from catalog.strategy_inputs as declared
+                                  where declared.tenant_id = source.tenant_id
+                                    and declared.strategy_id = source.id
+                              )
+                            order by
+                                coalesce(source.package_format_version, 1) desc,
+                                source.updated_at desc,
+                                source.id desc
+                            limit @limit
+                        ),
+                        target.id
+                    )
+                end
+            from catalog.strategies as target
+            where target.tenant_id = @tenant_id
+              and target.id = @strategy_id
+            """);
+        AddUuid(command, "tenant_id", actor.TenantId);
+        AddUuid(command, "strategy_id", strategyId);
+        AddInteger(command, "limit", 1);
+        object? scalar = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return scalar is Guid resolved ? resolved : strategyId;
     }
 
     private static async Task<Dictionary<string, List<StrategyEnumMemberView>>> LoadStrategyEnumMembersAsync(

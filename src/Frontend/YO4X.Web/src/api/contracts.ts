@@ -857,6 +857,8 @@ export interface BotView {
   readonly riskLabel: string;
   readonly status: BotStatus;
   readonly host: BotHost;
+  readonly lastErrorCode: string | null;
+  readonly lastErrorMessage: string | null;
   readonly metrics: readonly BotMetricView[];
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -1283,6 +1285,8 @@ export function decodeBotView(value: unknown): BotView {
     riskLabel: boundedNonBlankStringField(source, 'riskLabel', 'BotView', 100),
     status: enumField(source, 'status', botStatuses, 'BotView'),
     host: enumField(source, 'host', botHosts, 'BotView'),
+    lastErrorCode: nullableBoundedStringField(source, 'lastErrorCode', 'BotView', 100),
+    lastErrorMessage: nullableBoundedStringField(source, 'lastErrorMessage', 'BotView', 500),
     metrics,
     createdAt: dateField(source, 'createdAt', 'BotView'),
     updatedAt: dateField(source, 'updatedAt', 'BotView'),
@@ -1680,13 +1684,15 @@ export function decodeStrategyInputView(value: unknown): StrategyInputView {
     decodeStrategyEnumMemberView,
   );
 
-  // An enum input without declared members could not be edited truthfully, and a
-  // non-enum input carrying members would mean the projection lost the declared type.
+  // An enum input with declared members must have unique names; standard/unextracted enums
+  // may have empty members.
   if (valueKind === 'ENUM') {
-    if (enumTypeName === null || enumTypeName.length === 0 || enumMembers.length === 0) {
+    if (enumTypeName === null || enumTypeName.length === 0) {
       throw new ContractViolationError('StrategyInputView');
     }
-    requireUniqueIdentities(enumMembers.map((member) => member.name), 'StrategyEnumMemberView[]');
+    if (enumMembers.length > 0) {
+      requireUniqueIdentities(enumMembers.map((member) => member.name), 'StrategyEnumMemberView[]');
+    }
   } else if (enumTypeName !== null || enumMembers.length > 0) {
     throw new ContractViolationError('StrategyInputView');
   }

@@ -137,7 +137,7 @@ begin
         or target_normalized_email is distinct from pg_catalog.upper(target_normalized_email)
         or target_session_expires_at is null
         or target_session_expires_at < authority_now + interval '5 minutes'
-        or target_session_expires_at > authority_now + interval '30 minutes' then
+        or target_session_expires_at > authority_now + interval '8 hours 15 minutes' then
         raise exception using
             errcode = '22023',
             message = 'Local development identity provisioning input is invalid.';

@@ -24,7 +24,17 @@
   padding-bottom: 28px;
 }
 
-.auth-entry__header > span {
+.auth-entry__header .titlebar__controls {
+  margin-left: 0;
+}
+
+.auth-entry__brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.auth-entry__brand > span {
   font-size: 12px;
   letter-spacing: 0.04em;
   text-transform: uppercase;

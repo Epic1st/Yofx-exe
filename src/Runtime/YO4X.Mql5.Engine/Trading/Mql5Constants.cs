@@ -123,6 +123,9 @@ public static class Mql5SymbolInfoDouble
     /// <summary><c>SYMBOL_VOLUME_STEP</c>.</summary>
     public const int VolumeStep = 36;
 
+    /// <summary><c>SYMBOL_VOLUME_LIMIT</c>; zero means no aggregate directional limit.</summary>
+    public const int VolumeLimit = 55;
+
     /// <summary><c>SYMBOL_SWAP_LONG</c>.</summary>
     public const int SwapLong = 38;
 
@@ -150,6 +153,21 @@ public static class Mql5SymbolInfoInteger
 
     /// <summary><c>SYMBOL_TRADE_FREEZE_LEVEL</c>.</summary>
     public const int FreezeLevel = 32;
+
+    /// <summary><c>SYMBOL_TRADE_MODE</c>.</summary>
+    public const int TradeMode = 30;
+
+    /// <summary><c>SYMBOL_TRADE_EXEMODE</c>.</summary>
+    public const int TradeExecutionMode = 33;
+
+    /// <summary><c>SYMBOL_FILLING_MODE</c>.</summary>
+    public const int FillingMode = 50;
+
+    /// <summary><c>SYMBOL_EXPIRATION_MODE</c>.</summary>
+    public const int ExpirationMode = 49;
+
+    /// <summary><c>SYMBOL_ORDER_MODE</c>.</summary>
+    public const int OrderMode = 71;
 }
 
 /// <summary>Property identifiers accepted by <c>AccountInfoDouble</c>.</summary>
@@ -186,11 +204,35 @@ public static class Mql5AccountInfoInteger
     /// <summary><c>ACCOUNT_LOGIN</c>.</summary>
     public const int Login = 0;
 
+    /// <summary><c>ACCOUNT_TRADE_MODE</c>.</summary>
+    public const int TradeMode = 32;
+
+    /// <summary><c>ACCOUNT_TRADE_ALLOWED</c>.</summary>
+    public const int TradeAllowed = 33;
+
+    /// <summary><c>ACCOUNT_TRADE_EXPERT</c>.</summary>
+    public const int TradeExpert = 34;
+
     /// <summary><c>ACCOUNT_LEVERAGE</c>.</summary>
     public const int Leverage = 35;
 
     /// <summary><c>ACCOUNT_MARGIN_MODE</c>.</summary>
     public const int MarginMode = 53;
+
+    /// <summary><c>ACCOUNT_LIMIT_ORDERS</c>.</summary>
+    public const int LimitOrders = 47;
+
+    /// <summary><c>ACCOUNT_MARGIN_SO_MODE</c>.</summary>
+    public const int MarginStopoutMode = 44;
+
+    /// <summary><c>ACCOUNT_FIFO_CLOSE</c>.</summary>
+    public const int FifoClose = 55;
+
+    /// <summary><c>ACCOUNT_HEDGE_ALLOWED</c>.</summary>
+    public const int HedgeAllowed = 56;
+
+    /// <summary><c>ACCOUNT_CURRENCY_DIGITS</c>.</summary>
+    public const int CurrencyDigits = 54;
 }
 
 /// <summary>Property identifiers accepted by <c>PositionGetDouble</c>.</summary>

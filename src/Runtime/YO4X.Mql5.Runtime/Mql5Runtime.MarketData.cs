@@ -387,7 +387,9 @@ public sealed partial class Mql5Runtime
         T[] buffer = target ?? [];
         if (range.Kind != Mql5CopyRangeKind.TimeRange && range.Count > 0 && buffer.Length < range.Count)
         {
+            T[] previous = buffer;
             Array.Resize(ref buffer, range.Count);
+            CarrySeriesFlag(previous, buffer);
         }
 
         int written = copy(Resolve(symbol), Timeframe(timeframe), range, ref buffer);
@@ -400,7 +402,9 @@ public sealed partial class Mql5Runtime
         Mql5Rates[] buffer = target ?? [];
         if (range.Kind != Mql5CopyRangeKind.TimeRange && range.Count > 0 && buffer.Length < range.Count)
         {
+            Mql5Rates[] previous = buffer;
             Array.Resize(ref buffer, range.Count);
+            CarrySeriesFlag(previous, buffer);
         }
 
         int written = context.CopyRates(Resolve(symbol), Timeframe(timeframe), range, ref buffer);

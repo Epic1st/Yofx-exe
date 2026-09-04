@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { chromium } from 'playwright-core';
 import { stubRoutes } from './stub-api.mjs';
 
+const appUrl = process.env.YO4X_QA_URL ?? 'http://127.0.0.1:4173/';
 const executablePath = [
   process.env.YO4X_BROWSER_EXECUTABLE,
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -20,17 +21,28 @@ const errors = [];
 page.on('pageerror', (error) => errors.push(error.message));
 page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
 
-await page.goto('http://127.0.0.1:4173/#strategies', { waitUntil: 'networkidle' });
+await page.goto(`${appUrl}#strategies`, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1000);
 
-console.log('cards        :', await page.locator('.card').count());
-console.log('chips        :', await page.locator('.chip').count());
-console.log('empty states :', await page.locator('.empty-state').count());
-console.log('skeletons    :', await page.locator('.skeleton').count());
-console.log('title        :', await page.locator('.page-title').first().innerText().catch(() => '(none)'));
-console.log('nav labels   :', JSON.stringify(await page.locator('.sidebar button').allInnerTexts()));
+const cards = await page.locator('.card').count();
+const chips = await page.locator('.chip').count();
+const emptyStates = await page.locator('.empty-state').count();
+const skeletons = await page.locator('.skeleton').count();
+const title = await page.locator('.page-title').first().innerText().catch(() => '(none)');
+const navLabels = await page.locator('.sidebar button').allInnerTexts();
 const emptyText = await page.locator('.empty-state').first().innerText().catch(() => '');
+
+console.log('cards        :', cards);
+console.log('chips        :', chips);
+console.log('empty states :', emptyStates);
+console.log('skeletons    :', skeletons);
+console.log('title        :', title);
+console.log('nav labels   :', JSON.stringify(navLabels));
 if (emptyText) console.log('empty text   :', emptyText.replace(/\s+/gu, ' ').slice(0, 160));
 console.log('errors       :', errors.length === 0 ? 'none' : errors.slice(0, 5));
 
 await browser.close();
+
+if (errors.length > 0 || cards === 0 || skeletons > 0) {
+  process.exitCode = 1;
+}

@@ -196,6 +196,9 @@ export function NewBacktestModal({ open, onClose, onCreated }: NewBacktestModalP
   const submit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      if (submitting) {
+        return;
+      }
       setAttempted(true);
       setSubmitError(null);
       setServerErrors(noServerErrors);
@@ -223,7 +226,7 @@ export function NewBacktestModal({ open, onClose, onCreated }: NewBacktestModalP
         setSubmitting(false);
       }
     },
-    [formValues, declaredInputs, resolvedValues, touched, client, onCreated, onClose],
+    [formValues, declaredInputs, resolvedValues, touched, client, onCreated, onClose, submitting],
   );
 
   const stopPropagation = useCallback((event: MouseEvent<HTMLElement>) => {
@@ -648,7 +651,7 @@ export function NewBacktestModal({ open, onClose, onCreated }: NewBacktestModalP
             <button
               type="submit"
               className="btn btn--primary"
-              disabled={selected === null || submitting || inputsResource.state.status === 'loading'}
+              disabled={selected === null || submitting || inputsResource.state.status !== 'ready'}
             >
               {submitting ? 'Submitting…' : 'Queue backtest'}
             </button>

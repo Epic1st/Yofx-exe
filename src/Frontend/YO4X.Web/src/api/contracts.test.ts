@@ -419,6 +419,8 @@ function botView(overrides: Record<string, unknown> = {}) {
     riskLabel: 'Balanced',
     status: 'RUNNING',
     host: 'CLOUD',
+    lastErrorCode: null,
+    lastErrorMessage: null,
     metrics: [{ window: 'TODAY', plAmount: 12.5, currency: 'USD', tradeCount: 3 }],
     createdAt: '2026-08-01T12:00:00Z',
     updatedAt: '2026-08-24T12:00:00Z',
@@ -989,7 +991,7 @@ function brokerSymbol(changes: Record<string, unknown> = {}) {
     volumeMin: 0.01,
     volumeMax: 500,
     volumeStep: 0.01,
-    path: 'Forex\Majors',
+    path: 'Forex\\Majors',
     ...changes,
   };
 }

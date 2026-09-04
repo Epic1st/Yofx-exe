@@ -119,8 +119,21 @@ export function useBrokerAccountConnection({
   const submitting = useRef(false);
 
   useEffect(() => {
+    submissionController.current?.abort();
+    submissionController.current = null;
+    submissionAttempt.current = null;
+    submitting.current = false;
+    setTestState({ status: 'idle' });
+  }, [accountId]);
+
+  useEffect(() => {
     if (!enabled) {
       setLoadState({ status: 'disabled' });
+      setTestState({ status: 'idle' });
+      submissionController.current?.abort();
+      submissionController.current = null;
+      submissionAttempt.current = null;
+      submitting.current = false;
       return undefined;
     }
     if (client === null || accountId === null) {
@@ -205,7 +218,7 @@ export function useBrokerAccountConnection({
 
   const pollingCommandId = testState.status === 'polling' ? testState.accepted.commandId : null;
   useEffect(() => {
-    if (client === null || accountId === null || pollingCommandId === null) {
+    if (!enabled || client === null || accountId === null || pollingCommandId === null) {
       return undefined;
     }
 
@@ -248,7 +261,7 @@ export function useBrokerAccountConnection({
         window.clearTimeout(timer);
       }
     };
-  }, [accountId, client, pollAttempt, pollDelayMs, pollingCommandId]);
+  }, [accountId, client, enabled, pollAttempt, pollDelayMs, pollingCommandId]);
 
   const reload = useCallback(() => setLoadAttempt((value) => value + 1), []);
   const resumePolling = useCallback(() => {

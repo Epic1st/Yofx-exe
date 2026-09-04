@@ -495,6 +495,8 @@ const experienceBot = {
   riskLabel: 'Balanced',
   status: 'RUNNING',
   host: 'CLOUD',
+  lastErrorCode: null,
+  lastErrorMessage: null,
   metrics: [{ window: 'TODAY', plAmount: 12.5, currency: 'USD', tradeCount: 3 }],
   createdAt: '2026-08-01T12:00:00Z',
   updatedAt: '2026-08-24T12:00:00Z',

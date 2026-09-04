@@ -86,7 +86,7 @@ public sealed class LocalIdentityProvisioner(
         command.Parameters.AddWithValue(
             "expires_at",
             NpgsqlDbType.TimestampTz,
-            timeProvider.GetUtcNow().AddMinutes(30));
+            timeProvider.GetUtcNow().AddHours(8));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 }

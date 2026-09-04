@@ -132,6 +132,8 @@ public sealed record BotView(
     string RiskLabel,
     BotStatus Status,
     BotHost Host,
+    string? LastErrorCode,
+    string? LastErrorMessage,
     IReadOnlyList<BotMetricView> Metrics,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);

@@ -26,6 +26,7 @@ interface TopBarProps {
   readonly user: TopBarUser;
   readonly onOpenAccount: () => void;
   readonly onOpenSettings: () => void;
+  readonly onSignOut?: (() => void) | undefined;
 }
 
 const numberFormat = new Intl.NumberFormat('en-GB');
@@ -38,6 +39,7 @@ export function TopBar({
   user,
   onOpenAccount,
   onOpenSettings,
+  onSignOut,
 }: TopBarProps) {
   const searchId = useId();
   const placeholder = strategyCount === null
@@ -91,10 +93,41 @@ export function TopBar({
           </button>
         )}
 
-        <button type="button" className="topbar__user" onClick={onOpenSettings}>
-          <span className="topbar__avatar" aria-hidden="true">{user.initials}</span>
-          <span className="topbar__user-name">{user.displayName}</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            type="button"
+            className="topbar__user"
+            aria-label={`Open settings (${user.displayName})`}
+            onClick={onOpenSettings}
+          >
+            <span className="topbar__avatar" aria-hidden="true">{user.initials}</span>
+            <span className="topbar__user-name">{user.displayName}</span>
+          </button>
+          {onSignOut ? (
+            <button
+              type="button"
+              className="btn btn--secondary"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                fontSize: '13px',
+                cursor: 'pointer',
+                borderRadius: '6px',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                background: 'rgba(255, 255, 255, 0.05)',
+                color: '#e2e8f0'
+              }}
+              aria-label="Sign out"
+              title="Sign out of workspace"
+              onClick={onSignOut}
+            >
+              <Icon name="lock" size={13} />
+              <span>Logout</span>
+            </button>
+          ) : null}
+        </div>
       </div>
     </header>
   );

@@ -23,8 +23,8 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
 {
     private ulong magic;
     private ulong deviation = 10;
-    private int typeFilling = Mql5TradeConstants.OrderFillingFok;
-    private int marginMode;
+    private int typeFilling = Mql5Constants.WrongValue;
+    private int marginMode = (int)runtime.AccountInfoInteger(Mql5AccountConstants.MarginMode);
     private bool async;
     private int logLevel = 2;
 
@@ -83,14 +83,7 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
     /// </remarks>
     public bool SetTypeFillingBySymbol(string? symbol)
     {
-        long permitted = runtime.SymbolInfoInteger(symbol, Mql5TradeConstants.SymbolFillingMode);
-
-        typeFilling = (permitted & Mql5TradeConstants.FillingFokFlag) != 0
-            ? Mql5TradeConstants.OrderFillingFok
-            : (permitted & Mql5TradeConstants.FillingIocFlag) != 0
-                ? Mql5TradeConstants.OrderFillingIoc
-                : Mql5TradeConstants.OrderFillingReturn;
-
+        typeFilling = ResolveFilling(symbol);
         return true;
     }
 
@@ -209,6 +202,11 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
     {
         string resolved = Resolve(symbol);
         double at = price > 0.0 ? price : runtime.SymbolInfoDouble(resolved, Mql5TradeConstants.SymbolAsk);
+        if (at <= 0.0)
+        {
+            return Reject(Mql5TradeConstants.RetcodeInvalid, "failed to get current quote for " + resolved);
+        }
+
         return PositionOpen(resolved, Mql5TradeConstants.OrderTypeBuy, volume, at, stopLoss, takeProfit, comment);
     }
 
@@ -223,6 +221,11 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
     {
         string resolved = Resolve(symbol);
         double at = price > 0.0 ? price : runtime.SymbolInfoDouble(resolved, Mql5TradeConstants.SymbolBid);
+        if (at <= 0.0)
+        {
+            return Reject(Mql5TradeConstants.RetcodeInvalid, "failed to get current quote for " + resolved);
+        }
+
         return PositionOpen(resolved, Mql5TradeConstants.OrderTypeSell, volume, at, stopLoss, takeProfit, comment);
     }
 
@@ -298,6 +301,22 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
     public bool PositionModify(string? symbol, double stopLoss, double takeProfit)
     {
         string resolved = Resolve(symbol);
+        if (IsHedging())
+        {
+            bool res = true;
+            int total = runtime.PositionsTotal();
+            for (int i = total - 1; i >= 0; i--)
+            {
+                ulong ticket = runtime.PositionGetTicket(i);
+                if (ticket != 0 && runtime.PositionGetString(Mql5TradeConstants.PositionSymbol) == resolved)
+                {
+                    res &= PositionModify(ticket, stopLoss, takeProfit);
+                }
+            }
+
+            return res;
+        }
+
         return runtime.PositionSelect(resolved)
             ? ModifySelected(resolved, stopLoss, takeProfit)
             : Reject(Mql5TradeConstants.RetcodeInvalid, "no open position on " + resolved);
@@ -322,6 +341,22 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
     public bool PositionClose(string? symbol, ulong slippage = ulong.MaxValue)
     {
         string resolved = Resolve(symbol);
+        if (IsHedging())
+        {
+            bool res = true;
+            int total = runtime.PositionsTotal();
+            for (int i = total - 1; i >= 0; i--)
+            {
+                ulong ticket = runtime.PositionGetTicket(i);
+                if (ticket != 0 && runtime.PositionGetString(Mql5TradeConstants.PositionSymbol) == resolved)
+                {
+                    res &= PositionClose(ticket, slippage);
+                }
+            }
+
+            return res;
+        }
+
         return runtime.PositionSelect(resolved)
             ? CloseSelected(resolved, runtime.PositionGetDouble(Mql5TradeConstants.PositionVolume), slippage)
             : Reject(Mql5TradeConstants.RetcodeInvalid, "no open position on " + resolved);
@@ -346,9 +381,23 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
     public bool PositionClosePartial(string? symbol, double volume, ulong slippage = ulong.MaxValue)
     {
         string resolved = Resolve(symbol);
-        return runtime.PositionSelect(resolved)
-            ? CloseSelected(resolved, volume, slippage)
-            : Reject(Mql5TradeConstants.RetcodeInvalid, "no open position on " + resolved);
+        if (!runtime.PositionSelect(resolved))
+        {
+            return Reject(Mql5TradeConstants.RetcodeInvalid, "no open position on " + resolved);
+        }
+
+        if (volume <= 0.0)
+        {
+            return Reject(Mql5TradeConstants.RetcodeInvalid, "invalid volume");
+        }
+
+        double positionVolume = runtime.PositionGetDouble(Mql5TradeConstants.PositionVolume);
+        if (volume >= positionVolume)
+        {
+            return PositionClose(resolved, slippage);
+        }
+
+        return CloseSelected(resolved, volume, slippage);
     }
 
     /// <summary><c>PositionClosePartial</c> by ticket.</summary>
@@ -357,6 +406,17 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
         if (!runtime.PositionSelectByTicket(ticket))
         {
             return Reject(Mql5TradeConstants.RetcodeInvalid, "no position with ticket " + ticket);
+        }
+
+        if (volume <= 0.0)
+        {
+            return Reject(Mql5TradeConstants.RetcodeInvalid, "invalid volume");
+        }
+
+        double positionVolume = runtime.PositionGetDouble(Mql5TradeConstants.PositionVolume);
+        if (volume >= positionVolume)
+        {
+            return PositionClose(ticket, slippage);
         }
 
         return CloseSelected(
@@ -402,7 +462,12 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
         long expiration,
         double stopLimit = 0.0)
     {
-        Prepare(Mql5TradeConstants.TradeActionModify, string.Empty);
+        if (!runtime.OrderSelect(ticket))
+        {
+            return Reject(Mql5TradeConstants.RetcodeInvalid, "no order with ticket " + ticket);
+        }
+
+        Prepare(Mql5TradeConstants.TradeActionModify, runtime.OrderGetString(Mql5TradeConstants.OrderSymbol));
         Request.Order = ticket;
         Request.Price = price;
         Request.StopLoss = stopLoss;
@@ -416,7 +481,12 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
     /// <summary><c>OrderDelete</c>.</summary>
     public bool OrderDelete(ulong ticket)
     {
-        Prepare(Mql5TradeConstants.TradeActionRemove, string.Empty);
+        if (!runtime.OrderSelect(ticket))
+        {
+            return Reject(Mql5TradeConstants.RetcodeInvalid, "no order with ticket " + ticket);
+        }
+
+        Prepare(Mql5TradeConstants.TradeActionRemove, runtime.OrderGetString(Mql5TradeConstants.OrderSymbol));
         Request.Order = ticket;
         return Send();
     }
@@ -468,7 +538,20 @@ public sealed class Mql5Trade(IMql5Runtime runtime)
         Request.Symbol = symbol;
         Request.Magic = magic;
         Request.Deviation = deviation;
-        Request.TypeFilling = typeFilling;
+        Request.TypeFilling = typeFilling != Mql5Constants.WrongValue
+            ? typeFilling
+            : ResolveFilling(symbol);
+    }
+
+    private int ResolveFilling(string? symbol)
+    {
+        long permitted = runtime.SymbolInfoInteger(symbol, Mql5TradeConstants.SymbolFillingMode);
+
+        return (permitted & Mql5TradeConstants.FillingFokFlag) != 0
+            ? Mql5TradeConstants.OrderFillingFok
+            : (permitted & Mql5TradeConstants.FillingIocFlag) != 0
+                ? Mql5TradeConstants.OrderFillingIoc
+                : Mql5TradeConstants.OrderFillingReturn;
     }
 
     private string Resolve(string? symbol) => string.IsNullOrEmpty(symbol) ? runtime.Symbol() : symbol;

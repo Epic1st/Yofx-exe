@@ -19,13 +19,13 @@ export interface RuntimeConfig {
 export interface DevelopmentOidcConfig {
   readonly authority: 'https://127.0.0.1:7210';
   readonly clientId: 'yo4x-web-development';
-  readonly redirectUri: 'http://127.0.0.1:4173/auth/callback';
+  readonly redirectUri: 'http://127.0.0.1:5173/auth/callback';
 }
 
 const developmentOidcContract: DevelopmentOidcConfig = {
   authority: 'https://127.0.0.1:7210',
   clientId: 'yo4x-web-development',
-  redirectUri: 'http://127.0.0.1:4173/auth/callback',
+  redirectUri: 'http://127.0.0.1:5173/auth/callback',
 };
 
 function developmentOidc(): DevelopmentOidcConfig | null {
@@ -36,7 +36,7 @@ function developmentOidc(): DevelopmentOidcConfig | null {
   if (requested !== 'true') {
     throw new Error('VITE_YO4X_DEVELOPMENT_IDENTITY_ENABLED must be exactly true when configured.');
   }
-  if (!import.meta.env.DEV || window.location.origin !== 'http://127.0.0.1:4173') {
+  if (!import.meta.env.DEV || window.location.origin !== 'http://127.0.0.1:5173') {
     throw new Error('Local development identity is available only at the exact development loopback origin.');
   }
   return developmentOidcContract;

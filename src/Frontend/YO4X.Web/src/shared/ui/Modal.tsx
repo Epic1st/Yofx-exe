@@ -61,7 +61,7 @@ export function useDialogBehaviour(
         return;
       }
 
-      if (event.shiftKey && active === first) {
+      if (event.shiftKey && (active === first || active === surface.current)) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && active === last) {

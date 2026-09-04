@@ -234,7 +234,8 @@ public static class Mql5Format
         }
 
         int clamped = digits < 0 ? 0 : (digits > MaxPrecision ? MaxPrecision : digits);
-        return value.ToString("F" + clamped.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+        double rounded = clamped <= 15 ? Math.Round(value, clamped, MidpointRounding.AwayFromZero) : value;
+        return rounded.ToString("F" + clamped.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
     }
 
     /// <summary>
@@ -308,6 +309,9 @@ public static class Mql5Format
         uint number => number,
         byte number => number,
         ushort number => number,
+        int number => unchecked((uint)number),
+        short number => unchecked((ushort)number),
+        sbyte number => unchecked((byte)number),
         _ => unchecked((ulong)ToInt64(value))
     };
 
@@ -490,7 +494,7 @@ public static class Mql5Format
             case 'c':
             {
                 long value = ToInt64(Next(arguments, ref argumentIndex));
-                string body = value is > 0 and <= 0xFFFF ? ((char)value).ToString() : string.Empty;
+                string body = value is >= 0 and <= 0xFFFF ? ((char)value).ToString() : string.Empty;
                 return Pad(string.Empty, string.Empty, body, width, leftAlign, zeroPad: false);
             }
 

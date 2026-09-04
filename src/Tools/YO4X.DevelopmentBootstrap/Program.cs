@@ -53,8 +53,29 @@ switch (args[0])
     case "catalog-fingerprint" when args.Length == 1:
         await PrintCatalogFingerprintAsync();
         break;
+    case "execute-sql" when args.Length == 2:
+        await ExecuteSqlFileAsync(args[1]);
+        break;
     default:
         throw new InvalidOperationException("The bootstrap command or arguments are invalid.");
+}
+
+async Task ExecuteSqlFileAsync(string sqlPath)
+{
+    var databaseBuilder = new NpgsqlConnectionStringBuilder(
+        RequiredEnvironment(AdministratorConnectionVariable))
+    {
+        Database = DatabaseName,
+        Pooling = false,
+        IncludeErrorDetail = false,
+        LogParameters = false
+    };
+    await using var connection = new NpgsqlConnection(databaseBuilder.ConnectionString);
+    await connection.OpenAsync();
+    string sql = await File.ReadAllTextAsync(Path.GetFullPath(sqlPath));
+    await using var command = new NpgsqlCommand(sql, connection) { CommandTimeout = 300 };
+    await command.ExecuteNonQueryAsync();
+    Console.WriteLine("SQL executed successfully.");
 }
 
 // Re-pinning PostgresCatalogSemanticFingerprint.ExpectedSha256 after an additive

@@ -99,6 +99,7 @@ public sealed partial class StrategyVersion : VersionedAggregate
         EnsureNotRevoked();
         ValidateDigest(reviewEvidenceDigest, nameof(reviewEvidenceDigest));
         ReviewEvidenceDigest = reviewEvidenceDigest.ToLowerInvariant();
+        ValidationEvidence = null;
         State = StrategyVersionState.ManuallyReviewed;
         RecordChange(occurredAt);
     }
@@ -111,14 +112,19 @@ public sealed partial class StrategyVersion : VersionedAggregate
             throw new DomainException("MANUAL_STRATEGY_REVIEW_REQUIRED", "A manual review is required before demo eligibility.");
         }
 
-        ValidateDigest(evidence.EvidenceDigest, nameof(evidence));
-        ValidateDigest(evidence.DatasetDigest, nameof(evidence));
+        ValidateDigest(evidence.EvidenceDigest, nameof(evidence.EvidenceDigest));
+        ValidateDigest(evidence.DatasetDigest, nameof(evidence.DatasetDigest));
+        ArgumentException.ThrowIfNullOrWhiteSpace(evidence.RuntimeVersion, nameof(evidence.RuntimeVersion));
         if (evidence.TrustLabel == EvidenceTrustLabel.Unavailable)
         {
             throw new DomainException("STRATEGY_VALIDATION_EVIDENCE_REQUIRED", "Unavailable evidence cannot establish demo eligibility.");
         }
 
-        ValidationEvidence = evidence;
+        ValidationEvidence = evidence with
+        {
+            EvidenceDigest = evidence.EvidenceDigest.ToLowerInvariant(),
+            DatasetDigest = evidence.DatasetDigest.ToLowerInvariant()
+        };
         State = StrategyVersionState.DemoEligible;
         RecordChange(occurredAt);
     }

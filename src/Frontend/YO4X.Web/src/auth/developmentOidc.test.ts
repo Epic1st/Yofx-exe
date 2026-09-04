@@ -8,7 +8,7 @@ import {
 const config: DevelopmentOidcConfig = {
   authority: 'https://127.0.0.1:7210',
   clientId: 'yo4x-web-development',
-  redirectUri: 'http://127.0.0.1:4173/auth/callback',
+  redirectUri: 'http://127.0.0.1:5173/auth/callback',
 };
 
 /**
@@ -38,7 +38,7 @@ describe('development OIDC bridge', () => {
       },
       requestTimeoutInSeconds: 5,
       client_id: 'yo4x-web-development',
-      redirect_uri: 'http://127.0.0.1:4173/auth/callback',
+      redirect_uri: 'http://127.0.0.1:5173/auth/callback',
       response_type: 'code',
       disablePKCE: false,
       scope: 'openid profile email',
@@ -47,21 +47,24 @@ describe('development OIDC bridge', () => {
     });
   });
 
-  it('persists transient authorization state only in sessionStorage and keeps users out of browser storage', async () => {
+  it('keeps authorization state and users tab-scoped without using localStorage', async () => {
     const settings = createDevelopmentOidcSettings(config);
     await settings.stateStore!.set('pkce-state', 'transient');
-    await settings.userStore!.set('token-user', 'memory-only');
+    await settings.userStore!.set('token-user', 'tab-scoped');
 
     expect(window.sessionStorage.getItem('oidc.pkce-state')).toBe('transient');
-    expect(window.sessionStorage.getItem('oidc.token-user')).toBeNull();
+    expect(window.sessionStorage.getItem('oidc.token-user')).toBe('tab-scoped');
     expect(window.localStorage.length).toBe(0);
-    expect(await settings.userStore!.get('token-user')).toBe('memory-only');
+    expect(await settings.userStore!.get('token-user')).toBe('tab-scoped');
   });
 
   it('handles the exact callback before exposing an in-memory access token', async () => {
     window.history.replaceState({}, '', '/auth/callback?code=code&state=state');
-    const signinRedirectCallback = vi.fn().mockResolvedValue({});
-    const getUser = vi.fn().mockResolvedValue({ expired: false, access_token: 'ephemeral' });
+    const signinRedirectCallback = vi.fn().mockResolvedValue({
+      expired: false,
+      access_token: 'ephemeral',
+    });
+    const getUser = vi.fn().mockResolvedValue(null);
 
     const bridge = await installDevelopmentAuthBridge(config, () => ({
       signinRedirectCallback,
@@ -74,12 +77,13 @@ describe('development OIDC bridge', () => {
     expect(signinRedirectCallback).toHaveBeenCalledWith(window.location.origin + '/auth/callback?code=code&state=state');
     expect(window.location.pathname).toBe('/');
     await expect(window.__YO4X_AUTH__!.getAccessToken()).resolves.toBe('ephemeral');
+    expect(getUser).not.toHaveBeenCalled();
   });
 
   it('never returns an expired token', async () => {
     spendRestoreAttempt();
     await installDevelopmentAuthBridge(config, () => ({
-      signinRedirectCallback: vi.fn(),
+      signinRedirectCallback: vi.fn().mockResolvedValue({ expired: false, access_token: 'unused' }),
       signinRedirect: vi.fn(),
       getUser: vi.fn().mockResolvedValue({ expired: true, access_token: 'stale' }),
     }));
@@ -91,7 +95,7 @@ describe('development OIDC bridge', () => {
     spendRestoreAttempt();
     const signinRedirect = vi.fn().mockResolvedValue(undefined);
     await installDevelopmentAuthBridge(config, () => ({
-      signinRedirectCallback: vi.fn(),
+      signinRedirectCallback: vi.fn().mockResolvedValue({ expired: false, access_token: 'unused' }),
       signinRedirect,
       getUser: vi.fn().mockResolvedValue(null),
     }));
@@ -99,6 +103,18 @@ describe('development OIDC bridge', () => {
     await window.__YO4X_AUTH__!.beginLogin!('sign-in');
 
     expect(signinRedirect).toHaveBeenCalledWith();
+    expect(window.sessionStorage.getItem('yo4x.session-restore')).toBeNull();
+  });
+
+  it('does not swallow a manual callback failure when a stale restore marker exists', async () => {
+    spendRestoreAttempt();
+    window.history.replaceState({}, '', '/auth/callback?code=code&state=state');
+
+    await expect(installDevelopmentAuthBridge(config, () => ({
+      signinRedirectCallback: vi.fn().mockRejectedValue(new Error('state mismatch')),
+      signinRedirect: vi.fn(),
+      getUser: vi.fn().mockResolvedValue(null),
+    }))).rejects.toThrow('state mismatch');
   });
 
   // A reload discards the in-memory token, so without this the workspace sends every signed-in
@@ -107,7 +123,7 @@ describe('development OIDC bridge', () => {
     const signinRedirect = vi.fn().mockResolvedValue(undefined);
 
     const bridge = await installDevelopmentAuthBridge(config, () => ({
-      signinRedirectCallback: vi.fn(),
+      signinRedirectCallback: vi.fn().mockResolvedValue({ expired: false, access_token: 'unused' }),
       signinRedirect,
       getUser: vi.fn().mockResolvedValue(null),
     }));
@@ -120,7 +136,7 @@ describe('development OIDC bridge', () => {
     const signinRedirect = vi.fn().mockResolvedValue(undefined);
 
     const bridge = await installDevelopmentAuthBridge(config, () => ({
-      signinRedirectCallback: vi.fn(),
+      signinRedirectCallback: vi.fn().mockResolvedValue({ expired: false, access_token: 'unused' }),
       signinRedirect,
       getUser: vi.fn().mockResolvedValue({ expired: false, access_token: 'live' }),
     }));
@@ -134,7 +150,7 @@ describe('development OIDC bridge', () => {
   it('attempts the restore at most once per load and never twice in a row', async () => {
     const signinRedirect = vi.fn().mockResolvedValue(undefined);
     const manager = () => ({
-      signinRedirectCallback: vi.fn(),
+      signinRedirectCallback: vi.fn().mockResolvedValue({ expired: false, access_token: 'unused' }),
       signinRedirect,
       getUser: vi.fn().mockResolvedValue(null),
     });

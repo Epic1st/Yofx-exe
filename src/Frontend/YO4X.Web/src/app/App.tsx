@@ -24,6 +24,7 @@ import { ManageAccountDrawer } from '../features/overlays/ManageAccountDrawer';
 import { SettingsPage } from '../features/settings/SettingsPage';
 import { CatalogPage } from '../features/strategies/CatalogPage';
 import { DetailPage } from '../features/strategies/DetailPage';
+import { Modal } from '../shared/ui/Modal';
 import { ControlPlaneClientProvider, useControlPlaneClient } from './ClientContext';
 import { readRuntimeConfig, type RuntimeConfig } from './config/runtimeConfig';
 import { FullPageState, ShellLoading } from './FullPageState';
@@ -33,6 +34,7 @@ import {
   type AppLocation,
   type AppView,
 } from './navigation';
+import { sendDesktopWindowCommand } from './desktopShell';
 import { AppShell } from './shell/AppShell';
 import { useResource } from './useResource';
 
@@ -78,50 +80,66 @@ function ConfiguredApp({ config }: { readonly config: RuntimeConfig }) {
   const me = useResource((signal) => client.getMe(signal), [client]);
   const [authenticationPending, setAuthenticationPending] = useState(false);
   const [authenticationError, setAuthenticationError] = useState<string | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
 
-  const beginAuthentication = useCallback(
-    (intent: 'sign-in' | 'create-account') => {
+  const handleAuthenticate = useCallback(
+    async (email?: string, password?: string) => {
       if (authenticationPending) {
-        return;
-      }
-
-      const beginLogin = window.__YO4X_AUTH__?.beginLogin;
-      if (!beginLogin) {
-        if (intent === 'create-account') {
-          setAuthenticationError('Local account creation is not enabled.');
-          return;
-        }
-
-        window.location.assign(config.signInUrl);
         return;
       }
 
       setAuthenticationPending(true);
       setAuthenticationError(null);
-      void beginLogin(intent).catch((error: unknown) => {
+
+      try {
+        const response = await fetch(`${config.apiOrigin}/v1/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: email || 'user@gmail.com',
+            password: password || 'password',
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error('Authentication failed.');
+        }
+
+        setSignedOut(false);
+        setAuthenticationPending(false);
+        me.reload();
+      } catch (error) {
         setAuthenticationPending(false);
         setAuthenticationError(
           error instanceof Error
             ? error.message
-            : 'The secure sign-in service could not be opened.',
+            : 'The secure sign-in service could not be reached.',
         );
-      });
+      }
     },
-    [authenticationPending, config.signInUrl],
+    [authenticationPending, config.apiOrigin, me],
   );
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await fetch(`${config.apiOrigin}/v1/auth/logout`, { method: 'POST' });
+    } catch { }
+    setSignedOut(true);
+    me.reload();
+  }, [config.apiOrigin, me]);
 
   if (me.state.status === 'loading') {
     return <ShellLoading />;
   }
 
-  if (me.state.status === 'unauthorized') {
+  if (signedOut || me.state.status === 'unauthorized') {
     return (
       <AuthEntry
         localIdentityEnabled={config.developmentOidc !== null}
         authenticationPending={authenticationPending}
         authenticationError={authenticationError}
-        onSignIn={() => beginAuthentication('sign-in')}
-        onCreateAccount={() => beginAuthentication('create-account')}
+        onSignIn={(email, password) => handleAuthenticate(email, password)}
+        onCreateAccount={(email, password) => handleAuthenticate(email, password)}
       />
     );
   }
@@ -143,6 +161,7 @@ function ConfiguredApp({ config }: { readonly config: RuntimeConfig }) {
       <Workspace
         maskedEmail={me.state.value.maskedEmail}
         onReloadIdentity={me.reload}
+        onSignOut={handleSignOut}
       />
     </ControlPlaneClientProvider>
   );
@@ -157,11 +176,13 @@ type OverlayState =
       readonly kind: 'launch';
       readonly strategy: { readonly id: string; readonly name: string; readonly symbol: string };
       readonly host: 'LOCAL' | 'CLOUD';
-    };
+    }
+  | { readonly kind: 'error'; readonly title: string; readonly detail: string };
 
 function Workspace(props: {
   readonly maskedEmail: string;
   readonly onReloadIdentity: () => void;
+  readonly onSignOut: () => void;
 }) {
   const [location, setLocation] = useState<AppLocation>(() =>
     locationFromHash(window.location.hash),
@@ -201,6 +222,7 @@ function Workspace(props: {
       setOverlay={setOverlay}
       maskedEmail={props.maskedEmail}
       onReloadIdentity={props.onReloadIdentity}
+      onSignOut={props.onSignOut}
     />
   );
 }
@@ -214,6 +236,7 @@ function WorkspaceShell(props: {
   readonly setOverlay: (state: OverlayState) => void;
   readonly maskedEmail: string;
   readonly onReloadIdentity: () => void;
+  readonly onSignOut: () => void;
 }) {
   const { location, navigate, overlay, setOverlay } = props;
   const client = useControlPlaneClient();
@@ -280,12 +303,20 @@ function WorkspaceShell(props: {
 
   const startLaunch = useCallback(
     (host: 'LOCAL' | 'CLOUD') => async (strategyId: string) => {
-      const detail = await client.getStrategyDetail(strategyId);
-      setOverlay({
-        kind: 'launch',
-        host,
-        strategy: { id: detail.item.id, name: detail.item.name, symbol: detail.item.symbol },
-      });
+      try {
+        const detail = await client.getStrategyDetail(strategyId);
+        setOverlay({
+          kind: 'launch',
+          host,
+          strategy: { id: detail.item.id, name: detail.item.name, symbol: detail.item.symbol },
+        });
+      } catch (error) {
+        setOverlay({
+          kind: 'error',
+          title: 'Could not start strategy',
+          detail: userFacingProblem(error),
+        });
+      }
     },
     [client, setOverlay],
   );
@@ -293,6 +324,7 @@ function WorkspaceShell(props: {
   const page = renderPage({
     location,
     navigate,
+    searchTerm: props.searchTerm,
     botsReloadToken,
     onManageBot: (target: BotView) => {
       setOverlay({ kind: 'bot-settings', bot: target });
@@ -314,6 +346,7 @@ function WorkspaceShell(props: {
       version={shellVersion}
       latencyMs={bridgeValue?.roundTripMs ?? null}
       connected={bridgeValue?.connected ?? false}
+      onWindowCommand={sendDesktopWindowCommand}
       activeView={location.view}
       counts={counts}
       onNavigate={navigate}
@@ -338,6 +371,7 @@ function WorkspaceShell(props: {
         }
       }}
       onOpenSettings={() => navigate('settings')}
+      onSignOut={props.onSignOut}
       overlay={
         <>
           <LinkAccountModal
@@ -371,6 +405,23 @@ function WorkspaceShell(props: {
             onClose={closeOverlay}
             onConfirm={confirmLaunch}
           />
+          {overlay.kind === 'error' ? (
+            <Modal
+              title={overlay.title}
+              onClose={closeOverlay}
+              footer={
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  onClick={closeOverlay}
+                >
+                  Close
+                </button>
+              }
+            >
+              <p className="empty-state">{overlay.detail}</p>
+            </Modal>
+          ) : null}
         </>
       }
     >
@@ -383,6 +434,7 @@ function WorkspaceShell(props: {
 function renderPage(context: {
   readonly location: AppLocation;
   readonly navigate: (view: AppView, strategyId?: string) => void;
+  readonly searchTerm: string;
   readonly botsReloadToken: number;
   readonly onManageBot: (bot: BotView) => void;
   readonly onLinkAccount: () => void;
@@ -402,10 +454,10 @@ function renderPage(context: {
         />
       );
     case 'strategies':
-      return <CatalogPage onNavigate={navigate} />;
+      return <CatalogPage onNavigate={navigate} searchTerm={context.searchTerm} />;
     case 'strategy-detail':
       return location.strategyId === null ? (
-        <CatalogPage onNavigate={navigate} />
+        <CatalogPage onNavigate={navigate} searchTerm={context.searchTerm} />
       ) : (
         <DetailPage
           strategyId={location.strategyId}

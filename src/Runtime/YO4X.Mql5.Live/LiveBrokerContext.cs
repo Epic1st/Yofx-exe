@@ -20,14 +20,18 @@ namespace YO4X.Mql5.Live;
 /// acceptable, which would have it trading a position it never chose.
 /// </para>
 /// </summary>
-public sealed class LiveBrokerContext : IMql5MarketContext
+public sealed class LiveBrokerContext : IMql5MarketContext, IMql5DelayContext
 {
     private readonly LiveBarSeries series;
-    private readonly Mt5NetApiDemoTradeClient broker;
+    private readonly IMt5TradeGateway broker;
     private readonly Action<string> journal;
     private readonly int digits;
+    private readonly Mt5LiveSymbolSnapshot? symbolSpec;
     private readonly List<Mt5DemoOrderReceipt> open = [];
+    private readonly List<Mt5DemoOrderReceipt> pendingOrders = [];
+    private readonly Dictionary<long, (double StopLoss, double TakeProfit, long Magic)> positionInfo = [];
     private Mt5DemoOrderReceipt? selected;
+    private Mt5DemoOrderReceipt? selectedOrder;
 
     /// <summary>Joins a strategy to one live account and one bar series.</summary>
     /// <param name="series">The live bars, seeded from history.</param>
@@ -36,7 +40,7 @@ public sealed class LiveBrokerContext : IMql5MarketContext
     /// <param name="journal">Receives a line for anything refused or unsupported.</param>
     public LiveBrokerContext(
         LiveBarSeries series,
-        Mt5NetApiDemoTradeClient broker,
+        IMt5TradeGateway broker,
         int digits,
         Action<string> journal)
     {
@@ -48,6 +52,7 @@ public sealed class LiveBrokerContext : IMql5MarketContext
         this.series = series;
         this.broker = broker;
         this.digits = digits;
+        symbolSpec = broker.ReadSymbolSnapshot();
         this.journal = journal;
     }
 
@@ -77,7 +82,14 @@ public sealed class LiveBrokerContext : IMql5MarketContext
             4 => series.Ask,
             7 => series.Bid,
             16 => Point,
-            27 => Point,
+            26 => TickValue,
+            27 => TickSize,
+            28 => ContractSize,
+            34 => VolumeMin,
+            35 => VolumeMax,
+            36 => VolumeStep,
+            53 => TickValue,
+            54 => TickValue,
             _ => 0.0,
         };
 
@@ -87,12 +99,76 @@ public sealed class LiveBrokerContext : IMql5MarketContext
         {
             0 => 1,
             17 => digits,
-            18 => (long)Math.Round((series.Ask - series.Bid) / Point),
+            18 => series.Ask > series.Bid
+                ? (long)Math.Round((series.Ask - series.Bid) / Point)
+                : 0L,
+            // SYMBOL_TRADE_MODE_FULL. A missing vendor snapshot used to report 0
+            // (disabled), so pending-grid experts such as Straddle never left CanTrade().
+            30 => symbolSpec is { TradeMode: > 0 } ? symbolSpec.TradeMode : 4L,
+            33 => 2,
+            49 => 1,
+            50 => 1 | 2,
+            71 => 127,
             _ => 0L,
         };
 
+    private double TickSize =>
+        symbolSpec is { TickSize: > 0 } ? symbolSpec.TickSize : Point;
+
+    private double ContractSize =>
+        symbolSpec is { ContractSize: > 0 }
+            ? symbolSpec.ContractSize
+            : Symbol.Contains("XAU", StringComparison.OrdinalIgnoreCase) ? 100.0 : 100_000.0;
+
+    private double TickValue =>
+        symbolSpec is { TickValue: > 0 } ? symbolSpec.TickValue : ContractSize * TickSize;
+
+    private double VolumeMin =>
+        symbolSpec is { VolumeMin: > 0 } ? symbolSpec.VolumeMin : 0.01;
+
+    private double VolumeMax =>
+        symbolSpec is { VolumeMax: > 0 } ? symbolSpec.VolumeMax : 10.0;
+
+    private double VolumeStep =>
+        symbolSpec is { VolumeStep: > 0 } ? symbolSpec.VolumeStep : 0.01;
+
     /// <inheritdoc />
     public bool SymbolSelect(string symbol, bool selectFlag) => IsRunSymbol(symbol);
+
+    /// <inheritdoc />
+    public bool SymbolInfoTick(string symbol, out Mql5Tick tick)
+    {
+        if (!IsRunSymbol(symbol) || series.Bid <= 0.0 || series.Ask <= 0.0)
+        {
+            tick = default;
+            return false;
+        }
+        DateTime time = series.LastQuoteTime == default ? DateTime.UtcNow : series.LastQuoteTime;
+        long seconds = new DateTimeOffset(DateTime.SpecifyKind(time, DateTimeKind.Utc)).ToUnixTimeSeconds();
+        tick = new Mql5Tick
+        {
+            Time = seconds,
+            TimeMsc = seconds * 1_000,
+            Bid = series.Bid,
+            Ask = series.Ask,
+            Last = series.Bid,
+            Flags = 6
+        };
+        return true;
+    }
+
+    /// <inheritdoc />
+    public long MqlInfoInteger(int propertyId) => propertyId switch
+    {
+        3 => 0,
+        4 => 1,
+        5 => 0,
+        6 => 0,
+        7 => 0,
+        8 => 0,
+        14 => 0,
+        _ => 0,
+    };
 
     /// <summary>
     /// Account figures are not served to a live strategy.
@@ -105,7 +181,125 @@ public sealed class LiveBrokerContext : IMql5MarketContext
     /// looks current and is not.
     /// </para>
     /// </summary>
-    public double AccountInfoDouble(int propertyId) => 0.0;
+    public double AccountInfoDouble(int propertyId)
+    {
+        Mt5LiveAccountSnapshot account = broker.ReadAccountSnapshot();
+        double equity = account.Equity > 0.0 ? account.Equity : Math.Max(0.0, account.Balance + account.Profit);
+        double balance = account.Balance > 0.0 ? account.Balance : Math.Max(0.0, equity - account.Profit);
+        double freeMargin = account.FreeMargin > 0.0 ? account.FreeMargin : Math.Max(0.0, equity - account.Margin);
+        return propertyId switch
+        {
+            37 => balance,
+            38 => 0.0,
+            39 => account.Profit,
+            40 => equity,
+            41 => account.Margin,
+            42 => freeMargin,
+            43 => account.Margin > 0.0 ? equity / account.Margin * 100.0 : 0.0,
+            _ => 0.0,
+        };
+    }
+
+    public bool OrderCalcMargin(int orderType, string symbol, double volume, double price, out double margin)
+    {
+        margin = 0.0;
+        if (!IsRunSymbol(symbol)
+            || orderType is < 0 or > 7
+            || !double.IsFinite(volume) || volume <= 0.0
+            || !double.IsFinite(price) || price <= 0.0)
+        {
+            return false;
+        }
+
+        Mt5LiveAccountSnapshot account = broker.ReadAccountSnapshot();
+        double leverage = account.Leverage > 0 ? account.Leverage : 100.0;
+        margin = volume * ContractSize * price / leverage;
+        return double.IsFinite(margin) && margin >= 0.0;
+    }
+
+    public bool OrderCheck(Mql5TradeRequest request, out Mql5TradeCheckResult result)
+    {
+        result = new Mql5TradeCheckResult();
+        if (request is null
+            || (!string.IsNullOrEmpty(request.Symbol) && !IsRunSymbol(request.Symbol))
+            || !double.IsFinite(request.Volume) || request.Volume <= 0.0)
+        {
+            result.Retcode = Mql5Constants.TradeRetcode.Invalid;
+            result.Comment = "invalid live trade request";
+            return false;
+        }
+
+        double price = request.Price > 0.0
+            ? request.Price
+            : (request.Type is 0 or 2 or 4 ? series.Ask : series.Bid);
+        if (!OrderCalcMargin(request.Type, Symbol, request.Volume, price, out double required)
+            || required < 0.0)
+        {
+            result.Retcode = Mql5Constants.TradeRetcode.Invalid;
+            result.Comment = "invalid live margin inputs";
+            return false;
+        }
+
+        Mt5LiveAccountSnapshot account = broker.ReadAccountSnapshot();
+        double equity = account.Equity > 0.0 ? account.Equity : Math.Max(0.0, account.Balance + account.Profit);
+        double balance = account.Balance > 0.0 ? account.Balance : Math.Max(0.0, equity - account.Profit);
+        double projectedMargin = account.Margin + required;
+        double projectedFree = equity - projectedMargin;
+        result.Balance = balance;
+        result.Equity = equity;
+        result.Margin = projectedMargin;
+        result.MarginFree = projectedFree;
+        result.MarginLevel = projectedMargin > 0.0 ? equity / projectedMargin * 100.0 : 0.0;
+        if (projectedFree < 0.0)
+        {
+            result.Retcode = 10019;
+            result.Comment = "not enough money";
+            return false;
+        }
+
+        result.Retcode = 0;
+        result.Comment = "done";
+        return true;
+    }
+
+    /// <inheritdoc />
+    public long AccountInfoInteger(int propertyId)
+    {
+        Mt5LiveAccountSnapshot account = broker.ReadAccountSnapshot();
+        return propertyId switch
+        {
+            0 => checked((long)account.Login),
+            32 => account.Environment == Mt5TradingEnvironment.Demo ? 0L : 2L,
+            33 or 34 => 1L,
+            35 => account.Leverage,
+            53 => (long)account.MarginMode,
+            54 => 2L,
+            56 => account.MarginMode == Mt5AccountMarginMode.RetailHedging ? 1L : 0L,
+            _ => 0L,
+        };
+    }
+
+    /// <inheritdoc />
+    public string AccountInfoString(int propertyId)
+    {
+        Mt5LiveAccountSnapshot account = broker.ReadAccountSnapshot();
+        return propertyId switch
+        {
+            1 => account.Login.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            2 => account.Company,
+            3 => account.Server,
+            36 => account.Currency,
+            _ => string.Empty,
+        };
+    }
+
+    /// <inheritdoc />
+    public void Delay(int milliseconds)
+    {
+        if (milliseconds is < 0 or > 5_000)
+            throw new ArgumentOutOfRangeException(nameof(milliseconds), "Live strategy delays must be between 0 and 5000 milliseconds.");
+        Thread.Sleep(milliseconds);
+    }
 
     /// <inheritdoc />
     public int PositionsTotal() => open.Count;
@@ -134,6 +328,7 @@ public sealed class LiveBrokerContext : IMql5MarketContext
     {
         if (index < 0 || index >= open.Count)
         {
+            selected = null;
             return 0UL;
         }
 
@@ -142,8 +337,11 @@ public sealed class LiveBrokerContext : IMql5MarketContext
     }
 
     /// <inheritdoc />
-    public string PositionGetSymbol(int index) =>
-        index >= 0 && index < open.Count ? open[index].Symbol : string.Empty;
+    public string PositionGetSymbol(int index)
+    {
+        selected = index >= 0 && index < open.Count ? open[index] : null;
+        return selected?.Symbol ?? string.Empty;
+    }
 
     /// <inheritdoc />
     public double PositionGetDouble(int propertyId) => selected is not { } position ? 0.0 : propertyId switch
@@ -151,6 +349,8 @@ public sealed class LiveBrokerContext : IMql5MarketContext
         3 => position.Volume,
         4 => position.Price,
         5 => position.Side == Mt5DemoSide.Buy ? series.Bid : series.Ask,
+        6 => positionInfo.TryGetValue(position.Ticket, out var info) ? info.StopLoss : 0.0,
+        7 => positionInfo.TryGetValue(position.Ticket, out var info) ? info.TakeProfit : 0.0,
         10 => position.Profit,
         _ => 0.0,
     };
@@ -160,9 +360,69 @@ public sealed class LiveBrokerContext : IMql5MarketContext
     {
         1 => new DateTimeOffset(position.OpenTime, TimeSpan.Zero).ToUnixTimeSeconds(),
         2 => position.Side == Mt5DemoSide.Buy ? 0L : 1L,
+        12 => positionInfo.TryGetValue(position.Ticket, out var info) ? info.Magic : 0L,
         13 => position.Ticket,
         17 => position.Ticket,
         _ => 0L,
+    };
+
+    /// <inheritdoc />
+    public string PositionGetString(int propertyId) => selected is not { } position ? string.Empty : propertyId switch
+    {
+        0 => position.Symbol,
+        11 => string.Empty,
+        _ => string.Empty,
+    };
+
+    /// <inheritdoc />
+    public int OrdersTotal() => pendingOrders.Count;
+
+    /// <inheritdoc />
+    public ulong OrderGetTicket(int index)
+    {
+        if (index < 0 || index >= pendingOrders.Count)
+        {
+            selectedOrder = null;
+            return 0UL;
+        }
+
+        selectedOrder = pendingOrders[index];
+        return (ulong)selectedOrder.Ticket;
+    }
+
+    /// <inheritdoc />
+    public bool OrderSelect(ulong ticket)
+    {
+        selectedOrder = pendingOrders.Find(order => (ulong)order.Ticket == ticket);
+        return selectedOrder is not null;
+    }
+
+    /// <inheritdoc />
+    public double OrderGetDouble(int propertyId) => selectedOrder is not { } order ? 0.0 : propertyId switch
+    {
+        7 => order.Volume,
+        8 => order.Volume,
+        9 => order.Price,
+        12 => positionInfo.TryGetValue(order.Ticket, out var info) ? info.StopLoss : 0.0,
+        13 => positionInfo.TryGetValue(order.Ticket, out var info) ? info.TakeProfit : 0.0,
+        _ => 0.0,
+    };
+
+    /// <inheritdoc />
+    public long OrderGetInteger(int propertyId) => selectedOrder is not { } order ? 0L : propertyId switch
+    {
+        1 => new DateTimeOffset(order.OpenTime, TimeSpan.Zero).ToUnixTimeSeconds(),
+        4 => (long)order.Side,
+        15 => positionInfo.TryGetValue(order.Ticket, out var info) ? info.Magic : 0L,
+        22 => order.Ticket,
+        _ => 0L,
+    };
+
+    /// <inheritdoc />
+    public string OrderGetString(int propertyId) => selectedOrder is not { } order ? string.Empty : propertyId switch
+    {
+        0 => order.Symbol,
+        _ => string.Empty,
     };
 
     /// <summary>
@@ -192,6 +452,9 @@ public sealed class LiveBrokerContext : IMql5MarketContext
                     return Open(request, result);
                 case 5:
                     return Place(request, result);
+                case 6:
+                case 7:
+                    return Modify(request, result);
                 case 8:
                     return Remove(request, result);
                 default:
@@ -215,18 +478,29 @@ public sealed class LiveBrokerContext : IMql5MarketContext
 
     private bool Open(Mql5TradeRequest request, Mql5TradeResult result)
     {
-        // A close is an open in the opposite direction against a position we already hold.
-        Mt5DemoOrderReceipt? facing = open.Find(position =>
-            (position.Side == Mt5DemoSide.Buy && request.Type == 1)
-            || (position.Side == Mt5DemoSide.Sell && request.Type == 0));
-        if (facing is not null && Math.Abs(facing.Volume - request.Volume) < 1e-9)
+        ulong positionTicket = request.Position != 0 ? request.Position : request.Order;
+        if (positionTicket != 0)
         {
-            Mt5DemoOrderReceipt closed = broker.CloseAsync(facing).GetAwaiter().GetResult();
-            open.Remove(facing);
-            selected = null;
+            Mt5DemoOrderReceipt? target = open.Find(position => (ulong)position.Ticket == positionTicket);
+            if (target is null)
+            {
+                result.Retcode = Mql5Constants.TradeRetcode.Invalid;
+                return false;
+            }
+
+            Mt5DemoOrderReceipt closed = broker.CloseAsync(target).GetAwaiter().GetResult();
+            open.Remove(target);
+            positionInfo.Remove(target.Ticket);
+            if (selected == target)
+            {
+                selected = null;
+            }
+
             result.Retcode = Mql5Constants.TradeRetcode.Done;
             result.Order = (ulong)closed.Ticket;
+            result.Deal = (ulong)closed.Ticket;
             result.Price = closed.Price;
+            result.Volume = closed.Volume;
             return true;
         }
 
@@ -247,6 +521,7 @@ public sealed class LiveBrokerContext : IMql5MarketContext
         }
 
         open.Add(opened);
+        positionInfo[opened.Ticket] = (request.StopLoss, request.TakeProfit, (long)request.Magic);
         result.Retcode = Mql5Constants.TradeRetcode.Done;
         result.Order = (ulong)opened.Ticket;
         result.Deal = (ulong)opened.Ticket;
@@ -275,15 +550,36 @@ public sealed class LiveBrokerContext : IMql5MarketContext
             return false;
         }
 
-        open.Add(placed);
+        pendingOrders.Add(placed);
+        positionInfo[placed.Ticket] = (request.StopLoss, request.TakeProfit, (long)request.Magic);
         result.Retcode = Mql5Constants.TradeRetcode.Placed;
         result.Order = (ulong)placed.Ticket;
         return true;
     }
 
+    private bool Modify(Mql5TradeRequest request, Mql5TradeResult result)
+    {
+        ulong ticket = request.Position != 0 ? request.Position : request.Order;
+        Mt5DemoOrderReceipt? target = open.Find(position => (ulong)position.Ticket == ticket)
+            ?? pendingOrders.Find(order => (ulong)order.Ticket == ticket);
+        if (target is null)
+        {
+            result.Retcode = Mql5Constants.TradeRetcode.Invalid;
+            return false;
+        }
+
+        broker.ModifyAsync(target, request.StopLoss, request.TakeProfit).GetAwaiter().GetResult();
+        long magic = positionInfo.TryGetValue(target.Ticket, out var info) ? info.Magic : (long)request.Magic;
+        positionInfo[target.Ticket] = (request.StopLoss, request.TakeProfit, magic);
+        result.Retcode = Mql5Constants.TradeRetcode.Done;
+        result.Order = (ulong)target.Ticket;
+        return true;
+    }
+
     private bool Remove(Mql5TradeRequest request, Mql5TradeResult result)
     {
-        Mt5DemoOrderReceipt? target = open.Find(position => (ulong)position.Ticket == request.Order);
+        ulong ticket = request.Order != 0 ? request.Order : request.Position;
+        Mt5DemoOrderReceipt? target = pendingOrders.Find(order => (ulong)order.Ticket == ticket);
         if (target is null)
         {
             result.Retcode = Mql5Constants.TradeRetcode.Invalid;
@@ -291,7 +587,13 @@ public sealed class LiveBrokerContext : IMql5MarketContext
         }
 
         broker.CancelAsync(target).GetAwaiter().GetResult();
-        open.Remove(target);
+        pendingOrders.Remove(target);
+        positionInfo.Remove(target.Ticket);
+        if (selectedOrder == target)
+        {
+            selectedOrder = null;
+        }
+
         result.Retcode = Mql5Constants.TradeRetcode.Done;
         return true;
     }
@@ -406,6 +708,7 @@ public static class LivePeriods
         60 => Mql5Constants.Timeframes.H1,
         240 => Mql5Constants.Timeframes.H4,
         1440 => Mql5Constants.Timeframes.D1,
+        10080 => Mql5Constants.Timeframes.W1,
         _ => Mql5Constants.Timeframes.Current,
     };
 }

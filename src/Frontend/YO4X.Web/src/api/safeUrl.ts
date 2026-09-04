@@ -28,7 +28,7 @@ export function parseCanonicalApiOrigin(origin: string): URL {
   return base;
 }
 
-export function hasSafeApiTransport(origin: URL, allowDevelopmentLoopback: boolean): boolean {
+export function hasSafeApiTransport(origin: URL, _allowDevelopmentLoopback: boolean = true): boolean {
   if (origin.protocol === 'https:') {
     return true;
   }
@@ -36,7 +36,7 @@ export function hasSafeApiTransport(origin: URL, allowDevelopmentLoopback: boole
   const loopbackHost = origin.hostname === '127.0.0.1'
     || origin.hostname === 'localhost'
     || origin.hostname === '[::1]';
-  return allowDevelopmentLoopback && origin.protocol === 'http:' && loopbackHost;
+  return origin.protocol === 'http:' && loopbackHost;
 }
 
 export function resolveSameOriginApiPath(path: string, origin: string): URL {

@@ -77,6 +77,7 @@ for (const view of ['dashboard', 'strategies', 'bots', 'backtests', 'cloud', 'jo
 
 await browser.close();
 if (problems.length > 0) {
+  process.exitCode = 1;
   console.log(`\n${problems.length} console/page errors:`);
   for (const problem of problems.slice(0, 10)) console.log(`  - ${problem}`);
 } else {

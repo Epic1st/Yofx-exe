@@ -57,8 +57,11 @@ public enum Mql5MarginMode
     /// <summary>One position per symbol; opposite deals net against it.</summary>
     Netting = 0,
 
+    /// <summary>Exchange-cleared accounting.</summary>
+    Exchange = 1,
+
     /// <summary>Independent positions per deal; opposing positions coexist.</summary>
-    Hedging = 1,
+    Hedging = 2,
 }
 
 /// <summary>Why a position or order left the book.</summary>

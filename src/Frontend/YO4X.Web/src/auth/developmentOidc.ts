@@ -1,5 +1,4 @@
 import {
-  InMemoryWebStorage,
   OidcClient,
   UserManager,
   WebStorageStateStore,
@@ -18,9 +17,14 @@ const callbackPath = '/auth/callback';
 const restoreMarkerKey = 'yo4x.session-restore';
 
 interface OidcManager {
-  signinRedirectCallback(url?: string): Promise<unknown>;
+  signinRedirectCallback(url?: string): Promise<OidcUser>;
   signinRedirect(args?: { readonly prompt?: string }): Promise<void>;
-  getUser(): Promise<{ readonly expired: boolean | undefined; readonly access_token: string } | null>;
+  getUser(): Promise<OidcUser | null>;
+}
+
+interface OidcUser {
+  readonly expired: boolean | undefined;
+  readonly access_token: string;
 }
 
 /** Outcome of installing the bridge. */
@@ -55,7 +59,10 @@ export function createDevelopmentOidcSettings(
     automaticSilentRenew: false,
     monitorSession: false,
     stateStore: new WebStorageStateStore({ store: window.sessionStorage }),
-    userStore: new WebStorageStateStore({ store: new InMemoryWebStorage() }),
+    // Tab-scoped storage survives the authorization redirect and incidental reloads, but is
+    // discarded when the browser tab closes. Local storage would retain bearer tokens beyond
+    // the browsing session and is deliberately not used.
+    userStore: new WebStorageStateStore({ store: window.sessionStorage }),
   };
 }
 
@@ -87,16 +94,21 @@ export async function installDevelopmentAuthBridge(
 
   const settings = createDevelopmentOidcSettings(config);
   const manager = createManager(settings);
+  let callbackUser: OidcUser | null = null;
   let restoring = false;
   if (window.location.pathname === callbackPath) {
     const wasRestore = takeRestoreMarker();
+    const callbackError = new URL(window.location.href).searchParams.get('error');
     try {
-      await manager.signinRedirectCallback(window.location.href);
+      // Use the callback result directly. Re-reading the user store here creates a needless
+      // race at the most important handoff in the flow and can make a successful exchange look
+      // anonymous to the first /v1/me request.
+      callbackUser = await manager.signinRedirectCallback(window.location.href);
     } catch (error) {
       // A restore attempt answers login_required whenever no identity session exists. For a
       // visitor who simply is not signed in that is the expected answer, not a failure worth
       // reporting; a callback the application did not initiate still surfaces its error.
-      if (!wasRestore) {
+      if (!wasRestore || callbackError !== 'login_required') {
         throw error;
       }
     }
@@ -113,10 +125,13 @@ export async function installDevelopmentAuthBridge(
         window.location.assign(createRegistrationUrl(request.url, config.authority));
         return;
       }
+      // A failed or interrupted quiet restore must never cause a later manual sign-in callback
+      // to be mistaken for that restore and have a real callback error swallowed.
+      takeRestoreMarker();
       await manager.signinRedirect();
     },
     getAccessToken: async () => {
-      const user = await manager.getUser();
+      const user = callbackUser ?? await manager.getUser();
       return !user || user.expired !== false ? null : user.access_token;
     },
   };

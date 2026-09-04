@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type {
   BotHost,
   BotStatus,
@@ -87,7 +87,7 @@ function formatMoney(amount: number, currency: string): string {
       maximumFractionDigits: 2,
     }).format(amount);
   } catch {
-    return `${amount >= 0 ? '+' : ''}${amount.toFixed(2)} ${currency}`;
+    return `${amount > 0 ? '+' : ''}${amount.toFixed(2)} ${currency}`;
   }
 }
 
@@ -124,7 +124,9 @@ function RunningRow({
           role="img"
           aria-label={statusLabels[bot.status]}
         />
-        <span className="dashboard-row__name-text">{bot.name}</span>
+        <span className="dashboard-row__name-text">
+          {bot.name === bot.strategyName ? bot.name : `${bot.name} · ${bot.strategyName}`}
+        </span>
       </div>
       <div className="dashboard-row__muted mono">{bot.symbol}</div>
       <div className={plClass}>
@@ -174,8 +176,18 @@ export function DashboardPage({ onNavigate, onLinkAccount, onRunOnCloud }: Dashb
   );
   const catalog = useResource<StrategyCatalogPage>(loadCatalog, [client, category]);
 
+  const [cachedCategories, setCachedCategories] = useState<readonly string[]>([]);
+
+  useEffect(() => {
+    if (catalog.state.status === 'ready') {
+      setCachedCategories(catalog.state.value.categories);
+    }
+  }, [catalog.state]);
+
   const summaryValue = summary.state.status === 'ready' ? summary.state.value : null;
   const catalogValue = catalog.state.status === 'ready' ? catalog.state.value : null;
+  const categories =
+    catalog.state.status === 'ready' ? catalog.state.value.categories : cachedCategories;
 
   const openStrategy = (strategyId: string) => onNavigate('strategy-detail', strategyId);
 
@@ -291,7 +303,7 @@ export function DashboardPage({ onNavigate, onLinkAccount, onRunOnCloud }: Dashb
 
       <div className="panel table dashboard-running">
         <div className="table__head" style={{ gridTemplateColumns: runningColumns }}>
-          <div>Strategy</div>
+          <div>Bot</div>
           <div>Symbol</div>
           <div>Today P/L</div>
           <div>Trades</div>
@@ -342,7 +354,7 @@ export function DashboardPage({ onNavigate, onLinkAccount, onRunOnCloud }: Dashb
           >
             All
           </button>
-          {(catalogValue?.categories ?? []).map((name) => (
+          {categories.map((name) => (
             <button
               key={name}
               type="button"

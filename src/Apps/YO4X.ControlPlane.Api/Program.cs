@@ -30,9 +30,11 @@ builder.Services.TryAddRuntimeControlPostgres(builder.Configuration, builder.Env
 builder.Services.TryAddScoped<IControlPlaneApplication, UnavailableControlPlaneApplication>();
 builder.Services.TryAddScoped<IFrontendProjectionApplication, UnavailableFrontendProjectionApplication>();
 builder.Services.TryAddScoped<IRuntimeControlPlaneApplication, UnavailableRuntimeControlPlaneApplication>();
+builder.Services.TryAddScoped<IBotExecutionCoordinator, UnavailableBotExecutionCoordinator>();
 builder.Services.AddSingleton<ControlPlaneReadinessProbe>();
 builder.Services.AddDevelopmentMt5ConnectionProbe(builder.Configuration, builder.Environment);
 builder.Services.AddLocalBrokerCredentialVault(builder.Configuration);
+builder.Services.TryAddLocalBotExecution(builder.Configuration, builder.Environment);
 
 // Password members bind straight from the request bytes into a buffer this
 // process can erase, so no broker password is ever materialized as a string.
@@ -46,6 +48,8 @@ app.UseYo4xProblemStatusCodes();
 app.UseRequestTimeouts();
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapMarketplacePublicationEndpoint();
+app.MapLocalBotExecutionReadiness();
 
 ControlPlaneReadinessProbe readiness = app.Services.GetRequiredService<ControlPlaneReadinessProbe>();
 app.MapYo4xHealth(
@@ -175,8 +179,9 @@ user.MapPost("/broker-accounts", async (
     // A broker password may only be handed to a control plane running on the
     // same device as the DPAPI vault it is destined for. Anything reached over
     // a network has no vault to write to and must not hold the secret at all.
-    if (context.Connection.RemoteIpAddress is null
-        || !IPAddress.IsLoopback(context.Connection.RemoteIpAddress))
+    IPAddress? ip = context.Connection.RemoteIpAddress;
+    if (ip is null
+        || !IPAddress.IsLoopback(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip))
     {
         return ApiProblems.Create(
             context,
@@ -574,6 +579,11 @@ static string ClassifySourceNetwork(IPAddress? address)
         return "unknown";
     }
 
+    if (address.IsIPv4MappedToIPv6)
+    {
+        address = address.MapToIPv4();
+    }
+
     if (IPAddress.IsLoopback(address))
     {
         return "loopback";
@@ -581,18 +591,11 @@ static string ClassifySourceNetwork(IPAddress? address)
 
     if (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
     {
-        if (address.IsIPv4MappedToIPv6)
-        {
-            address = address.MapToIPv4();
-        }
-        else
-        {
-            byte[] ipv6 = address.GetAddressBytes();
-            bool privateIpv6 = address.IsIPv6LinkLocal
-                || address.IsIPv6SiteLocal
-                || (ipv6[0] & 0xfe) == 0xfc;
-            return privateIpv6 ? "private" : "public";
-        }
+        byte[] ipv6 = address.GetAddressBytes();
+        bool privateIpv6 = address.IsIPv6LinkLocal
+            || address.IsIPv6SiteLocal
+            || (ipv6[0] & 0xfe) == 0xfc;
+        return privateIpv6 ? "private" : "public";
     }
 
     byte[] bytes = address.GetAddressBytes();

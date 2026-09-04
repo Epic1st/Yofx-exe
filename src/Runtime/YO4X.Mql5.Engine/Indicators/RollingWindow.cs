@@ -24,18 +24,25 @@ internal sealed class RollingWindow
 
     internal void Add(double value)
     {
-        if (IsFull)
-        {
-            Sum -= items[head];
-        }
-        else
+        if (!IsFull)
         {
             Count++;
         }
 
         items[head] = value;
         head = (head + 1) % items.Length;
-        Sum += value;
+
+        // Summed afresh rather than carried incrementally. Adding the new value and
+        // subtracting the evicted one drifts by ~1e-13 over a long backtest, which is
+        // enough to stop a flat series producing an exactly zero deviation - CCI then
+        // divides by that residue and reports a large value where it should report zero.
+        double sum = 0.0;
+        for (int index = 0; index < Count; index++)
+        {
+            sum += this[index];
+        }
+
+        Sum = sum;
     }
 
     internal double Average() => Count == 0 ? double.NaN : Sum / Count;

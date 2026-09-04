@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
 using YO4X.Api;
 using YO4X.ControlPlane.Application;
 using YO4X.Identity;
@@ -167,10 +168,10 @@ public static class FrontendProjectionEndpoints
             Guid botId,
             BotStatusChange request,
             HttpContext context,
-            IFrontendProjectionApplication application,
+            [FromServices] IBotExecutionCoordinator coordinator,
             CancellationToken cancellationToken) =>
         {
-            BotView? view = await application.SetBotStatusAsync(
+            BotView? view = await coordinator.ChangeStatusAsync(
                 ToUserActor(context.User), botId, request, cancellationToken);
             return view is null
                 ? ApiProblems.Create(context, StatusCodes.Status404NotFound, "RESOURCE_NOT_FOUND", "The resource was not found.")

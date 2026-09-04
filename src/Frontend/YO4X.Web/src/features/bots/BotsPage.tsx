@@ -4,6 +4,7 @@ import { userFacingProblem } from '../../api/problemDetails';
 import { useControlPlaneClient } from '../../app/ClientContext';
 import type { AppView } from '../../app/navigation';
 import { useResource } from '../../app/useResource';
+import { displayBotName, visibleBots } from './botPresentation';
 import './bots.css';
 
 /** Uptime history requested for the local execution window panel. */
@@ -98,28 +99,34 @@ export function BotsPage({ onNavigate, onManageBot, reloadToken = 0 }: BotsPageP
   const bots = useResource((signal) => client.getBots(signal), [client, reloadToken]);
   const uptime = useResource((signal) => client.getBotUptime(uptimeWindowDays, signal), [client]);
 
-  const [pendingBotId, setPendingBotId] = useState<string | null>(null);
+  const [pendingBotIds, setPendingBotIds] = useState<Set<string>>(() => new Set<string>());
   const [actionError, setActionError] = useState<string | null>(null);
 
   const reloadBots = bots.reload;
   const changeStatus = useCallback(
     async (bot: BotView) => {
       const next: BotStatus = bot.status === 'RUNNING' ? 'STOPPED' : 'RUNNING';
-      setPendingBotId(bot.id);
+      setPendingBotIds((prev) => new Set(prev).add(bot.id));
       setActionError(null);
       try {
         await client.changeBotStatus(bot.id, next);
         reloadBots();
       } catch (error) {
         setActionError(userFacingProblem(error));
+        reloadBots();
       } finally {
-        setPendingBotId(null);
+        setPendingBotIds((prev) => {
+          const nextSet = new Set(prev);
+          nextSet.delete(bot.id);
+          return nextSet;
+        });
       }
     },
     [client, reloadBots],
   );
 
-  const list = bots.state.status === 'ready' ? bots.state.value : [];
+  const allBots = bots.state.status === 'ready' ? bots.state.value : [];
+  const list = visibleBots(allBots);
   const runningLocally = list.filter((bot) => bot.status === 'RUNNING' && bot.host === 'LOCAL').length;
   const onCloud = list.filter((bot) => bot.host === 'CLOUD').length;
 
@@ -193,7 +200,7 @@ export function BotsPage({ onNavigate, onManageBot, reloadToken = 0 }: BotsPageP
             ? list.map((bot) => {
               const status = describeStatus(bot.status);
               const sevenDay = bot.metrics.find((metric) => metric.window === 'SEVEN_DAY');
-              const pending = pendingBotId === bot.id;
+              const pending = pendingBotIds.has(bot.id);
               const plTone = sevenDay === undefined || sevenDay.plAmount === 0
                 ? ''
                 : sevenDay.plAmount > 0
@@ -202,7 +209,7 @@ export function BotsPage({ onNavigate, onManageBot, reloadToken = 0 }: BotsPageP
               return (
                 <div key={bot.id} className="table__row" style={{ gridTemplateColumns: botColumns }}>
                   <div>
-                    <div className="bots-bot__name">{bot.name}</div>
+                    <div className="bots-bot__name">{displayBotName(bot)}</div>
                     <div className="bots-bot__account mono">{bot.maskedLogin ?? '—'}</div>
                   </div>
                   <div className="bots-cell mono">{bot.symbol}</div>
@@ -212,6 +219,11 @@ export function BotsPage({ onNavigate, onManageBot, reloadToken = 0 }: BotsPageP
                   <div className="bots-cell">{bot.riskLabel}</div>
                   <div>
                     <span className={`badge badge--${status.modifier}`}>{status.label}</span>
+                    {bot.status === 'FAULTED' && bot.lastErrorMessage !== null ? (
+                      <div className="bots-bot__fault text-negative" role="status">
+                        {bot.lastErrorMessage}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="bots-row-actions">
                     <button
@@ -234,7 +246,11 @@ export function BotsPage({ onNavigate, onManageBot, reloadToken = 0 }: BotsPageP
                         Settings
                       </button>
                     ) : (
-                      <button type="button" className="btn btn--row" onClick={() => onManageBot(bot)}>
+                      <button
+                        type="button"
+                        className="btn btn--row"
+                        onClick={() => onManageBot({ ...bot, name: displayBotName(bot) })}
+                      >
                         Settings
                       </button>
                     )}

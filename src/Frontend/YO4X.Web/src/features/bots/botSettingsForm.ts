@@ -48,7 +48,7 @@ export const symbolSearchMinimumLength = 2;
 export const symbolSearchMaximumLength = 100;
 export const symbolSearchDebounceMs = 220;
 
-const wholeNumberPattern = /^[0-9]{1,10}$/u;
+const wholeNumberPattern = /^[0-9]+$/u;
 
 export interface BotRunSettingsDraft {
   readonly symbol: string;
@@ -191,6 +191,16 @@ export function validateRunSettings(
     errors.volume = `${instrument.symbol} trades no smaller than ${instrument.volumeMin} lots.`;
   } else if (instrument !== null && instrument.volumeMax !== null && volume > instrument.volumeMax) {
     errors.volume = `${instrument.symbol} trades no larger than ${instrument.volumeMax} lots.`;
+  } else if (
+    instrument !== null
+    && instrument.volumeStep !== null
+    && instrument.volumeStep > 0
+    && Math.abs(
+      (volume - (instrument.volumeMin ?? 0)) / instrument.volumeStep
+      - Math.round((volume - (instrument.volumeMin ?? 0)) / instrument.volumeStep),
+    ) > 1e-6
+  ) {
+    errors.volume = `${instrument.symbol} trades in steps of ${instrument.volumeStep} lots.`;
   }
 
   const magicText = draft.magicNumber.trim();

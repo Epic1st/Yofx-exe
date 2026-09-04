@@ -25,10 +25,12 @@ namespace YO4X.Mql5.Backtest;
 /// backtest in a way nothing downstream could detect.
 /// </para>
 /// </summary>
-public sealed class EngineRuntimeContext : IMql5MarketContext
+public sealed class EngineRuntimeContext : IMql5MarketContext, IMql5DelayContext
 {
+    private const int MaximumSingleDelayMilliseconds = 60_000;
     private readonly EngineContext engine;
     private readonly int periodMinutes;
+    private long virtualDelayMilliseconds;
 
     /// <summary>Joins a generated strategy to one engine context.</summary>
     /// <param name="engine">The engine context the strategy host created for this run.</param>
@@ -57,12 +59,52 @@ public sealed class EngineRuntimeContext : IMql5MarketContext
     public int Period => TimeframeIdentifier(periodMinutes);
 
     /// <inheritdoc />
+    public long VirtualDelayMilliseconds => Interlocked.Read(ref virtualDelayMilliseconds);
+
+    /// <inheritdoc />
+    public void Delay(int milliseconds)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(milliseconds);
+        if (milliseconds > MaximumSingleDelayMilliseconds)
+        {
+            throw Mql5UnsupportedOperationException.For(
+                nameof(Delay),
+                $"a deterministic strategy delay cannot exceed {MaximumSingleDelayMilliseconds} milliseconds");
+        }
+
+        Interlocked.Add(ref virtualDelayMilliseconds, milliseconds);
+    }
+
+    /// <inheritdoc />
     public double SymbolInfoDouble(string symbol, int propertyId) =>
         IsRunSymbol(symbol) ? engine.SymbolInfoDouble(engine.Symbol, propertyId) : 0.0;
 
     /// <inheritdoc />
     public long SymbolInfoInteger(string symbol, int propertyId) =>
         IsRunSymbol(symbol) ? engine.SymbolInfoInteger(engine.Symbol, propertyId) : 0L;
+
+    /// <inheritdoc />
+    public bool SymbolInfoTick(string symbol, out Mql5Tick tick)
+    {
+        if (!IsRunSymbol(symbol))
+        {
+            tick = default;
+            return false;
+        }
+
+        long seconds = Mql5Time.FromDateTime(engine.TimeCurrent);
+        tick = new Mql5Tick
+        {
+            Time = seconds,
+            TimeMsc = checked(seconds * 1000),
+            Bid = engine.Bid,
+            Ask = engine.Ask,
+            Last = engine.Bid,
+            Flags = 6 // TICK_FLAG_BID | TICK_FLAG_ASK
+        };
+        return double.IsFinite(tick.Bid) && tick.Bid > 0
+            && double.IsFinite(tick.Ask) && tick.Ask >= tick.Bid;
+    }
 
     /// <inheritdoc />
     public bool SymbolSelect(string symbol, bool selectFlag) =>
@@ -73,6 +115,20 @@ public sealed class EngineRuntimeContext : IMql5MarketContext
 
     /// <inheritdoc />
     public long AccountInfoInteger(int propertyId) => engine.AccountInfoInteger(propertyId);
+
+    /// <inheritdoc />
+    public bool OrderCalcMargin(int orderType, string symbol, double volume, double price, out double margin) =>
+        engine.OrderCalcMargin(orderType, symbol, volume, price, out margin);
+
+    /// <inheritdoc />
+    public bool OrderCalcProfit(
+        int orderType,
+        string symbol,
+        double volume,
+        double priceOpen,
+        double priceClose,
+        out double profit) =>
+        engine.OrderCalcProfit(orderType, symbol, volume, priceOpen, priceClose, out profit);
 
     /// <inheritdoc />
     public int PositionsTotal() => engine.PositionsTotal();
@@ -153,6 +209,55 @@ public sealed class EngineRuntimeContext : IMql5MarketContext
     }
 
     /// <inheritdoc />
+    public bool OrderCheck(Mql5TradeRequest request, out Mql5TradeCheckResult result)
+    {
+        result = new Mql5TradeCheckResult();
+        if (request is null
+            || !TryMapAction(request.Action, out EngineTradeAction action)
+            || !TryMapOrderType(request.Type, out _)
+            || (!string.IsNullOrEmpty(request.Symbol) && !IsRunSymbol(request.Symbol))
+            || !double.IsFinite(request.Volume)
+            || !double.IsFinite(request.Price))
+        {
+            result.Retcode = Mql5Constants.TradeRetcode.Invalid;
+            result.Comment = "invalid simulated trade request";
+            return false;
+        }
+
+        double balance = engine.AccountInfoDouble(37);
+        double equity = engine.AccountInfoDouble(40);
+        double currentMargin = engine.AccountInfoDouble(41);
+        double requiredMargin = 0.0;
+        bool opensExposure = action is EngineTradeAction.Deal or EngineTradeAction.Pending;
+        if (opensExposure
+            && (!engine.OrderCalcMargin(request.Type, engine.Symbol, request.Volume, request.Price, out requiredMargin)
+                || requiredMargin < 0.0))
+        {
+            result.Retcode = Mql5Constants.TradeRetcode.Invalid;
+            result.Comment = "invalid simulated margin inputs";
+            return false;
+        }
+
+        double projectedMargin = currentMargin + requiredMargin;
+        double projectedFree = equity - projectedMargin;
+        result.Balance = balance;
+        result.Equity = equity;
+        result.Margin = projectedMargin;
+        result.MarginFree = projectedFree;
+        result.MarginLevel = projectedMargin > 0.0 ? equity / projectedMargin * 100.0 : 0.0;
+        if (projectedFree < 0.0)
+        {
+            result.Retcode = Mql5Constants.TradeRetcode.NoMoney;
+            result.Comment = "insufficient simulated free margin";
+            return true;
+        }
+
+        result.Retcode = Mql5Constants.TradeRetcode.Done;
+        result.Comment = "simulated request check passed";
+        return true;
+    }
+
+    /// <inheritdoc />
     public int IndicatorHandle(string name, params object[] parameters) =>
         engine.IndicatorHandle(name, parameters);
 
@@ -210,7 +315,7 @@ public sealed class EngineRuntimeContext : IMql5MarketContext
             return count;
         }
 
-        if (target.Length < count)
+        if (target is null || target.Length < count)
         {
             Array.Resize(ref target, count);
         }
@@ -279,7 +384,7 @@ public sealed class EngineRuntimeContext : IMql5MarketContext
             return count;
         }
 
-        if (target.Length < count)
+        if (target is null || target.Length < count)
         {
             Array.Resize(ref target, count);
         }

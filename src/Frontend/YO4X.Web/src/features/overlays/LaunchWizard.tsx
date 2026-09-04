@@ -3,6 +3,7 @@ import type { ChangeEvent, DragEvent, MouseEvent } from 'react';
 import { useControlPlaneClient } from '../../app/ClientContext';
 import { useResource } from '../../app/useResource';
 import { Icon } from '../../shared/ui/Icon';
+import { useDialogBehaviour } from '../../shared/ui/Modal';
 import type { BotHost, BridgeStatusView, TradeSide } from '../../api/contracts';
 import './overlays.css';
 
@@ -21,6 +22,7 @@ export interface LaunchWizardProps {
   readonly open: boolean;
   readonly strategy: LaunchWizardStrategy | null;
   readonly account: LaunchWizardAccount | null;
+  readonly initialHost?: BotHost;
   readonly onClose: () => void;
   readonly onConfirm: (input: { strategyId: string; host: BotHost }) => Promise<void>;
   readonly onTestOrder?: (side: TradeSide) => Promise<void>;
@@ -157,10 +159,18 @@ type TestState =
 /* Component                                                           */
 /* ------------------------------------------------------------------ */
 
-export function LaunchWizard({
-  open,
+export function LaunchWizard(props: LaunchWizardProps) {
+  if (!props.open) {
+    return null;
+  }
+
+  return <LaunchWizardDialog {...props} />;
+}
+
+function LaunchWizardDialog({
   strategy,
   account,
+  initialHost,
   onClose,
   onConfirm,
   onTestOrder,
@@ -169,7 +179,7 @@ export function LaunchWizard({
 
   const [step, setStep] = useState<StepNumber>(1);
   const [mode, setMode] = useState<InputMode>('defaults');
-  const [host, setHost] = useState<BotHost>('LOCAL');
+  const [host, setHost] = useState<BotHost>(initialHost ?? 'LOCAL');
   const [setFileName, setSetFileName] = useState<string | null>(null);
   const [setFileError, setSetFileError] = useState<string | null>(null);
   const [inputRows, setInputRows] = useState<readonly StrategyInputRow[]>([]);
@@ -180,13 +190,14 @@ export function LaunchWizard({
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const dialogRef = useRef<HTMLDivElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const logSequence = useRef(0);
 
+  useDialogBehaviour(dialogRef, onClose);
+
   const bridge = useResource<BridgeStatusView | null>(
-    (signal) => (open && step === 3 ? client.getBridgeStatus(signal) : Promise.resolve(null)),
-    [client, open, step],
+    (signal) => (step === 3 ? client.getBridgeStatus(signal) : Promise.resolve(null)),
+    [client, step],
   );
 
   const appendLog = useCallback((text: string) => {
@@ -194,44 +205,6 @@ export function LaunchWizard({
     const id = logSequence.current;
     setLogLines((lines) => [...lines, { id, text: `${stamp()}  ${text}` }]);
   }, []);
-
-  // Escape to close, and focus restored to whatever opened the wizard.
-  useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-      previous?.focus();
-    };
-  }, [open, onClose]);
-
-  // A fresh wizard every time it is opened; a stale step or log would lie.
-  useEffect(() => {
-    if (open) {
-      setStep(1);
-      setMode('defaults');
-      setHost('LOCAL');
-      setSetFileName(null);
-      setSetFileError(null);
-      setInputRows([]);
-      setTestState({ kind: 'idle' });
-      setTestError(null);
-      setLogLines([]);
-      setSubmitting(false);
-      setSubmitError(null);
-      logSequence.current = 0;
-    }
-  }, [open]);
 
   const bridgeStatus = bridge.state.status === 'ready' ? bridge.state.value : null;
   const bridgeLoggedRef = useRef(false);
@@ -320,7 +293,7 @@ export function LaunchWizard({
   }, [appendLog]);
 
   const confirm = useCallback(async () => {
-    if (strategy === null) {
+    if (strategy === null || testState.kind === 'open' || testState.kind === 'sending') {
       return;
     }
     setSubmitting(true);
@@ -337,7 +310,7 @@ export function LaunchWizard({
     } finally {
       setSubmitting(false);
     }
-  }, [strategy, host, onConfirm, onClose, appendLog]);
+  }, [strategy, host, testState.kind, onConfirm, onClose, appendLog]);
 
   const nextLabel = step === 1 ? 'Review' : step === 2 ? 'Open the bridge' : 'Start the bot';
 
@@ -387,10 +360,6 @@ export function LaunchWizard({
     [strategy, account, mode, setFileName],
   );
 
-  if (!open) {
-    return null;
-  }
-
   return (
     <div className="scrim scrim--center" role="presentation" onMouseDown={onClose}>
       <div
@@ -399,6 +368,7 @@ export function LaunchWizard({
         role="dialog"
         aria-modal="true"
         aria-labelledby="launch-title"
+        tabIndex={-1}
         onMouseDown={stopPropagation}
       >
         <header className="launch__head">
@@ -410,7 +380,6 @@ export function LaunchWizard({
               <p className="launch__subtitle">{hostNotes[host]}</p>
             </div>
             <button
-              ref={closeRef}
               type="button"
               className="overlay-close"
               onClick={onClose}
@@ -750,7 +719,11 @@ export function LaunchWizard({
             <button
               type="button"
               className="btn btn--primary"
-              disabled={strategy === null || submitting}
+              disabled={
+                strategy === null ||
+                submitting ||
+                (step === 3 && (testState.kind === 'open' || testState.kind === 'sending'))
+              }
               onClick={onNext}
             >
               {submitting ? 'Starting…' : nextLabel}

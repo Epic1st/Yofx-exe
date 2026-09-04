@@ -79,7 +79,7 @@ public sealed partial class PostgresRuntimeControlPlaneApplication
                 || !FixedTimeEquals(reader.GetString(3), request.StrategyPackageDigest)
                 || !FixedTimeEquals(reader.GetString(5), request.GatewayArtifactDigest)
                 || !string.Equals(reader.GetString(6), "starting", StringComparison.Ordinal)
-                || !string.Equals(reader.GetString(7), "cloud_demo", StringComparison.Ordinal)
+                || reader.GetString(7) is not ("cloud_demo" or "local")
                 || !string.Equals(reader.GetString(8), request.Region, StringComparison.Ordinal)
                 || !FixedTimeEquals(reader.GetString(9), request.RuntimeImageDigest)
                 || !string.Equals(reader.GetString(10), "ready", StringComparison.Ordinal)

@@ -339,7 +339,7 @@ internal static class Program
             return false;
         }
 
-        equity = Math.Round((decimal)value, 4, MidpointRounding.ToEven);
+        equity = Math.Round((decimal)value, 4, MidpointRounding.AwayFromZero);
         return Math.Abs(equity) <= MaximumStorableEquity;
     }
 

@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Infrastructure\YO4X.LocalSecrets.Windows\YO4X.LocalSecrets.Windows.csproj" />
+    <ProjectReference Include="..\YO4X.Runtime.Contracts\YO4X.Runtime.Contracts.csproj" />
+    <ProjectReference Include="..\YO4X.Trading.Abstractions\YO4X.Trading.Abstractions.csproj" />
     <ProjectReference Include="..\YO4X.Trading.ProcessIsolation\YO4X.Trading.ProcessIsolation.csproj" />
   </ItemGroup>
 

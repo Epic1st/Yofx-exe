@@ -145,8 +145,13 @@ public sealed partial class Mql5Runtime
         "yyyy.MM.dd HH:mm:ss", "yyyy.MM.dd HH:mm", "yyyy.MM.dd",
         "yyyy/MM/dd HH:mm:ss", "yyyy/MM/dd HH:mm", "yyyy/MM/dd",
         "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd",
-        "yyyy.M.d H:m:s", "yyyy.M.d H:m", "yyyy.M.d",
-        "HH:mm:ss", "HH:mm"
+        "yyyy.M.d H:m:s", "yyyy.M.d H:m", "yyyy.M.d"
+    ];
+
+    private static readonly string[] TimeOnlyFormats =
+    [
+        "HH:mm:ss", "HH:mm",
+        "H:m:s", "H:m"
     ];
 
     /// <inheritdoc />
@@ -260,6 +265,25 @@ public sealed partial class Mql5Runtime
             length++;
         }
 
+        if (length + 1 < span.Length && span[length] == '0' && (span[length + 1] == 'x' || span[length + 1] == 'X'))
+        {
+            length += 2;
+            int hexStart = length;
+            while (length < span.Length && char.IsAsciiHexDigit(span[length]))
+            {
+                length++;
+            }
+
+            if (length == hexStart)
+            {
+                return 0;
+            }
+
+            return ulong.TryParse(span[hexStart..length], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ulong hexParsed)
+                ? (span[0] == '-' ? unchecked(-(long)hexParsed) : unchecked((long)hexParsed))
+                : (span[0] == '-' ? long.MinValue : long.MaxValue);
+        }
+
         int digitStart = length;
         while (length < span.Length && char.IsAsciiDigit(span[length]))
         {
@@ -310,6 +334,17 @@ public sealed partial class Mql5Runtime
         }
 
         string trimmed = value.Trim();
+        if (DateTime.TryParseExact(
+                trimmed,
+                TimeOnlyFormats,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTime timeOnly))
+        {
+            DateTime combined = context.TimeCurrent.Date + timeOnly.TimeOfDay;
+            return Mql5Time.FromDateTime(combined);
+        }
+
         if (DateTime.TryParseExact(
                 trimmed,
                 DateTimeFormats,

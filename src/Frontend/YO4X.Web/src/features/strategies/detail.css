@@ -302,7 +302,7 @@
 }
 
 .detail-meta__verified {
-  color: var(--color-positive);
+  color: var(--color-positive-text);
 }
 
 .detail-description {

@@ -38,9 +38,20 @@ internal static class Program
         string artifact = Path.GetFullPath(Required(arguments, "--artifact"));
         string symbol = Required(arguments, "--symbol");
         string enableFile = Path.GetFullPath(Required(arguments, "--enable-file"));
-        Mt5TradingEnvironment environment = Optional(arguments, "--environment") is "live"
-            ? Mt5TradingEnvironment.Live
-            : Mt5TradingEnvironment.Demo;
+        // This harness opens a real position, moves its stops, closes it, then places and
+        // cancels a pending order. That sequence is only ever appropriate against a demo
+        // account, so "live" is refused rather than honoured: the tool has no purpose that
+        // justifies putting orders on funded money, and accepting the word silently was
+        // the only thing standing between a mistyped flag and a real trade.
+        if (Optional(arguments, "--environment") is "live")
+        {
+            Console.Error.WriteLine(
+                "This harness places and cancels real orders and runs against demo accounts only. "
+                + "Refusing --environment live.");
+            return 4;
+        }
+
+        const Mt5TradingEnvironment environment = Mt5TradingEnvironment.Demo;
 
         var vault = new DpapiLocalMt5CredentialVault(DpapiLocalMt5CredentialVault.GetDefaultVaultRoot());
         using LocalMt5Credential? credential = await vault

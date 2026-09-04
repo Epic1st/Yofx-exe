@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using YO4X.ControlPlane.Application;
@@ -83,27 +84,78 @@ internal static class RuntimeControlPostgresRegistration
             serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>(),
             allowInsecureLoopbackForDevelopment: environment.IsDevelopment()));
         bool allowInsecureLoopbackForDevelopment = environment.IsDevelopment();
-        if (TryReadRuntimeConnectionString(
+        if (!TryReadRuntimeConnectionString(
                 configuration.GetConnectionString("RuntimeEvidencePostgres"),
                 "yo4x_runtime_evidence",
                 allowInsecureLoopbackForDevelopment,
                 out string evidenceConnectionString)
-            && PostgresDatabaseEndpoint.TryParse(
+            || !PostgresDatabaseEndpoint.TryParse(
                 evidenceConnectionString,
                 out PostgresDatabaseEndpoint? evidenceEndpoint)
-            && TenantContextCapabilityRegistration.TryAdd(
+            || !TenantContextCapabilityRegistration.TryAdd(
                 services,
                 configuration,
                 evidenceEndpoint!))
         {
-            services.TryAddSingleton(serviceProvider => new RuntimeEvidencePostgresDatabase(
-                evidenceConnectionString,
-                serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>(),
-                allowInsecureLoopbackForDevelopment));
+            return services;
+        }
+
+        services.TryAddSingleton(serviceProvider => new RuntimeEvidencePostgresDatabase(
+            evidenceConnectionString,
+            serviceProvider.GetRequiredService<ITenantContextCapabilityProvider>(),
+            allowInsecureLoopbackForDevelopment));
+
+        if (TryLoadExecutionLeaseSigner(
+                configuration,
+                out P256ExecutionLeaseSigningProvider? signingProvider))
+        {
+            services.TryAddSingleton<IExecutionLeaseSigningProvider>(signingProvider!);
+            services.TryAddScoped<IExecutionEntitlementProvider, PostgresExecutionEntitlementProvider>();
         }
 
         services.TryAddScoped<IRuntimeControlPlaneApplication, PostgresRuntimeControlPlaneApplication>();
         return services;
+    }
+
+    private static bool TryLoadExecutionLeaseSigner(
+        IConfiguration configuration,
+        out P256ExecutionLeaseSigningProvider? provider)
+    {
+        provider = null;
+        string? keyId = configuration["ExecutionLeases:SigningKeyId"]?.Trim();
+        string? keyPathValue = configuration["ExecutionLeases:PrivateKeyPkcs8File"]?.Trim();
+        if (string.IsNullOrWhiteSpace(keyId) || string.IsNullOrWhiteSpace(keyPathValue))
+            return false;
+
+        string keyPath = Path.GetFullPath(keyPathValue);
+        if (!File.Exists(keyPath))
+            return false;
+
+        byte[] encoded = File.ReadAllBytes(keyPath);
+        byte[] keyBytes = [];
+        try
+        {
+            string canonical = System.Text.Encoding.ASCII.GetString(encoded).Trim();
+            keyBytes = Convert.FromBase64String(canonical);
+            if (!string.Equals(Convert.ToBase64String(keyBytes), canonical, StringComparison.Ordinal))
+                return false;
+            provider = new P256ExecutionLeaseSigningProvider(keyId, keyBytes);
+            return true;
+        }
+        catch (Exception exception) when (exception is FormatException
+            or ArgumentException
+            or CryptographicException
+            or IOException)
+        {
+            provider?.Dispose();
+            provider = null;
+            return false;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(encoded);
+            CryptographicOperations.ZeroMemory(keyBytes);
+        }
     }
 
     private static bool TryReadRuntimeConnectionString(

@@ -67,8 +67,8 @@ public static class DevelopmentIdentityRegistration
             options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
             options.Cookie.SameSite = SameSiteMode.Lax;
             options.Cookie.Path = "/";
-            options.SlidingExpiration = false;
-            options.ExpireTimeSpan = TimeSpan.FromHours(8);
+            options.SlidingExpiration = true;
+            options.ExpireTimeSpan = TimeSpan.FromDays(30);
             options.LoginPath = "/account/sign-in";
         });
 
@@ -94,7 +94,7 @@ public static class DevelopmentIdentityRegistration
                 options.RegisterScopes(
                     OpenIddictConstants.Scopes.Email,
                     OpenIddictConstants.Scopes.Profile);
-                options.SetAccessTokenLifetime(TimeSpan.FromMinutes(10));
+                options.SetAccessTokenLifetime(TimeSpan.FromHours(8));
                 options.SetAuthorizationCodeLifetime(TimeSpan.FromMinutes(2));
                 options.AddDevelopmentEncryptionCertificate();
                 options.AddDevelopmentSigningCertificate();

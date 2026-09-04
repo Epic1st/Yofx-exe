@@ -25,6 +25,9 @@ file static class Mql5Ops
     private static readonly System.DateTime Epoch =
         new System.DateTime(1970, 1, 1, 0, 0, 0, System.DateTimeKind.Utc);
 
+    /// <summary>MQL5 comma operator semantics.</summary>
+    public static T2 Comma<T1, T2>(T1 discard, T2 result) => result;
+
     /// <summary>MQL5 conditions accept any scalar; C# accepts only <c>bool</c>.</summary>
     public static bool Truth(bool value) => value;
 

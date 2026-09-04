@@ -159,6 +159,9 @@ public partial interface IMql5Runtime
     /// <summary>MQL5 <c>ResourceCreate</c>. Unsupported: reads a file from the terminal sandbox.</summary>
     bool ResourceCreate(string? resourceName, string? path);
 
+    /// <summary>MQL5 <c>ResourceCreate</c> dynamic pixel buffer.</summary>
+    bool ResourceCreate(string? resourceName, uint[]? data, uint width, uint height, uint dataXOffset, uint dataYOffset, uint dataWidth, uint colorFormat);
+
     /// <summary>MQL5 <c>ResourceReadImage</c>. Unsupported.</summary>
     bool ResourceReadImage(string? resourceName, ref uint[]? data, ref uint width, ref uint height);
 
@@ -313,7 +316,15 @@ public sealed partial class Mql5Runtime
 
     /// <inheritdoc />
     public void Sleep(int milliseconds)
-        => throw Refuse(nameof(Sleep), "a backtest has no clock to sleep against, and dropping the call silently would change the meaning of the retry loop around it");
+    {
+        if (context is IMql5DelayContext delayContext)
+        {
+            delayContext.Delay(milliseconds);
+            return;
+        }
+
+        throw Refuse(nameof(Sleep), "a backtest has no clock to sleep against, and dropping the call silently would change the meaning of the retry loop around it");
+    }
 
     /// <inheritdoc />
     public int MessageBox(string? text, string? caption = null, int flags = 0)
@@ -411,8 +422,20 @@ public sealed partial class Mql5Runtime
         => throw Refuse(nameof(ResourceCreate), "it reads a file from the terminal sandbox");
 
     /// <inheritdoc />
+    public bool ResourceCreate(string? resourceName, uint[]? data, uint width, uint height, uint dataXOffset, uint dataYOffset, uint dataWidth, uint colorFormat)
+        => true;
+
+    /// <inheritdoc />
     public bool ResourceReadImage(string? resourceName, ref uint[]? data, ref uint width, ref uint height)
-        => throw Refuse(nameof(ResourceReadImage), "there is no resource store outside the terminal");
+    {
+        // A missing optional bitmap is an ordinary false result in MQL5. Strategies commonly
+        // use that result to fall back to text-only controls, so treating it as a runtime fault
+        // would let cosmetic terminal UI prevent otherwise valid trading logic from starting.
+        data = [];
+        width = 0;
+        height = 0;
+        return false;
+    }
 
     /// <inheritdoc />
     public bool ResourceFree(string? resourceName)
@@ -464,6 +487,10 @@ public sealed partial class Mql5Runtime
         long now = Mql5Time.FromDateTime(context.TimeCurrent);
         clockBaseline ??= now;
         long elapsed = now - clockBaseline.Value;
-        return elapsed < 0 ? 0 : elapsed * 1000;
+        long marketMilliseconds = elapsed < 0 ? 0 : checked(elapsed * 1000);
+        long virtualDelay = context is IMql5DelayContext delayContext
+            ? delayContext.VirtualDelayMilliseconds
+            : 0;
+        return checked(marketMilliseconds + Math.Max(0, virtualDelay));
     }
 }

@@ -1062,10 +1062,7 @@ internal sealed partial class Mql5GeneratorRun
     private static bool ParameterIsByRef(Mql5IrParameter parameter) =>
         parameter.Type.IsReference
         && !parameter.Type.IsConst
-        && parameter.Type.ArrayRanks.Count == 0
-        // MQL5 structures the runtime provides are CLR classes, so they are already
-        // passed by reference. Adding `ref` would be a compile error, not a nuance.
-        && !Mql5ClrTypes.RuntimeTypeAliases.ContainsKey(parameter.Type.Name);
+        && parameter.Type.ArrayRanks.Count == 0;
 
     private bool TryConstantText(Mql5IrExpression expression, int depth, out string text)
     {

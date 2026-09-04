@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 
 namespace YO4X.Mql5.Runtime;
 
@@ -183,6 +183,7 @@ public sealed partial class Mql5Runtime
         {
             T[] grown = destination;
             Array.Resize(ref grown, required);
+            CarrySeriesFlag(destination, grown);
             destination = grown;
         }
 

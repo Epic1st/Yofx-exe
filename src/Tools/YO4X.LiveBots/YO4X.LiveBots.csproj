@@ -13,7 +13,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Infrastructure\YO4X.LocalSecrets.Windows\YO4X.LocalSecrets.Windows.csproj" />
-    <ProjectReference Include="..\..\Runtime\YO4X.Mql5.Compilation\YO4X.Mql5.Compilation.csproj" />
     <ProjectReference Include="..\..\Runtime\YO4X.Mql5.Live\YO4X.Mql5.Live.csproj" />
   </ItemGroup>
 </Project>

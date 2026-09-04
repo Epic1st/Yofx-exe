@@ -53,7 +53,7 @@ public sealed class AccountController(
         }
 
         await provisioner.ProvisionAsync(user, HttpContext.RequestAborted).ConfigureAwait(false);
-        await signInManager.SignInAsync(user, isPersistent: false).ConfigureAwait(false);
+        await signInManager.SignInAsync(user, isPersistent: true).ConfigureAwait(false);
         return SafeLocalRedirect(returnUrl);
     }
 
@@ -92,7 +92,7 @@ public sealed class AccountController(
         }
 
         await provisioner.ProvisionAsync(user, HttpContext.RequestAborted).ConfigureAwait(false);
-        await signInManager.SignInAsync(user, isPersistent: false).ConfigureAwait(false);
+        await signInManager.SignInAsync(user, isPersistent: true).ConfigureAwait(false);
         return SafeLocalRedirect(returnUrl);
     }
 
@@ -133,7 +133,7 @@ public sealed class AccountController(
             {{errorBlock}}<form method="post" action="{{action}}">
             <input type="hidden" name="{{tokens.FormFieldName}}" value="{{HtmlEncoder.Default.Encode(tokens.RequestToken!)}}">
             <input type="hidden" name="returnUrl" value="{{encodedReturn}}">
-            <label class="field">Email address<input name="email" type="email" autocomplete="username" maxlength="320" placeholder="you@example.com" required></label>
+            <label class="field">Email address<input name="email" type="text" inputmode="email" autocomplete="username" maxlength="320" placeholder="you@example.com" required></label>
             <label class="field">Password<input name="password" type="password" autocomplete="{{(register ? "new-password" : "current-password")}}" minlength="12" maxlength="128" placeholder="Enter your password" required>{{passwordHint}}</label>
             <button class="primary" type="submit">{{HtmlEncoder.Default.Encode(title)}}</button></form><p class="alternate">{{alternate}}</p>
             <p class="local-note">This sign-in service is enabled only for the local development build. Credentials stay inside the local identity boundary.</p>

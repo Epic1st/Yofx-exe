@@ -38,6 +38,8 @@ const bot: BotView = {
   riskLabel: 'Balanced',
   status: 'STOPPED',
   host: 'LOCAL',
+  lastErrorCode: null,
+  lastErrorMessage: null,
   metrics: [],
   createdAt: '2026-08-01T12:00:00Z',
   updatedAt: '2026-08-24T12:00:00Z',
@@ -136,7 +138,29 @@ describe('bot settings panel', () => {
     expect(screen.getByLabelText('Magic number')).toHaveValue(20_260_824);
     // Source group headings, and the identifier where the source carries no comment.
     expect(screen.getByText('Risk management')).toBeInTheDocument();
-    expect(screen.getByLabelText('WorkingTimeframe')).toHaveValue('PERIOD_H1');
+    expect(screen.getByLabelText('Working Timeframe')).toHaveValue('PERIOD_H1');
+  });
+
+  it('turns malformed long source comments into supporting text instead of labels', async () => {
+    const dailyStop = {
+      ordinal: 2,
+      name: 'InpDailyStopEnabled',
+      label: 'true=1122 hard daily stop, false=disable daily DD',
+      groupLabel: 'Daily protection',
+      declaredType: 'bool',
+      valueKind: 'LOGICAL',
+      defaultValue: 'true',
+      enumTypeName: null,
+      enumMembers: [],
+      sourceLine: 77,
+    } as const;
+    renderPanel(createClient({
+      getBotSettings: () => Promise.resolve(settings({ declared: [dailyStop] })),
+    }));
+
+    expect(await screen.findByLabelText('Daily Stop Enabled')).toBeChecked();
+    expect(screen.getByText('true=1122 hard daily stop, false=disable daily DD')).toBeInTheDocument();
+    expect(screen.getByText(/^Default:/u)).toHaveTextContent('Default: true');
   });
 
   it('starts each control at the value the operator already stored for it', async () => {
@@ -279,6 +303,22 @@ describe('bot settings panel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
 
     expect(await screen.findByText(/Enter a whole magic number/u)).toBeInTheDocument();
+    expect(updateBotSettings).not.toHaveBeenCalled();
+  });
+
+  it('refuses to save a volume below the broker minimum', async () => {
+    const updateBotSettings = vi.fn(
+      (_botId: string, _settings: UpdateBotSettings) => Promise.resolve(),
+    );
+    renderPanel(createClient({ updateBotSettings }));
+    await screen.findByText('Euro vs US Dollar');
+
+    fireEvent.change(screen.getByLabelText('Volume (lots)'), {
+      target: { value: '0.005' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+
+    expect(await screen.findByText(/EURUSD trades no smaller than 0\.01 lots/u)).toBeInTheDocument();
     expect(updateBotSettings).not.toHaveBeenCalled();
   });
 });

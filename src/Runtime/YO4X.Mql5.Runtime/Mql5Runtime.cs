@@ -122,6 +122,30 @@ public sealed partial class Mql5Runtime : IMql5Runtime
         seriesFlags.Add(array, new SeriesFlag { Value = value });
     }
 
+    /// <summary>
+    /// Moves the timeseries flag onto an array that has replaced another.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Array.Resize"/> allocates a new object rather than growing the old one,
+    /// and <see cref="seriesFlags"/> is keyed by identity, so a reallocated buffer starts
+    /// with no flag at all. Left alone that is silent: a strategy that called
+    /// <c>ArraySetAsSeries</c> and then copied into the buffer would index it forward from
+    /// the oldest bar instead of backward from the newest, inverting every signal without
+    /// raising anything.
+    /// </remarks>
+    private void CarrySeriesFlag(object? previous, object? replacement)
+    {
+        if (previous is null || replacement is null || ReferenceEquals(previous, replacement))
+        {
+            return;
+        }
+
+        if (IsSeriesArray(previous))
+        {
+            SetSeriesArray(replacement, true);
+        }
+    }
+
     private static Mql5UnsupportedOperationException Refuse(string function, string reason)
         => Mql5UnsupportedOperationException.For(function, reason);
 

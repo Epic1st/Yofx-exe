@@ -81,11 +81,8 @@ internal static class Mql5ClrTypes
             ["_Digits"] = "Digits()",
             ["_Period"] = "Period()",
             ["_LastError"] = "GetLastError()",
-            ["_RandomSeed"] = "RandomSeed",
             ["_StopFlag"] = "IsStopped()",
-            ["_UninitReason"] = "UninitReason",
-            ["_IsX64"] = "IsX64",
-            ["_AppliedTo"] = "AppliedTo",
+            ["_UninitReason"] = "UninitializeReason()",
         }.ToFrozenDictionary(StringComparer.Ordinal);
 
     /// <summary>
@@ -200,6 +197,14 @@ internal static class Mql5ClrTypes
             ["request_id"] = "RequestId",
             ["retcode_external"] = "RetcodeExternal",
 
+            // MqlTradeCheckResult
+            ["balance"] = "Balance",
+            ["equity"] = "Equity",
+            ["profit"] = "Profit",
+            ["margin"] = "Margin",
+            ["margin_free"] = "MarginFree",
+            ["margin_level"] = "MarginLevel",
+
             // MqlRates / MqlTick
             ["time"] = "Time",
             ["open"] = "Open",
@@ -233,6 +238,11 @@ internal static class Mql5ClrTypes
             ["sec"] = "Second",
             ["day_of_week"] = "DayOfWeek",
             ["day_of_year"] = "DayOfYear",
+
+            // MqlParam
+            ["integer_value"] = "IntegerValue",
+            ["double_value"] = "DoubleValue",
+            ["string_value"] = "StringValue",
         }.ToFrozenDictionary(StringComparer.Ordinal);
 
     /// <summary>The CLR member name for an MQL5 field on a runtime-provided type.</summary>
@@ -256,7 +266,6 @@ internal static class Mql5ClrTypes
             ["retcode"] = "uint",
             ["deal"] = "ulong",
             ["request_id"] = "uint",
-            ["retcode_external"] = "uint",
             ["time"] = "long",
             ["time_msc"] = "long",
             ["tick_volume"] = "long",
@@ -302,7 +311,7 @@ internal static class Mql5ClrTypes
             "FLT_MAX_10_EXP", "FLT_MAX_EXP", "FLT_MIN_10_EXP", "FLT_MIN_EXP",
             "M_E", "M_LOG2E", "M_LOG10E", "M_LN2", "M_LN10", "M_PI", "M_PI_2", "M_PI_4",
             "M_1_PI", "M_2_PI", "M_2_SQRTPI", "M_SQRT2", "M_SQRT1_2",
-            "INVALID_HANDLE", "NULL"
+            "NULL"
         }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
@@ -1005,7 +1014,7 @@ internal static class Mql5ClrTypes
             ["PositionSelectByTicket"] = "1:ulong",
             ["Pow"] = "2:double|double",
             ["PrintFormat"] = "2:string|.",
-            ["ResourceCreate"] = "2:string|string",
+            ["ResourceCreate"] = "2:string|string;8:string|.|uint|uint|uint|uint|uint|uint",
             ["ResourceFree"] = "1:string",
             ["ResourceReadImage"] = "4:string|.|.|.",
             ["ResourceSave"] = "2:string|string",

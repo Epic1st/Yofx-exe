@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Text;
 
@@ -153,7 +154,7 @@ public static class Mql5Lexer
             "matrix", "matrixf", "matrixc", "vector", "vectorf", "vectorc", "complex",
 
             // User type declarations.
-            "enum", "struct", "class", "interface", "union", "template", "typename",
+            "enum", "struct", "class", "interface", "union", "template", "typename", "typedef",
 
             // Access and storage.
             "public", "protected", "private", "virtual", "override", "final",
@@ -173,6 +174,31 @@ public static class Mql5Lexer
             "import", "export"
         ],
         StringComparer.Ordinal);
+
+    private static readonly FrozenDictionary<string, string> NamedColours = BuildNamedColours();
+
+    private static FrozenDictionary<string, string> BuildNamedColours()
+    {
+        var dictionary = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Mql5BuiltinConstant constant in Mql5BuiltinConstants.All)
+        {
+            if (constant.Name.StartsWith("clr", StringComparison.Ordinal)
+                && constant.Name.Length > 3
+                && constant.Value is long value
+                && value >= 0
+                && value <= 0xFFFFFF)
+            {
+                int r = (int)(value & 0xFF);
+                int g = (int)((value >> 8) & 0xFF);
+                int b = (int)((value >> 16) & 0xFF);
+                string normalised = string.Create(CultureInfo.InvariantCulture, $"{r},{g},{b}");
+                dictionary[constant.Name] = normalised;
+                dictionary[constant.Name[3..]] = normalised;
+            }
+        }
+
+        return dictionary.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Tokenizes an MQL5 translation unit. The returned token list always ends with an
@@ -261,9 +287,9 @@ public static class Mql5Lexer
                     continue;
                 }
 
-                if (current is 'C' or 'D' && Peek(1) == '\'')
+                if (current is 'C' or 'c' or 'D' or 'd' && Peek(1) == '\'')
                 {
-                    ReadPrefixedLiteral(current);
+                    ReadPrefixedLiteral(char.ToUpperInvariant(current));
                     continue;
                 }
 
@@ -656,6 +682,11 @@ public static class Mql5Lexer
                 return char.IsAsciiDigit(Peek(2)) || (Peek(2) is '+' or '-' && char.IsAsciiDigit(Peek(3)));
             }
 
+            if (next is 'f' or 'F')
+            {
+                return !IsIdentifierPart(Peek(2));
+            }
+
             return !IsIdentifierStart(next) && next != '.';
         }
 
@@ -699,6 +730,11 @@ public static class Mql5Lexer
                     Advance();
                     closed = true;
                     break;
+                }
+
+                if (current == '\\' && TrySkipLineSplice())
+                {
+                    continue;
                 }
 
                 if (current == '\\')
@@ -943,10 +979,16 @@ public static class Mql5Lexer
 
         // ------------------------------------------------------------ normalising
 
-        /// <summary>Normalises <c>255,128,0</c> or <c>0xFF,0x80,0x00</c> to decimal <c>r,g,b</c>.</summary>
+        /// <summary>Normalises <c>255,128,0</c>, <c>0xFF,0x80,0x00</c> or a named colour to decimal <c>r,g,b</c>.</summary>
         private static string? NormaliseColour(string content)
         {
-            string[] parts = content.Split(ComponentSeparators);
+            string trimmed = content.Trim();
+            if (NamedColours.TryGetValue(trimmed, out string? named))
+            {
+                return named;
+            }
+
+            string[] parts = trimmed.Split(ComponentSeparators);
             if (parts.Length != 3)
             {
                 return null;

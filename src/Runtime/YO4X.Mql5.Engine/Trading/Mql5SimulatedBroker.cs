@@ -48,7 +48,9 @@ public sealed class Mql5SimulatedBroker
         spec = options.Symbol;
         balance = Round2(options.InitialDeposit);
         spreadPoints = options.SpreadPoints;
-        bid = 0.0;
+        bid = options.InitialBid > 0.0
+            ? spec.NormalizePrice(options.InitialBid)
+            : 0.0;
         time = DateTime.UnixEpoch;
     }
 
@@ -150,6 +152,12 @@ public sealed class Mql5SimulatedBroker
     /// </summary>
     public void ApplyBar(in Mql5Bar bar)
     {
+        if (time != DateTime.UnixEpoch && bar.Time.Date > time.Date)
+        {
+            int days = (bar.Time.Date - time.Date).Days;
+            AccrueSwap(days);
+        }
+
         time = bar.Time;
         spreadPoints = bar.Spread > 0 ? bar.Spread : options.SpreadPoints;
 
@@ -160,9 +168,6 @@ public sealed class Mql5SimulatedBroker
         MoveTo(second, gapAllowed: false);
         MoveTo(third, gapAllowed: false);
         MoveTo(bar.Close, gapAllowed: false);
-
-        Revalue();
-        EnforceStopOut();
     }
 
     /// <summary>
@@ -234,7 +239,9 @@ public sealed class Mql5SimulatedBroker
     {
         foreach (Mql5Position position in positions.ToArray())
         {
-            double price = position.Type == Mql5PositionType.Buy ? Bid : Ask;
+            double price = position.Type == Mql5PositionType.Buy
+                ? MarketFillPrice(Mql5PositionType.Sell)
+                : MarketFillPrice(Mql5PositionType.Buy);
             ClosePortion(position, position.Volume, price, reason);
         }
 
@@ -282,6 +289,24 @@ public sealed class Mql5SimulatedBroker
         ProcessPositionStops(gapAllowed);
         ProcessPendingActivations(gapAllowed);
         Revalue();
+        EnforceStopOut();
+    }
+
+    private void AccrueSwap(int days)
+    {
+        if (days <= 0)
+        {
+            return;
+        }
+
+        foreach (Mql5Position position in positions)
+        {
+            double rate = position.Type == Mql5PositionType.Buy ? spec.SwapLong : spec.SwapShort;
+            if (rate != 0.0)
+            {
+                position.Swap = Round2(position.Swap + (rate * position.Volume * days));
+            }
+        }
     }
 
     private void Revalue()
@@ -379,8 +404,29 @@ public sealed class Mql5SimulatedBroker
                 continue;
             }
 
-            pendingOrders.Remove(order);
             Mql5PositionType side = order.IsBuySide ? Mql5PositionType.Buy : Mql5PositionType.Sell;
+            double fillPrice = spec.NormalizePrice(fill);
+
+            if (!HasMarginFor(side, order.Volume, fillPrice))
+            {
+                pendingOrders.Remove(order);
+                Record(new Mql5OrderEvent
+                {
+                    Time = time,
+                    Kind = Mql5OrderEventKind.Rejected,
+                    Ticket = order.Ticket,
+                    Symbol = order.Symbol,
+                    Type = order.Type,
+                    Volume = order.Volume,
+                    Price = fillPrice,
+                    Balance = balance,
+                    Retcode = Mql5TradeRetcode.NoMoney,
+                    Detail = "not enough free margin",
+                });
+                continue;
+            }
+
+            pendingOrders.Remove(order);
 
             Record(new Mql5OrderEvent
             {
@@ -390,7 +436,7 @@ public sealed class Mql5SimulatedBroker
                 Symbol = order.Symbol,
                 Type = order.Type,
                 Volume = order.Volume,
-                Price = spec.NormalizePrice(fill),
+                Price = fillPrice,
                 Balance = balance,
                 Retcode = Mql5TradeRetcode.Done,
                 Detail = "pending order touched",
@@ -399,12 +445,14 @@ public sealed class Mql5SimulatedBroker
             OpenExposure(
                 side,
                 order.Volume,
-                spec.NormalizePrice(fill),
+                fillPrice,
                 order.StopLoss,
                 order.TakeProfit,
                 order.Magic,
                 order.Comment,
                 result: null);
+
+            ProcessPositionStops(gapAllowed);
         }
     }
 
@@ -429,24 +477,29 @@ public sealed class Mql5SimulatedBroker
             }
 
             StopOutTriggered = true;
+            double marginLevelBefore = MarginLevel;
+            long ticket = worst.Ticket;
+            string symbol = worst.Symbol;
+            double volume = worst.Volume;
+            double price = worst.Type == Mql5PositionType.Buy ? Bid : Ask;
+
+            ClosePortion(worst, volume, price, Mql5CloseReason.StopOut);
+            Revalue();
+
             Record(new Mql5OrderEvent
             {
                 Time = time,
                 Kind = Mql5OrderEventKind.StopOut,
-                Ticket = worst.Ticket,
-                Symbol = worst.Symbol,
-                Volume = worst.Volume,
-                Price = worst.PriceCurrent,
+                Ticket = ticket,
+                Symbol = symbol,
+                Volume = volume,
+                Price = price,
                 Balance = balance,
                 Retcode = Mql5TradeRetcode.Done,
                 Detail = string.Create(
                     CultureInfo.InvariantCulture,
-                    $"margin level {MarginLevel} fell below stop out {options.StopOutLevelPercent}"),
+                    $"margin level {marginLevelBefore} fell below stop out {options.StopOutLevelPercent}"),
             });
-
-            double price = worst.Type == Mql5PositionType.Buy ? Bid : Ask;
-            ClosePortion(worst, worst.Volume, price, Mql5CloseReason.StopOut);
-            Revalue();
         }
     }
 
@@ -469,8 +522,9 @@ public sealed class Mql5SimulatedBroker
 
         Mql5PositionType side = req.Type == Mql5OrderType.Buy ? Mql5PositionType.Buy : Mql5PositionType.Sell;
         double fill = MarketFillPrice(side);
+        double reference = side == Mql5PositionType.Buy ? Bid : Ask;
 
-        if (!ValidateStops(side, fill, req.Sl, req.Tp, out string stopsError))
+        if (!ValidateStops(side, reference, req.Sl, req.Tp, out string stopsError))
         {
             return Fail(result, Mql5TradeRetcode.InvalidStops, stopsError, req);
         }
@@ -660,10 +714,30 @@ public sealed class Mql5SimulatedBroker
             return Fail(result, Mql5TradeRetcode.Invalid, "pending order not found", req);
         }
 
-        double price = req.Price > 0.0 ? spec.NormalizePrice(req.Price) : order.Price;
-        if (!ValidatePendingPrice(order.Type, price, out string priceError))
+        double price = order.Price;
+        if (req.Price > 0.0)
         {
-            return Fail(result, Mql5TradeRetcode.InvalidPrice, priceError, req);
+            if (double.IsNaN(req.Price) || double.IsInfinity(req.Price))
+            {
+                return Fail(result, Mql5TradeRetcode.InvalidPrice, "pending price is not a number", req);
+            }
+
+            double requestedPrice = spec.NormalizePrice(req.Price);
+            if (Math.Abs(requestedPrice - order.Price) > spec.Point / 2.0)
+            {
+                if (!ValidatePendingPrice(order.Type, requestedPrice, out string priceError))
+                {
+                    return Fail(result, Mql5TradeRetcode.InvalidPrice, priceError, req);
+                }
+
+                price = requestedPrice;
+            }
+        }
+
+        Mql5PositionType side = order.IsBuySide ? Mql5PositionType.Buy : Mql5PositionType.Sell;
+        if (!ValidateStops(side, price, req.Sl, req.Tp, out string stopsError))
+        {
+            return Fail(result, Mql5TradeRetcode.InvalidStops, stopsError, req);
         }
 
         order.Price = price;
@@ -838,10 +912,10 @@ public sealed class Mql5SimulatedBroker
 
         bool ok = type switch
         {
-            Mql5OrderType.BuyLimit => ask - price >= minimum && ask - price > tolerance,
-            Mql5OrderType.BuyStop => price - ask >= minimum && price - ask > tolerance,
-            Mql5OrderType.SellLimit => price - quote >= minimum && price - quote > tolerance,
-            Mql5OrderType.SellStop => quote - price >= minimum && quote - price > tolerance,
+            Mql5OrderType.BuyLimit => ask - price >= minimum - tolerance,
+            Mql5OrderType.BuyStop => price - ask >= minimum - tolerance,
+            Mql5OrderType.SellLimit => price - quote >= minimum - tolerance,
+            Mql5OrderType.SellStop => quote - price >= minimum - tolerance,
             _ => false,
         };
 
@@ -898,8 +972,16 @@ public sealed class Mql5SimulatedBroker
                         ((existing.PriceOpen * existing.Volume) + (price * volume)) / merged);
                     existing.Volume = spec.NormalizeVolume(merged);
                     existing.Commission += commission;
-                    existing.StopLoss = normalizedSl;
-                    existing.TakeProfit = normalizedTp;
+                    if (normalizedSl > 0.0)
+                    {
+                        existing.StopLoss = normalizedSl;
+                    }
+
+                    if (normalizedTp > 0.0)
+                    {
+                        existing.TakeProfit = normalizedTp;
+                    }
+
                     existing.Margin = Round2(spec.MarginOf(existing.Volume, existing.PriceOpen, options.Leverage));
                     Revalue();
 
@@ -920,12 +1002,6 @@ public sealed class Mql5SimulatedBroker
                 if (remainder <= VolumeEpsilon)
                 {
                     Mql5Position? survivor = FindPositionBySymbol(spec.Name);
-                    if (survivor is not null)
-                    {
-                        survivor.StopLoss = normalizedSl;
-                        survivor.TakeProfit = normalizedTp;
-                    }
-
                     return survivor?.Ticket ?? 0;
                 }
 

@@ -61,7 +61,7 @@ public sealed class Mql5RelativeVigorIndexIndicator : Mql5IndicatorBase
 
         double numerator = numerators.Sum;
         double denominator = denominators.Sum;
-        double main = denominator == 0.0 ? numerator : numerator / denominator;
+        double main = Math.Abs(denominator) < 1e-12 ? 0.0 : numerator / denominator;
 
         mains.Add(main);
         mainCount++;

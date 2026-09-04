@@ -250,13 +250,15 @@ export function DetailPage({
           All strategies
         </button>
 
-        {value === null ? (
+        {detail.state.status === 'loading' ? (
           <>
             <SkeletonBlock className="detail-skeleton--thumb" />
             <SkeletonBlock className="detail-skeleton--price" />
             <SkeletonBlock className="detail-skeleton--facts" />
           </>
-        ) : (
+        ) : null}
+
+        {value === null ? null : (
           <>
             <div className="detail-thumb thumb">
               <span className="thumb__label">{value.item.symbol}</span>
