@@ -807,7 +807,13 @@ public sealed class ControlPlaneBoundaryTests
         // The plaintext is scoped and erased, is refused off-device, and is
         // handed to the vault rather than to the application layer.
         Assert.Contains("using Utf8Secret password = request.Password;", endpoint, StringComparison.Ordinal);
-        Assert.Contains("IPAddress.IsLoopback(context.Connection.RemoteIpAddress)", endpoint, StringComparison.Ordinal);
+        // Still loopback-only, but a dual-stack socket surfaces a local caller as
+        // ::ffff:127.0.0.1, which IPAddress.IsLoopback answers false for. The mapped
+        // form is folded down to IPv4 first so an on-device caller is not refused.
+        Assert.Contains(
+            "!IPAddress.IsLoopback(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip)",
+            endpoint,
+            StringComparison.Ordinal);
         Assert.Contains("credentialVault.StoreAsync(", endpoint, StringComparison.Ordinal);
         Assert.Contains("BrokerAccountLinkValidation.ToApplicationRequest(", endpoint, StringComparison.Ordinal);
 

@@ -76,6 +76,8 @@ public sealed class FrontendProjectionBoundaryTests : IAsyncLifetime
         IFrontendProjectionApplication application = CreateApplication();
         _projections = (FrontendProjectionProxy)application;
         builder.Services.AddSingleton(application);
+        builder.Services.AddSingleton<IBotExecutionCoordinator>(
+            new ProjectionBotExecutionCoordinator(application));
 
         _application = builder.Build();
         _application.UseYo4xApiFoundation();
@@ -93,6 +95,17 @@ public sealed class FrontendProjectionBoundaryTests : IAsyncLifetime
     {
         _client.Dispose();
         await _application.DisposeAsync();
+    }
+
+    private sealed class ProjectionBotExecutionCoordinator(
+        IFrontendProjectionApplication application) : IBotExecutionCoordinator
+    {
+        public Task<BotView?> ChangeStatusAsync(
+            UserActor actor,
+            Guid botId,
+            BotStatusChange request,
+            CancellationToken cancellationToken) =>
+            application.SetBotStatusAsync(actor, botId, request, cancellationToken);
     }
 
     [Fact]
@@ -451,6 +464,8 @@ public sealed class FrontendProjectionBoundaryTests : IAsyncLifetime
             "Balanced",
             BotStatus.Running,
             BotHost.Local,
+            null,
+            null,
             [],
             Instant,
             Instant);

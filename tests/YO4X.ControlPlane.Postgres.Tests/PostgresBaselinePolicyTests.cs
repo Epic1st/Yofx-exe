@@ -15,7 +15,7 @@ public sealed class PostgresBaselinePolicyTests
         "748cd68f378c81ebed6ef6f98673e4b6314ee23494ed50a56c35070bd17ed5d4";
 
     private const string ExpectedLocalIdentityProvisioningSha256 =
-        "8803f1b2e6a269cea043962387319b60491e234ba1e0479143a69b3a0f43658c";
+        "0e5db247b6e4e54dbf806307bb134d9429c3e1deeb1e831e93294dee0b17767c";
 
     private const string ExpectedFrontendProjectionsSha256 =
         "8811cd182063f9e1b99565918d50e13d459b63a116f45d1b358d8eb9d310a787";

@@ -186,6 +186,35 @@ public sealed class Mql5ArrayTests
         Assert.Equal(Mql5ErrorCodes.InvalidArray, runtime.GetLastError());
     }
 
+    // The flag is held against the array object, and growing an array allocates a new one.
+    // A destination that loses its flag mid-copy is read forward from the oldest bar
+    // instead of backward from the newest, which inverts every signal built on it and
+    // reports nothing, so both growth paths are pinned here.
+    [Fact]
+    public void ArraySeriesFlagSurvivesAGrowingCopy()
+    {
+        Mql5Runtime runtime = Build();
+        double[]? destination = new double[1];
+        Assert.True(runtime.ArraySetAsSeries(destination, true));
+
+        double[] source = [1, 2, 3, 4];
+        Assert.Equal(4, runtime.ArrayCopy(ref destination, source, 0, 0, 4));
+
+        Assert.Equal(4, runtime.ArraySize(destination));
+        Assert.True(runtime.ArrayGetAsSeries(destination));
+    }
+
+    [Fact]
+    public void ArraySeriesFlagSurvivesAResize()
+    {
+        Mql5Runtime runtime = Build();
+        double[]? buffer = [1, 2];
+        Assert.True(runtime.ArraySetAsSeries(buffer, true));
+
+        Assert.Equal(64, runtime.ArrayResize(ref buffer, 64));
+        Assert.True(runtime.ArrayGetAsSeries(buffer));
+    }
+
     [Fact]
     public void ArrayRangeReportsTheLengthForRankZeroOnly()
     {

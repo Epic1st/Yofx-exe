@@ -277,6 +277,31 @@ public sealed class FrontendProjectionSourceContractTests
     }
 
     [Fact]
+    public void CatalogPrefersNewestV2Yo4xPackageWithoutStrategySpecificRules()
+    {
+        string source = ReadAdapterSource();
+
+        Assert.True(CountOccurrences(source, "package_format_version >= 2") >= 5);
+        Assert.True(CountOccurrences(source, "lower(btrim(strategy.name)) like '%.yo4x'") >= 5);
+        Assert.True(CountOccurrences(source, "from catalog.strategies as newer_package") >= 5);
+        Assert.True(CountOccurrences(source, "(newer_package.updated_at, newer_package.id)") >= 5);
+        Assert.DoesNotContain("lower(strategy.name) not like 'straddle%'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("lower(strategy.name) = 'straddle_1.1.36.yo4x'", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BotProjectionPrefersPackagedStrategiesAndSuppressesTheirSourceTwin()
+    {
+        string source = ReadAdapterSource();
+
+        Assert.Contains("when strategy.package_format_version = 2", source, StringComparison.Ordinal);
+        Assert.Contains("then strategy.name", source, StringComparison.Ordinal);
+        Assert.Contains("from bots.bots as packaged_bot", source, StringComparison.Ordinal);
+        Assert.Contains("packaged_strategy.package_format_version = 2", source, StringComparison.Ordinal);
+        Assert.Contains("regexp_replace(lower(bot.name), '\\.(mq5|yo4x)$', '')", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ProjectionRequestBoundsAreClampedByTheAdapterNotTheCaller()
     {
         string source = ReadAdapterSource();

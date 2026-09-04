@@ -59,8 +59,12 @@ const performanceRows = [];
 for (const file of manifest.files) {
   const id = stableId(file.relativePath);
   const slug = uniqueSlug(file.relativePath, id);
-  const name = file.relativePath.replace(/^.*[/\\]/u, '').slice(0, 200);
-  const category = file.kind === 'expertOrProgram' ? 'Expert or program' : 'Include header';
+  const sourceName = file.relativePath.replace(/^.*[/\\]/u, '').slice(0, 200);
+  const isCurrentStraddle = sourceName.toLowerCase() === 'straddle_1.1.36.mq5';
+  const name = isCurrentStraddle ? 'Straddle_1.1.36.yo4x' : sourceName;
+  const category = isCurrentStraddle
+    ? 'Grid'
+    : file.kind === 'expertOrProgram' ? 'Expert or program' : 'Include header';
   const label = dispositionLabel[file.disposition] ?? file.disposition;
   const featureCount = Array.isArray(file.features) ? file.features.length : 0;
   const includeCount = Array.isArray(file.includes) ? file.includes.length : 0;
@@ -69,20 +73,30 @@ for (const file of manifest.files) {
     ? file.features.filter((feature) => feature.support === 'supportedSubsetCandidate').length
     : 0;
 
-  const description =
-    `Imported MQL5 source from the verified corpus. Static analysis classified this file as ` +
-    `${label}. It declares ${entrypointCount} entrypoint(s), references ${includeCount} include(s), ` +
-    `and matched ${featureCount} analysed language feature(s) of which ${supported} fall inside the ` +
-    `supported subset. Encoding ${file.textEncoding}, ${file.byteLength} bytes, SHA-256 ${file.sha256}. ` +
-    `No semantic conversion, compilation, reference-parity or runtime proof exists for this file: it is ` +
-    `not executable and cannot place an order.`;
+  const description = isCurrentStraddle
+    ? 'Straddle 1.1.36 packaged in the authenticated YO4X v2 container. The CLR assembly is decrypted only in memory after its signed licence and broker binding are validated.'
+    : `Imported MQL5 source from the verified corpus. Static analysis classified this file as ` +
+      `${label}. It declares ${entrypointCount} entrypoint(s), references ${includeCount} include(s), ` +
+      `and matched ${featureCount} analysed language feature(s) of which ${supported} fall inside the ` +
+      `supported subset. Encoding ${file.textEncoding}, ${file.byteLength} bytes, SHA-256 ${file.sha256}. ` +
+      `No semantic conversion, compilation, reference-parity or runtime proof exists for this file: it is ` +
+      `not executable and cannot place an order.`;
 
-  const summary = `${label} · ${featureCount} features · ${entrypointCount} entrypoints`;
+  const summary = isCurrentStraddle
+    ? 'Licensed v2 .yo4x package - runs locally'
+    : `${label} · ${featureCount} features · ${entrypointCount} entrypoints`;
 
   strategyRows.push(
     `(${quote(id)}::uuid, ${quote(tenantId)}::uuid, ${quote(slug)}, ${quote(name)}, ` +
-    `'Unattributed source', 'MQ', ${quote(category)}, 'Unspecified', 'Unspecified', 'Unversioned', ` +
-    `${quote(description)}, ${quote(summary)}, 0, 0, 0, true, 0, 0, 'USD')`,
+    `'Unattributed source', 'MQ', ${quote(category)}, ${quote(isCurrentStraddle ? 'XAUUSD' : 'Unspecified')}, ` +
+    `${quote(isCurrentStraddle ? 'M1' : 'Unspecified')}, ${quote(isCurrentStraddle ? '1.0.0' : 'Unversioned')}, ` +
+    `${quote(description)}, ${quote(summary)}, 0, 0, 0, true, 0, 0, 'USD', ` +
+    `${isCurrentStraddle}, ${isCurrentStraddle ? '2' : 'null'}, ` +
+    `${isCurrentStraddle ? quote('d708b075f378979f242991003099f3101fa019cf1dad0ea34d17c0c40ed3b11f') : 'null'}, ` +
+    `${isCurrentStraddle ? '357829' : 'null'}, ${isCurrentStraddle ? quote('Lifetime') : 'null'}, ` +
+    `${isCurrentStraddle ? quote('2af1d0ae5dbd6527') : 'null'}, ` +
+    `${isCurrentStraddle ? quote('YO4X.Generated.Strategies.SStraddle1136') : 'null'}, ` +
+    `${isCurrentStraddle ? quote('43d3675d3c1c807a0821bd1cccb231c41a13deda48fc1963f75d70a361899c6c') : 'null'})`,
   );
 
   const figures = [
@@ -108,15 +122,27 @@ insert into catalog.strategies
     (id, tenant_id, slug, name, author_name, author_initials, category,
      symbol, timeframe, version, description, summary,
      rating_average, rating_count, active_users,
-     is_free, cloud_price_monthly_cents, cloud_price_yearly_cents, currency)
+     is_free, cloud_price_monthly_cents, cloud_price_yearly_cents, currency,
+     is_drm_protected, package_format_version, package_sha256,
+     package_size_bytes, drm_license_type, package_strategy_id,
+     package_entry_type, assembly_sha256)
 values
 ${strategyRows.join(',\n')}
 on conflict (id) do update
 set slug = excluded.slug,
     name = excluded.name,
+    version = excluded.version,
     category = excluded.category,
     description = excluded.description,
     summary = excluded.summary,
+    is_drm_protected = excluded.is_drm_protected,
+    package_format_version = excluded.package_format_version,
+    package_sha256 = excluded.package_sha256,
+    package_size_bytes = excluded.package_size_bytes,
+    drm_license_type = excluded.drm_license_type,
+    package_strategy_id = excluded.package_strategy_id,
+    package_entry_type = excluded.package_entry_type,
+    assembly_sha256 = excluded.assembly_sha256,
     updated_at = pg_catalog.clock_timestamp();
 
 delete from catalog.strategy_performance

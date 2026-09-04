@@ -36,7 +36,7 @@ public sealed class LocalDevelopmentIdentityProvisioningPostgresTests(
             select tenant.slug, identity.normalized_email, identity.security_state,
                    identity.email_verified_at is not null, session.state,
                    session.expires_at > statement_timestamp(),
-                   session.expires_at <= statement_timestamp() + interval '31 minutes',
+                   session.expires_at <= statement_timestamp() + interval '8 hours 1 minute',
                    length(session.current_token_hash)
             from identity.tenants as tenant
             join identity.user_identities as identity on identity.tenant_id = tenant.id

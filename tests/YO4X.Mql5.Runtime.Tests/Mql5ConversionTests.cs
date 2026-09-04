@@ -195,12 +195,15 @@ public sealed class Mql5ConversionTests
     }
 
     [Fact]
-    public void StructToTimeAnswersZeroForAnImpossibleDate()
+    public void StructToTimeAnswersWrongValueForAnImpossibleDate()
     {
         Mql5Runtime runtime = Build();
         Mql5DateTime broken = new() { Year = 2024, Month = 13, Day = 40 };
 
-        Assert.Equal(0, runtime.StructToTime(broken));
+        // MQL5 answers WRONG_VALUE (-1) for a structure it cannot convert. Zero cannot carry
+        // that meaning here because it is itself a legal datetime - the epoch - so a caller
+        // could not tell a failed conversion from a genuine 1970-01-01.
+        Assert.Equal(-1, runtime.StructToTime(broken));
     }
 
     [Fact]

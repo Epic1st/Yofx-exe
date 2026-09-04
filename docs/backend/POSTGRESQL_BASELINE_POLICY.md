@@ -13,7 +13,7 @@ digests are:
 - `001_foundation.sql`: `1de1cad6257edbd1a2c9eacd969171222b950d38b8cfa2f09ea5525506279db6`
 - `002_user_operation_invocation_protocol.sql`: `827598ac1aa9924ca1cfe9df383599d608148a44ac4cc6989a78af38ca35a934`
 - `003_pending_demo_broker_account_registration.sql`: `748cd68f378c81ebed6ef6f98673e4b6314ee23494ed50a56c35070bd17ed5d4`
-- `004_local_development_identity_provisioning.sql`: `8803f1b2e6a269cea043962387319b60491e234ba1e0479143a69b3a0f43658c`
+- `004_local_development_identity_provisioning.sql`: `0e5db247b6e4e54dbf806307bb134d9429c3e1deeb1e831e93294dee0b17767c`
 - `005_frontend_projections.sql`: `8811cd182063f9e1b99565918d50e13d459b63a116f45d1b358d8eb9d310a787`
 - `006_strategy_inputs_and_backtests.sql`: `ec5efbabb8747f3fe510b2653912a01ccee7cbde0755926fbbb2e3bbe848bc10`
 - `007_broker_server_catalogue.sql`: `15f5903cf97c1fd4d6eff2180e4afd0631377a5f13e750dd2b01ace960f31e6a`

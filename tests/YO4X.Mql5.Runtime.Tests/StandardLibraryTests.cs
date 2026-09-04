@@ -401,6 +401,7 @@ public sealed class StandardLibraryTests
     public void ResultRetcodeExternalStartsAtZeroBecauseNoGatewayAnswered()
     {
         StandardLibraryContext context = new();
+        context.SymbolDoubles[4] = 1.2345; // SYMBOL_ASK - Buy refuses to send without a quote
         Mql5Trade trade = new(new Mql5Runtime(context));
 
         Assert.True(trade.Buy(0.1));

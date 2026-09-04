@@ -28,7 +28,7 @@ $roleScript = Join-Path $workspaceRoot "src\BuildingBlocks\YO4X.Persistence.Post
 $identityProject = Join-Path $workspaceRoot "src\Apps\YO4X.DevelopmentIdentity\YO4X.DevelopmentIdentity.csproj"
 $identityDll = Join-Path $workspaceRoot "src\Apps\YO4X.DevelopmentIdentity\bin\Release\net10.0\YO4X.DevelopmentIdentity.dll"
 $apiProject = Join-Path $workspaceRoot "src\Apps\YO4X.ControlPlane.Api\YO4X.ControlPlane.Api.csproj"
-$apiDll = Join-Path $workspaceRoot "src\Apps\YO4X.ControlPlane.Api\bin\Release\net10.0\YO4X.ControlPlane.Api.dll"
+$apiDll = Join-Path $workspaceRoot "src\Apps\YO4X.ControlPlane.Api\bin\Release\net10.0-windows10.0.19041.0\YO4X.ControlPlane.Api.dll"
 $mt5CanaryProject = Join-Path $workspaceRoot "src\Tools\YO4X.Mt5.DemoCanary\YO4X.Mt5.DemoCanary.csproj"
 $mt5CanaryExe = Join-Path $workspaceRoot "src\Tools\YO4X.Mt5.DemoCanary\bin\Release\net10.0-windows10.0.19041.0\YO4X.Mt5.DemoCanary.exe"
 $mt5WorkerProject = Join-Path $workspaceRoot "src\Runtime\YO4X.Mt5.ConnectionProbe.WorkerHost.Windows\YO4X.Mt5.ConnectionProbe.WorkerHost.Windows.csproj"
@@ -350,7 +350,7 @@ if (-not (Test-Path -LiteralPath $identityDll) -or
     (-not $NoDesktop -and -not (Test-Path -LiteralPath $desktopExe))) {
     throw "One or more release launch artifacts are missing. Run without -SkipBuild."
 }
-foreach ($port in @(7210, 7209, 4173)) {
+foreach ($port in @(7210, 7209, 5173)) {
     if (-not (Test-PortAvailable $port)) { throw "Required loopback port $port is already in use." }
 }
 
@@ -423,6 +423,11 @@ $apiEnvironment = @{
     'U0__ApprovedBrokerServer' = 'MetaQuotes-Demo'
     'U0__ApprovedBrokerProfileId' = '019c8d27-763d-7000-8000-000000000002'
     'RuntimePostgres__ApprovedRuntimeImageDigest' = ('sha256:' + ('0' * 64))
+    'MarketplacePublication__SharedSecretFile' = 'C:\Users\Dev23\Desktop\admin\data\marketplace-publication.secret'
+    'MarketplacePublication__PackageKeyDocumentFile' = 'C:\Users\Dev23\Desktop\admin\data\package-keys.json'
+    'MarketplacePublication__ArtifactRoot' = (Join-Path $developmentRoot 'strategy-packages')
+    'MarketplacePublication__TenantId' = '019c8d27-763d-7000-8000-000000000001'
+    'MarketplacePublication__ActorId' = '019c8d27-763d-7000-8000-000000000002'
     'DevelopmentMt5ConnectionProbe__Enabled' = 'true'
     'DevelopmentMt5ConnectionProbe__CanaryPath' = $mt5CanaryExe
     'DevelopmentMt5ConnectionProbe__CanarySha256' = $mt5CanarySha256
@@ -458,17 +463,17 @@ Wait-Endpoint 'https://127.0.0.1:7209/health/live' $apiProcess
 
 $frontendEnvironment = @{
     'VITE_YO4X_DEVELOPMENT_IDENTITY_ENABLED' = 'true'
-    'VITE_YO4X_CONTROL_API_ORIGIN' = 'http://127.0.0.1:4173'
+    'VITE_YO4X_CONTROL_API_ORIGIN' = 'http://127.0.0.1:5173'
 }
-$frontendProcess = Start-LoggedProcess 'frontend' $node @($vite, '--host', '127.0.0.1', '--port', '4173', '--strictPort') $frontendEnvironment $frontendRoot
+$frontendProcess = Start-LoggedProcess 'frontend' $node @($vite, '--host', '127.0.0.1', '--port', '5173', '--strictPort') $frontendEnvironment $frontendRoot
 $processRecords += [pscustomobject]@{ name='frontend'; pid=$frontendProcess.Id; executable=$node; startTimeUtc=$frontendProcess.StartTime.ToUniversalTime().ToString('O') }
 Save-DevelopmentState $processRecords
-Wait-Endpoint 'http://127.0.0.1:4173/' $frontendProcess
+Wait-Endpoint 'http://127.0.0.1:5173/' $frontendProcess
 
 $desktopProcess = $null
 if (-not $NoDesktop) {
     $desktopProcess = Start-Process -FilePath $desktopExe -WorkingDirectory (Split-Path $desktopExe -Parent) `
-        -ArgumentList @('--app-url', 'http://127.0.0.1:4173/', '--identity-url',
+        -ArgumentList @('--app-url', 'http://127.0.0.1:5173/', '--identity-url',
         'https://127.0.0.1:7210/', '--development-identity-certificate-sha256',
         $identityCertificateSha256) -PassThru
 }
@@ -477,6 +482,6 @@ if ($null -ne $desktopProcess) {
 }
 Save-DevelopmentState $processRecords
 
-Write-Host "YO4X is live at http://127.0.0.1:4173/."
+Write-Host "YO4X is live at http://127.0.0.1:5173/."
 if (-not $NoDesktop) { Write-Host "The release YO4X.exe desktop UI has been launched." }
 Write-Host "Use scripts\Stop-YO4XDevelopment.ps1 to stop this workspace stack."

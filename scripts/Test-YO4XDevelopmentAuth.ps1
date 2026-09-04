@@ -27,7 +27,7 @@ finally { $sha.Dispose() }
 $state = [guid]::NewGuid().ToString("N")
 $nonce = [guid]::NewGuid().ToString("N")
 $returnUrl = "/connect/authorize?client_id=yo4x-web-development" `
-    + "&redirect_uri=" + [Uri]::EscapeDataString("http://127.0.0.1:4173/auth/callback") `
+    + "&redirect_uri=" + [Uri]::EscapeDataString("http://127.0.0.1:5173/auth/callback") `
     + "&response_type=code&scope=" + [Uri]::EscapeDataString("openid email profile") `
     + "&code_challenge=$challenge&code_challenge_method=S256&state=$state&nonce=$nonce"
 
@@ -76,7 +76,7 @@ try {
         throw "OIDC state/code binding failed."
     }
     $tokenForm = "grant_type=authorization_code&client_id=yo4x-web-development" `
-        + "&redirect_uri=" + [Uri]::EscapeDataString("http://127.0.0.1:4173/auth/callback") `
+        + "&redirect_uri=" + [Uri]::EscapeDataString("http://127.0.0.1:5173/auth/callback") `
         + "&code=" + [Uri]::EscapeDataString([Uri]::UnescapeDataString($code)) `
         + "&code_verifier=" + [Uri]::EscapeDataString($verifier)
     [IO.File]::WriteAllText($requestBody, $tokenForm, (New-Object Text.UTF8Encoding($false)))
@@ -108,11 +108,12 @@ try {
         (New-Object Text.UTF8Encoding($false)))
     $registrationOptions = @(
         ((& curl.exe --config $requestBody | Out-String) | ConvertFrom-Json))
-    if ($LASTEXITCODE -ne 0 -or
-        $registrationOptions.Count -ne 1 -or
-        $registrationOptions[0].brokerProfileId -ne '019c8d27-763d-7000-8000-000000000002' -or
-        $registrationOptions[0].server -ne 'MetaQuotes-Demo' -or
-        $registrationOptions[0].environment -ne 'DEMO') {
+    $approvedDevelopmentProfile = @($registrationOptions | Where-Object {
+        $_.brokerProfileId -eq '019c8d27-763d-7000-8000-000000000002' -and
+        $_.server -eq 'MetaQuotes-Demo' -and
+        $_.environment -eq 'DEMO'
+    })
+    if ($LASTEXITCODE -ne 0 -or $approvedDevelopmentProfile.Count -ne 1) {
         throw "Authenticated broker registration-option discovery did not return the approved development profile."
     }
     [pscustomobject]@{
