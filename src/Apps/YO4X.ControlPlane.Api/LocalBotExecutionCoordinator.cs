@@ -71,11 +71,11 @@ internal static class LocalBotExecutionRegistration
         LocalBotExecutionOptions? options = LocalBotExecutionOptions.Load(configuration, environment);
         if (options is null)
             return services;
+        // Package keys remain available so a same-machine diagnostic can unpack
+        // an artifact. The in-process runner is not registered: a hosted control
+        // plane authorizes and records, and YO4X.Desktop executes.
         services.AddSingleton(options);
         services.AddSingleton(new LocalMarketplacePackageKeyProvider(options.PackageKeyDocument));
-        services.AddSingleton<LocalExecutionLeaseAuthority>();
-        services.AddSingleton<LocalBotExecutionManager>();
-        services.AddScoped<IBotExecutionCoordinator, LocalBotExecutionCoordinator>();
         return services;
     }
 

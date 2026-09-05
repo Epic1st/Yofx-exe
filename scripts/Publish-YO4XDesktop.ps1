@@ -46,10 +46,26 @@ Write-Host "  -> Synced wwwroot assets successfully." -ForegroundColor Green
 
 # 3. Compile and Publish Standalone Desktop Executable
 Write-Host "`n[3/4] Publishing self-contained Win-x64 application..." -ForegroundColor Yellow
+if (Test-Path -LiteralPath $outputDir) {
+    $resolvedOutput = [IO.Path]::GetFullPath($outputDir)
+    $resolvedArtifacts = [IO.Path]::GetFullPath((Join-Path $workspaceRoot "artifacts\desktop"))
+    if (-not $resolvedOutput.StartsWith($resolvedArtifacts + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean a desktop output outside the artifacts directory."
+    }
+    Remove-Item -Recurse -Force -LiteralPath $resolvedOutput
+}
+New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 & $dotnet publish $desktopProject `
     -c Release `
     -r win-x64 `
     --self-contained true `
+    -p:PublishSingleFile=false `
+    -p:PublishTrimmed=false `
+    -p:DebugType=None `
+    -p:DebugSymbols=false `
+    -m:1 `
+    -p:BuildInParallel=false `
+    -p:UseSharedCompilation=false `
     -o $outputDir `
     --nologo
 
@@ -78,6 +94,13 @@ foreach ($pkg in $yo4xPackages) {
 
 $exePath = Join-Path $outputDir "YO4X.exe"
 if (Test-Path -LiteralPath $exePath) {
+    $runtimeConfig = Join-Path $outputDir "YO4X.runtimeconfig.json"
+    if (Test-Path -LiteralPath $runtimeConfig) {
+        $runtimeDocument = Get-Content -Raw -LiteralPath $runtimeConfig | ConvertFrom-Json
+        if ($null -ne $runtimeDocument.runtimeOptions.PSObject.Properties['frameworks']) {
+            throw "The desktop output is framework-dependent and is not safe to distribute."
+        }
+    }
     $size = (Get-Item -LiteralPath $exePath).Length / (1024 * 1024)
     Write-Host "`n=========================================================" -ForegroundColor Green
     Write-Host "  BUILD SUCCESSFUL!" -ForegroundColor Green

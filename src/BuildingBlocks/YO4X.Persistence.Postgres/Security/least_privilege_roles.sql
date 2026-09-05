@@ -1356,7 +1356,7 @@ grant insert (id, tenant_id, user_id, idempotency_record_id, decision_type,
     input_sha256, evidence_sha256, evaluated_at)
     on control.user_policy_evaluations to yo4x_control_api;
 grant insert (id, tenant_id, user_id, broker_id, broker_profile_id, server,
-    masked_login, binding_fingerprint, environment)
+    masked_login, login_number, binding_fingerprint, environment)
     on operations.broker_accounts to yo4x_control_api;
 grant update (credential_state, state, row_version, updated_at)
     on operations.broker_accounts to yo4x_control_api;
@@ -1365,7 +1365,7 @@ grant select (id, tenant_id, broker_account_id, operation, allowed_origin, state
     completion_digest, row_version, created_at, updated_at)
     on control.credential_ingestion_grants to yo4x_control_api;
 grant select (id, tenant_id, user_id, broker_id, broker_profile_id, server,
-    masked_login, binding_fingerprint, environment, account_mode, dedicated_cloud_use,
+    masked_login, login_number, binding_fingerprint, environment, account_mode, dedicated_cloud_use,
     manual_or_external_trading_detected, trading_allowed,
     broker_hosted_stop_loss, broker_hosted_take_profit, supports_position_query,
     supports_order_query, supports_deal_history, capability_observed_at,
@@ -1410,6 +1410,7 @@ grant insert, select on identity.invalidated_session_tokens, control.tenant_cont
     audit.audit_events
     to yo4x_control_api;
 grant insert on messaging.outbox_messages to yo4x_control_api;
+grant select, insert, update on operations.local_bot_runs to yo4x_control_api;
 
 -- Admin BFF: privileged command workflow and tenant-scoped operational views.
 revoke all privileges on control.schema_migrations from yo4x_admin_bff;
@@ -1892,6 +1893,7 @@ alter role yo4x_local_identity set idle_in_transaction_session_timeout = '10s';
 grant usage on schema catalog to yo4x_control_api;
 grant select, insert, update, delete
     on all tables in schema catalog to yo4x_control_api;
+revoke delete on catalog.strategy_artifacts from yo4x_control_api;
 grant usage on schema bots to yo4x_control_api;
 grant select, insert, update, delete
     on all tables in schema bots to yo4x_control_api;
@@ -1904,6 +1906,9 @@ grant select, insert, update, delete
 grant usage on schema journal to yo4x_control_api;
 grant select, insert, update, delete
     on all tables in schema journal to yo4x_control_api;
+grant usage on schema marketplace to yo4x_control_api;
+grant select, insert, update, delete
+    on all tables in schema marketplace to yo4x_control_api;
 
 -- Strategy input and backtest-request tables added by
 -- 006_strategy_inputs_and_backtests.sql. They live in the same two projection

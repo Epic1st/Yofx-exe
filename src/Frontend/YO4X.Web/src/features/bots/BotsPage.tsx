@@ -1,7 +1,12 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { BotStatus, BotView } from '../../api/contracts';
 import { userFacingProblem } from '../../api/problemDetails';
 import { useControlPlaneClient } from '../../app/ClientContext';
+import {
+  startDesktopBot,
+  stopDesktopBot,
+  toDesktopBotStartRequest,
+} from '../../app/desktopShell';
 import type { AppView } from '../../app/navigation';
 import { useResource } from '../../app/useResource';
 import { displayBotName, visibleBots } from './botPresentation';
@@ -9,6 +14,9 @@ import './bots.css';
 
 /** Uptime history requested for the local execution window panel. */
 const uptimeWindowDays = 28;
+
+/** Keeps backend-owned execution state current while this page is open. */
+const botStatusRefreshMilliseconds = 10_000;
 
 /** Grid template shared by the table head and every table row. */
 const botColumns = '2.2fr 1fr 1fr 1fr 1.2fr 150px';
@@ -103,13 +111,25 @@ export function BotsPage({ onNavigate, onManageBot, reloadToken = 0 }: BotsPageP
   const [actionError, setActionError] = useState<string | null>(null);
 
   const reloadBots = bots.reload;
+
+  useEffect(() => {
+    const timer = window.setInterval(reloadBots, botStatusRefreshMilliseconds);
+    return () => window.clearInterval(timer);
+  }, [reloadBots]);
+
   const changeStatus = useCallback(
     async (bot: BotView) => {
       const next: BotStatus = bot.status === 'RUNNING' ? 'STOPPED' : 'RUNNING';
       setPendingBotIds((prev) => new Set(prev).add(bot.id));
       setActionError(null);
       try {
-        await client.changeBotStatus(bot.id, next);
+        if (bot.host === 'LOCAL' && next === 'RUNNING') {
+          await startDesktopBot(toDesktopBotStartRequest(bot, ''));
+        } else if (bot.host === 'LOCAL' && next === 'STOPPED') {
+          await stopDesktopBot(bot.id);
+        } else {
+          await client.changeBotStatus(bot.id, next);
+        }
         reloadBots();
       } catch (error) {
         setActionError(userFacingProblem(error));

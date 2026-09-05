@@ -19,7 +19,7 @@ export interface RuntimeConfig {
 export interface DevelopmentOidcConfig {
   readonly authority: 'https://127.0.0.1:7210';
   readonly clientId: 'yo4x-web-development';
-  readonly redirectUri: 'http://127.0.0.1:5173/auth/callback';
+  readonly redirectUri: string;
 }
 
 const developmentOidcContract: DevelopmentOidcConfig = {
@@ -29,6 +29,21 @@ const developmentOidcContract: DevelopmentOidcConfig = {
 };
 
 function developmentOidc(): DevelopmentOidcConfig | null {
+  const injected = window.__YO4X_RUNTIME_CONFIG__?.identity;
+  if (injected) {
+    const expectedRedirect = `${window.location.origin}/auth/callback`;
+    if (injected.authority !== developmentOidcContract.authority
+      || injected.clientId !== developmentOidcContract.clientId
+      || injected.redirectUri !== expectedRedirect
+      || !['http://127.0.0.1:4173', 'http://127.0.0.1:4174', 'http://127.0.0.1:5173'].includes(window.location.origin)) {
+      throw new Error('The desktop identity configuration is outside the trusted loopback contract.');
+    }
+    return {
+      authority: developmentOidcContract.authority,
+      clientId: developmentOidcContract.clientId,
+      redirectUri: expectedRedirect,
+    };
+  }
   const requested = import.meta.env.VITE_YO4X_DEVELOPMENT_IDENTITY_ENABLED?.trim();
   if (!requested) {
     return null;
@@ -70,9 +85,14 @@ function optionalApiPath(value: string | undefined, variableName: string): strin
   return normalized;
 }
 
+function injectedApiOrigin(): string | undefined {
+  const injected = window.__YO4X_RUNTIME_CONFIG__?.apiOrigin?.trim();
+  return injected || undefined;
+}
+
 function apiOrigin(value: string | undefined): string {
   const normalized = value?.trim();
-  const candidate = normalized || window.location.origin;
+  const candidate = injectedApiOrigin() || normalized || window.location.origin;
 
   let parsed: URL;
   try {

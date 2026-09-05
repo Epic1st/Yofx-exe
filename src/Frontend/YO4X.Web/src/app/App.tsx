@@ -34,9 +34,19 @@ import {
   type AppLocation,
   type AppView,
 } from './navigation';
-import { sendDesktopWindowCommand } from './desktopShell';
+import {
+  sendDesktopWindowCommand,
+  startDesktopBot,
+  storeDesktopBrokerCredential,
+  toDesktopBotStartRequest,
+} from './desktopShell';
 import { AppShell } from './shell/AppShell';
 import { useResource } from './useResource';
+
+async function authorizationHeader(): Promise<Record<string, string>> {
+  const token = await window.__YO4X_AUTH__?.getAccessToken?.();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 /** The shell build, shown in the title bar. Sourced from package.json. */
 const shellVersion = '0.1.0';
@@ -83,31 +93,21 @@ function ConfiguredApp({ config }: { readonly config: RuntimeConfig }) {
   const [signedOut, setSignedOut] = useState(false);
 
   const handleAuthenticate = useCallback(
-    async (email?: string, password?: string) => {
+    async (intent: 'sign-in' | 'create-account' = 'sign-in') => {
       if (authenticationPending) {
+        return;
+      }
+
+      const beginLogin = window.__YO4X_AUTH__?.beginLogin;
+      if (!beginLogin) {
+        setAuthenticationError('The secure sign-in service could not be reached.');
         return;
       }
 
       setAuthenticationPending(true);
       setAuthenticationError(null);
-
       try {
-        const response = await fetch(`${config.apiOrigin}/v1/auth/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: email || 'user@gmail.com',
-            password: password || 'password',
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error('Authentication failed.');
-        }
-
-        setSignedOut(false);
-        setAuthenticationPending(false);
-        me.reload();
+        await beginLogin(intent);
       } catch (error) {
         setAuthenticationPending(false);
         setAuthenticationError(
@@ -117,12 +117,19 @@ function ConfiguredApp({ config }: { readonly config: RuntimeConfig }) {
         );
       }
     },
-    [authenticationPending, config.apiOrigin, me],
+    [authenticationPending],
   );
 
   const handleSignOut = useCallback(async () => {
     try {
-      await fetch(`${config.apiOrigin}/v1/auth/logout`, { method: 'POST' });
+      await fetch(`${config.apiOrigin}/v1/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json, application/problem+json',
+          ...await authorizationHeader(),
+        },
+      });
     } catch { }
     setSignedOut(true);
     me.reload();
@@ -138,8 +145,8 @@ function ConfiguredApp({ config }: { readonly config: RuntimeConfig }) {
         localIdentityEnabled={config.developmentOidc !== null}
         authenticationPending={authenticationPending}
         authenticationError={authenticationError}
-        onSignIn={(email, password) => handleAuthenticate(email, password)}
-        onCreateAccount={(email, password) => handleAuthenticate(email, password)}
+        onSignIn={() => { void handleAuthenticate('sign-in'); }}
+        onCreateAccount={() => { void handleAuthenticate('create-account'); }}
       />
     );
   }
@@ -275,6 +282,12 @@ function WorkspaceShell(props: {
     async (login: string, option: BrokerAccountRegistrationOption, password: string) => {
       const binding = await createBrokerAccountRegistrationBinding(login, option, password);
       await client.createBrokerAccount(binding.request, createRegistrationIdempotencyKey());
+      await storeDesktopBrokerCredential({
+        login: binding.request.login,
+        server: binding.request.server,
+        bindingFingerprint: binding.request.bindingFingerprint,
+        password: binding.password,
+      });
       accounts.reload();
       return true;
     },
@@ -287,7 +300,8 @@ function WorkspaceShell(props: {
         return;
       }
 
-      await client.createBot({
+      await client.acquireStrategy(input.strategyId);
+      const createdBot = await client.createBot({
         strategyId: input.strategyId,
         brokerAccountId: account?.id ?? null,
         name: overlay.strategy.name,
@@ -295,6 +309,9 @@ function WorkspaceShell(props: {
         riskLabel: 'Default',
         host: input.host,
       });
+      if (input.host === 'LOCAL') {
+        await startDesktopBot(toDesktopBotStartRequest(createdBot, ''));
+      }
       bots.reload();
       setOverlay({ kind: 'none' });
     },

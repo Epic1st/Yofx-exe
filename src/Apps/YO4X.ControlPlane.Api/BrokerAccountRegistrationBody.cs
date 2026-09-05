@@ -9,12 +9,12 @@ using YO4X.ControlPlane.Application;
 namespace YO4X.ControlPlane.Api;
 
 /// <summary>
-/// The wire body of <c>POST /v1/broker-accounts</c>. It deliberately carries
-/// two members the application contract must never see: the unmasked login,
-/// which is needed only to derive the vault binding key, and the password,
-/// which is handed to the on-device vault and then erased. <see
-/// cref="CreateBrokerAccount"/> stays free of both so no persisted row,
-/// idempotency digest, or audit record can carry them.
+/// The wire body of <c>POST /v1/broker-accounts</c>. Metadata only: the
+/// unmasked login is used to re-derive the binding fingerprint and to persist
+/// <c>login_number</c>. The MT5 password is never accepted here; the desktop
+/// writes it to the on-device DPAPI vault. <see cref="CreateBrokerAccount"/>
+/// never carries a secret, so no persisted row, idempotency digest, or audit
+/// record can either.
 /// </summary>
 public sealed record CreateBrokerAccountBody(
     Guid BrokerProfileId,
@@ -22,12 +22,7 @@ public sealed record CreateBrokerAccountBody(
     string Login,
     string MaskedLogin,
     string BindingFingerprint,
-    BrokerAccountEnvironment Environment,
-    Utf8Secret Password) : IDisposable
-{
-    /// <summary>Erases the password this body owns. Safe to call more than once.</summary>
-    public void Dispose() => Password?.Dispose();
-}
+    BrokerAccountEnvironment Environment);
 
 /// <summary>
 /// The validated form of a link request: everything the control plane may
@@ -77,7 +72,6 @@ public static class BrokerAccountLinkValidation
             throw Invalid();
         }
 
-        RequirePersistablePassword(body.Password);
         return new BrokerAccountLinkRequest(login, server, maskedLogin, credentialKey);
     }
 
@@ -92,7 +86,8 @@ public static class BrokerAccountLinkValidation
             link.Server,
             link.MaskedLogin,
             link.CredentialKey,
-            BrokerAccountEnvironment.Demo);
+            BrokerAccountEnvironment.Demo,
+            link.Login);
     }
 
     /// <summary>
@@ -116,33 +111,6 @@ public static class BrokerAccountLinkValidation
         string key = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
         CryptographicOperations.ZeroMemory(serverBytes);
         return key;
-    }
-
-    /// <summary>
-    /// Rejects, before any process is started, the passwords the credential
-    /// file format cannot represent unambiguously. A NUL or line break would
-    /// change where the parser thinks a field ends, and edge whitespace is
-    /// refused rather than trimmed because trimming silently stores a different
-    /// secret than the person typed.
-    /// </summary>
-    private static void RequirePersistablePassword(Utf8Secret password)
-    {
-        if (password is null)
-        {
-            throw Invalid();
-        }
-
-        bool acceptable = password.Use(static utf8 =>
-            utf8.Length is >= 1 and <= Utf8Secret.MaximumBytes
-            && !utf8.ContainsAny((byte)0, (byte)'\r', (byte)'\n')
-            && utf8[0] is not ((byte)' ' or (byte)'\t')
-            && utf8[^1] is not ((byte)' ' or (byte)'\t'));
-        if (!acceptable)
-        {
-            throw new DomainException(
-                "BROKER_CREDENTIAL_INVALID",
-                "The password must not be empty, start or end with a space, or contain a line break.");
-        }
     }
 
     private static string NormalizeServer(string? value)

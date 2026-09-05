@@ -29,8 +29,8 @@ describe('broker account registration binding', () => {
         maskedLogin: '******78',
         bindingFingerprint: 'ff86813c5e96c4bcdbb40541ce529d8f6d9c34b305f9da3188e157001876df75',
         environment: 'DEMO',
-        password: secret,
       },
+      password: secret,
     });
   });
 

@@ -6,6 +6,7 @@ const credentialKeyDomain = new TextEncoder().encode('YO4X/local-mt5-credential/
 
 export interface BrokerAccountRegistrationBinding {
   readonly request: CreateBrokerAccountRequest;
+  readonly password: string;
 }
 
 function canonicalLogin(value: string): string {
@@ -89,8 +90,8 @@ export async function createBrokerAccountRegistrationBinding(
       maskedLogin: maskLogin(login),
       bindingFingerprint,
       environment: 'DEMO',
-      password,
     },
+    password,
   };
 }
 

@@ -1979,6 +1979,7 @@ public sealed class DesktopBotInstance
     public string RiskLabel { get; set; }
     public string Status { get; set; }
     public string Host { get; set; }
+    public string Server { get; set; } = "";
     public string? LastErrorCode { get; set; }
     public string? LastErrorMessage { get; set; }
     public List<DesktopBotMetric> Metrics { get; set; }

@@ -18,9 +18,28 @@
 .env
 .env.*
 !.env.example
+*.env
+!*.env.example
+!**/*.env.example
 secrets/
 artifacts/verification/credentials/
 artifacts/desktop/
+artifacts/bot-supervisor/
+artifacts/distribution/
+artifacts/strategy-packer*/
+artifacts/verification/YO4X-v*/
+artifacts/verification/*.png
+scripts/bin_*/
+scripts/obj_*/
+scripts/InspectIdentityDb.cs
+scripts/InspectIdentityDb.csproj
+scripts/QueryPrivateEa.cs
+scripts/TestDrmExecution.cs
+scripts/TestDrmExecution.csproj
+scratch/
+AUDIT/findings/*.tmp
+AUDIT/fixlogs/
+Testing/Mq5/*.yo4x
 Testing/*Credentials*.txt
 # The original aggregate archive duplicated the extracted corpus and retained
 # credential-bearing pre-redaction source. Keep it out of the current tree.

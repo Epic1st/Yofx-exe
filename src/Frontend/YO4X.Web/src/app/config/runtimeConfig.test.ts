@@ -5,6 +5,7 @@ describe('runtime configuration URL boundaries', () => {
     vi.unstubAllEnvs();
     window.sessionStorage.clear();
     window.localStorage.clear();
+    delete window.__YO4X_RUNTIME_CONFIG__;
   });
 
   it('enables only the exact development identity contract behind an explicit flag', () => {
@@ -30,6 +31,19 @@ describe('runtime configuration URL boundaries', () => {
     vi.stubEnv('VITE_YO4X_DEVELOPMENT_IDENTITY_ENABLED', 'true');
 
     expect(() => readRuntimeConfig()).toThrow('only at the exact development loopback origin');
+  });
+
+  it('accepts the immutable desktop identity contract in a packaged loopback shell', () => {
+    window.__YO4X_RUNTIME_CONFIG__ = {
+      identity: {
+        authority: 'https://127.0.0.1:7210',
+        clientId: 'yo4x-web-development',
+        redirectUri: 'http://127.0.0.1:5173/auth/callback',
+      },
+    };
+
+    expect(readRuntimeConfig().developmentOidc?.redirectUri)
+      .toBe('http://127.0.0.1:5173/auth/callback');
   });
 
   it('accepts the version-7 corpus identifier produced by the backend', () => {

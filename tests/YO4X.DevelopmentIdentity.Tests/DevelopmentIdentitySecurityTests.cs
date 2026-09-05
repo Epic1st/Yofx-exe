@@ -65,6 +65,9 @@ public sealed class DevelopmentIdentitySecurityTests
         Assert.Equal("yo4x-control-plane", LocalIdentityContract.ControlPlaneAudience);
         Assert.Equal("http://127.0.0.1:4173", LocalIdentityContract.FrontendOrigin);
         Assert.Equal("http://127.0.0.1:4173/auth/callback", LocalIdentityContract.RedirectUri);
+        Assert.Equal(
+            ["http://127.0.0.1:4173", "http://127.0.0.1:4174", "http://127.0.0.1:5173"],
+            LocalIdentityContract.AllowedFrontendOrigins);
         Assert.True(new Uri(LocalIdentityContract.RedirectUri).IsLoopback);
         Assert.True(new Uri(LocalIdentityContract.Issuer).IsLoopback);
         Assert.Equal(Uri.UriSchemeHttps, new Uri(LocalIdentityContract.Issuer).Scheme);

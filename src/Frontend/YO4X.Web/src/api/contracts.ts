@@ -77,11 +77,11 @@ export interface ApproveBrokerServerRequest {
 }
 
 /**
- * Only `maskedLogin` and `bindingFingerprint` are persisted by the control
- * plane. `login` exists so the service can re-derive the fingerprint instead of
- * trusting this browser's arithmetic, and `password` is forwarded once to the
- * on-device credential vault and erased there; neither is ever stored in
- * PostgreSQL, put in a URL, or written to browser storage.
+ * Only `maskedLogin`, `bindingFingerprint`, and `login` (as `login_number`)
+ * are persisted by the control plane. `login` exists so the service can
+ * re-derive the fingerprint instead of trusting this browser's arithmetic.
+ * The MT5 password never leaves the desktop: it is written to the on-device
+ * DPAPI vault and is not a member of this request.
  */
 export interface CreateBrokerAccountRequest {
   readonly brokerProfileId: string;
@@ -90,7 +90,6 @@ export interface CreateBrokerAccountRequest {
   readonly maskedLogin: string;
   readonly bindingFingerprint: string;
   readonly environment: 'DEMO';
-  readonly password: string;
 }
 
 export interface CredentialStateView {
@@ -1684,15 +1683,12 @@ export function decodeStrategyInputView(value: unknown): StrategyInputView {
     decodeStrategyEnumMemberView,
   );
 
-  // An enum input with declared members must have unique names; standard/unextracted enums
-  // may have empty members.
+  // An enum cannot be edited safely unless its authoritative member set is present.
   if (valueKind === 'ENUM') {
-    if (enumTypeName === null || enumTypeName.length === 0) {
+    if (enumTypeName === null || enumTypeName.length === 0 || enumMembers.length === 0) {
       throw new ContractViolationError('StrategyInputView');
     }
-    if (enumMembers.length > 0) {
-      requireUniqueIdentities(enumMembers.map((member) => member.name), 'StrategyEnumMemberView[]');
-    }
+    requireUniqueIdentities(enumMembers.map((member) => member.name), 'StrategyEnumMemberView[]');
   } else if (enumTypeName !== null || enumMembers.length > 0) {
     throw new ContractViolationError('StrategyInputView');
   }

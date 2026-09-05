@@ -105,7 +105,7 @@ public static class DevelopmentIdentityRegistration
             });
 
         services.AddCors(options => options.AddPolicy("development-frontend", policy =>
-            policy.WithOrigins(LocalIdentityContract.FrontendOrigin)
+            policy.WithOrigins([.. LocalIdentityContract.AllowedFrontendOrigins])
                 .WithMethods("GET", "POST")
                 .WithHeaders("Content-Type")
                 .DisallowCredentials()));

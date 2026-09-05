@@ -134,6 +134,9 @@ public static class Yo4xPostgresRoleContracts
             "identity.user_profiles|UPDATE",
             "identity.user_session_families|SELECT",
             "messaging.outbox_messages|INSERT",
+            "operations.local_bot_runs|INSERT",
+            "operations.local_bot_runs|SELECT",
+            "operations.local_bot_runs|UPDATE",
             "operations.deployments|SELECT", "readmodel.deployment_health|SELECT"
         ],
         [
@@ -525,7 +528,7 @@ public static class PostgresCatalogSemanticFingerprint
     // 329ddae47fbe84e5594d10e35693154cd97d05f75f35a0fb90f98583e259b2d1 byte for
     // byte, so nothing else moved with it.
     public const string ExpectedSha256 =
-        "8772e5e7b8044ef68e185772d569128e771a11fb4b6f06dca7df1260b3822eba";
+        "9a5fa9669a72d2f0458f3dc44792901d01098608acab37ca99f0efc665f098a3";
 
     private const int MaximumEntryCount = 50_000;
     private const int MaximumEntryByteCount = 4 * 1024 * 1024;

@@ -113,6 +113,55 @@ public sealed class LocalBotExecutionBoundaryTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PlatformPublicationPersistsTheArtifactAndDoesNotImpersonateAUserSeller()
+    {
+        string source = ReadRepositoryFile(
+            "src", "Apps", "YO4X.ControlPlane.Api", "MarketplacePublicationEndpoint.cs");
+        string migration = ReadRepositoryFile(
+            "src", "BuildingBlocks", "YO4X.Persistence.Postgres", "Migrations",
+            "023_platform_marketplace_listings.sql");
+
+        Assert.Contains("await StoreArtifactAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("package_bytes = excluded.package_bytes", source, StringComparison.Ordinal);
+        Assert.Contains("@id, @tenant, null, @strategy, 'listed'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddWithValue(\"seller\"", source, StringComparison.Ordinal);
+        Assert.Contains("alter column seller_user_id drop not null", migration, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IssuingANewDesktopBundleRotatesThePreviousLocalRun()
+    {
+        string source = ReadRepositoryFile(
+            "src", "Apps", "YO4X.ControlPlane.Api", "MarketplaceUserEndpoints.cs");
+
+        Assert.Contains("and state in ('ISSUED', 'RUNNING')", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "and state in ('ISSUED', 'RUNNING') and expires_at <= clock_timestamp()",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalBundleResolvesABrokerSpecificSymbolSuffix()
+    {
+        string source = ReadRepositoryFile(
+            "src", "Apps", "YO4X.ControlPlane.Api", "MarketplaceUserEndpoints.cs");
+
+        Assert.Contains(
+            "lower(instrument.symbol) like lower(bot.symbol) || '%'",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "(lower(instrument.symbol) = lower(bot.symbol)) desc",
+            source,
+            StringComparison.Ordinal);
+        Assert.True(
+            source.IndexOf("instrument.observed_at desc", StringComparison.Ordinal)
+            < source.IndexOf("(lower(instrument.symbol) = lower(bot.symbol)) desc", StringComparison.Ordinal));
+        Assert.Contains("length(instrument.symbol)", source, StringComparison.Ordinal);
+    }
+
     private static string ReadRepositoryFile(params string[] segments)
     {
         DirectoryInfo? directory = new(AppContext.BaseDirectory);

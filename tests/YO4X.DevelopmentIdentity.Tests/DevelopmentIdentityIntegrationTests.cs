@@ -91,10 +91,10 @@ public sealed class DevelopmentIdentityIntegrationTests : IAsyncLifetime
                 application,
                 TestContext.Current.CancellationToken));
         Assert.Equal(
-            [LocalIdentityContract.RedirectUri],
-            await manager.GetRedirectUrisAsync(
+            LocalIdentityContract.RedirectUris.Order(StringComparer.Ordinal),
+            (await manager.GetRedirectUrisAsync(
                 application,
-                TestContext.Current.CancellationToken));
+                TestContext.Current.CancellationToken)).Order(StringComparer.Ordinal));
         Assert.True(await manager.HasRequirementAsync(
             application,
             Requirements.Features.ProofKeyForCodeExchange,

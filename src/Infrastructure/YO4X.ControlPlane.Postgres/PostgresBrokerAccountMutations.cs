@@ -102,12 +102,14 @@ public sealed partial class PostgresControlPlaneApplication
                 insert into operations.broker_accounts
                 (
                     id, tenant_id, user_id, broker_id, broker_profile_id,
-                    server, masked_login, binding_fingerprint, environment
+                    server, masked_login, binding_fingerprint, environment,
+                    login_number
                 )
                 values
                 (
                     @id, @tenant_id, @user_id, @broker_id, @broker_profile_id,
-                    @server, @masked_login, @binding_fingerprint, 'demo'
+                    @server, @masked_login, @binding_fingerprint, 'demo',
+                    @login_number
                 )
                 returning
                     id, broker_id, server, masked_login, environment,
@@ -125,6 +127,10 @@ public sealed partial class PostgresControlPlaneApplication
                     "binding_fingerprint",
                     NpgsqlDbType.Text,
                     normalized.BindingFingerprint);
+                insert.Parameters.AddWithValue(
+                    "login_number",
+                    NpgsqlDbType.Bigint,
+                    checked((long)normalized.LoginNumber));
 
                 try
                 {
@@ -148,10 +154,14 @@ public sealed partial class PostgresControlPlaneApplication
                 }
                 catch (PostgresException exception) when (
                     exception.SqlState == PostgresErrorCodes.UniqueViolation
-                    && string.Equals(
-                        exception.ConstraintName,
-                        "broker_accounts_tenant_id_binding_fingerprint_key",
-                        StringComparison.Ordinal))
+                    && (string.Equals(
+                            exception.ConstraintName,
+                            "broker_accounts_tenant_id_binding_fingerprint_key",
+                            StringComparison.Ordinal)
+                        || string.Equals(
+                            exception.ConstraintName,
+                            "broker_accounts_login_number_idx",
+                            StringComparison.Ordinal)))
                 {
                     throw new ResourceConflictException(
                         "BROKER_ACCOUNT_ALREADY_REGISTERED",
@@ -208,7 +218,8 @@ public sealed partial class PostgresControlPlaneApplication
         string maskedLogin = NormalizeMaskedLogin(request.MaskedLogin);
         string bindingFingerprint = request.BindingFingerprint?.Trim().ToLowerInvariant()
             ?? string.Empty;
-        if (!BindingFingerprintPattern().IsMatch(bindingFingerprint))
+        if (!BindingFingerprintPattern().IsMatch(bindingFingerprint)
+            || request.LoginNumber == 0)
         {
             throw InvalidBrokerAccountRegistration();
         }
@@ -218,7 +229,8 @@ public sealed partial class PostgresControlPlaneApplication
             Server = server,
             MaskedLogin = maskedLogin,
             BindingFingerprint = bindingFingerprint,
-            Environment = BrokerAccountEnvironment.Demo
+            Environment = BrokerAccountEnvironment.Demo,
+            LoginNumber = request.LoginNumber
         };
     }
 

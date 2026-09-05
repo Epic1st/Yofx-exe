@@ -39,7 +39,7 @@ public sealed class BrokerAccountLinkCredentialTests
     [Fact]
     public void ValidatedLinkKeepsTheSecretOutOfTheApplicationRequest()
     {
-        using CreateBrokerAccountBody body = Body();
+        CreateBrokerAccountBody body = Body();
         BrokerAccountLinkRequest link = BrokerAccountLinkValidation.Validate(body);
 
         Assert.Equal(12345678UL, link.Login);
@@ -51,16 +51,15 @@ public sealed class BrokerAccountLinkCredentialTests
         CreateBrokerAccount application = BrokerAccountLinkValidation.ToApplicationRequest(body, link);
         string serialized = JsonSerializer.Serialize(application);
         Assert.DoesNotContain(Secret, serialized, StringComparison.Ordinal);
-        // The unmasked login is equally absent: only the mask is persisted.
-        Assert.DoesNotContain("12345678", serialized, StringComparison.Ordinal);
         Assert.Equal("******78", application.MaskedLogin);
+        Assert.Equal(12345678UL, application.LoginNumber);
         Assert.Equal(link.CredentialKey, application.BindingFingerprint);
     }
 
     [Fact]
     public void FingerprintTheBrowserDidNotDeriveFromTheLoginAndServerIsRefused()
     {
-        using CreateBrokerAccountBody body = Body(bindingFingerprint: new string('a', 64));
+        CreateBrokerAccountBody body = Body(bindingFingerprint: new string('a', 64));
 
         DomainException failure = Assert.Throws<DomainException>(
             () => BrokerAccountLinkValidation.Validate(body));
@@ -71,36 +70,22 @@ public sealed class BrokerAccountLinkCredentialTests
     [Fact]
     public void MaskedLoginThatDoesNotFollowFromTheLoginIsRefused()
     {
-        using CreateBrokerAccountBody body = Body(maskedLogin: "****9999");
+        CreateBrokerAccountBody body = Body(maskedLogin: "****9999");
 
         Assert.Throws<DomainException>(() => BrokerAccountLinkValidation.Validate(body));
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData(" leading")]
-    [InlineData("trailing ")]
-    [InlineData("\ttabbed")]
-    public void PasswordTheCredentialFormatCannotRepresentIsRefusedBeforeAnyProcessStarts(string password)
-    {
-        using CreateBrokerAccountBody body = Body(password: password);
-
-        DomainException failure = Assert.Throws<DomainException>(
-            () => BrokerAccountLinkValidation.Validate(body));
-
-        // The refusal names the rule, never the value.
-        Assert.Equal("BROKER_CREDENTIAL_INVALID", failure.Code);
-        Assert.Equal(
-            "The password must not be empty, start or end with a space, or contain a line break.",
-            failure.Message);
     }
 
     [Fact]
-    public void OverlongPasswordIsRefused()
+    public void RegistrationBodyDoesNotCarryAPasswordMember()
     {
-        using CreateBrokerAccountBody body = Body(password: new string('x', Utf8Secret.MaximumBytes + 1));
-
-        Assert.Throws<DomainException>(() => BrokerAccountLinkValidation.Validate(body));
+        string source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "Apps",
+            "YO4X.ControlPlane.Api",
+            "BrokerAccountRegistrationBody.cs"));
+        Assert.DoesNotContain("Utf8Secret Password", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RequirePersistablePassword", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -164,8 +149,7 @@ public sealed class BrokerAccountLinkCredentialTests
 
     private static CreateBrokerAccountBody Body(
         string maskedLogin = "******78",
-        string? bindingFingerprint = null,
-        string password = Secret) =>
+        string? bindingFingerprint = null) =>
         new(
             BrokerProfileId,
             "Broker-Demo",
@@ -173,6 +157,16 @@ public sealed class BrokerAccountLinkCredentialTests
             maskedLogin,
             bindingFingerprint
                 ?? BrokerAccountLinkValidation.DeriveCredentialKey(12345678UL, "Broker-Demo"),
-            BrokerAccountEnvironment.Demo,
-            Utf8Secret.TakeOwnership(Encoding.UTF8.GetBytes(password)));
+            BrokerAccountEnvironment.Demo);
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "YO4X.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName ?? throw new InvalidOperationException("The repository root was not found.");
+    }
 }

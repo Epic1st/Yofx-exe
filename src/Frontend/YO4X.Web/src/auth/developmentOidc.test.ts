@@ -91,7 +91,7 @@ describe('development OIDC bridge', () => {
     await expect(window.__YO4X_AUTH__!.getAccessToken()).resolves.toBeNull();
   });
 
-  it('starts sign-in without forcing a repeated credential challenge', async () => {
+  it('forces manual sign-in to rotate a revoked or expired server-side session', async () => {
     spendRestoreAttempt();
     const signinRedirect = vi.fn().mockResolvedValue(undefined);
     await installDevelopmentAuthBridge(config, () => ({
@@ -102,7 +102,7 @@ describe('development OIDC bridge', () => {
 
     await window.__YO4X_AUTH__!.beginLogin!('sign-in');
 
-    expect(signinRedirect).toHaveBeenCalledWith();
+    expect(signinRedirect).toHaveBeenCalledWith({ prompt: 'login' });
     expect(window.sessionStorage.getItem('yo4x.session-restore')).toBeNull();
   });
 

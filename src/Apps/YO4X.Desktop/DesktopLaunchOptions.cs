@@ -5,14 +5,17 @@ internal sealed record DesktopLaunchOptions(
     Uri? IdentityProviderUri,
     string? DevelopmentIdentityCertificateSha256,
     Uri? DevelopmentFixtureUri,
-    bool StartInDevelopmentFixture)
+    bool StartInDevelopmentFixture,
+    Uri? ControlApiUri)
 {
     internal const string ApplicationUrlEnvironmentVariable = "YO4X_DESKTOP_APP_URL";
     internal const string IdentityUrlEnvironmentVariable = "YO4X_DESKTOP_IDENTITY_URL";
     internal const string IdentityCertificateSha256EnvironmentVariable =
         "YO4X_DESKTOP_IDENTITY_CERTIFICATE_SHA256";
+    internal const string ControlApiUrlEnvironmentVariable = "YO4X_CONTROL_API_ORIGIN";
     private const string DefaultApplicationUrl = "http://127.0.0.1:4173/";
     private const string DefaultDevelopmentIdentityUrl = "https://127.0.0.1:7210/";
+    private const string DefaultDevelopmentControlApiUrl = "https://127.0.0.1:7209/";
 
     public Uri InitialUri => StartInDevelopmentFixture
         ? DevelopmentFixtureUri!
@@ -28,6 +31,7 @@ internal sealed record DesktopLaunchOptions(
         string? commandLineUrl = null;
         string? commandLineIdentityUrl = null;
         string? commandLineIdentityCertificateSha256 = null;
+        string? commandLineControlApiUrl = null;
         bool startInFixture = false;
         for (int index = 0; index < arguments.Count; index++)
         {
@@ -77,6 +81,17 @@ internal sealed record DesktopLaunchOptions(
                 continue;
             }
 
+            if (string.Equals(argument, "--control-api-url", StringComparison.Ordinal))
+            {
+                if (commandLineControlApiUrl is not null || index + 1 >= arguments.Count)
+                {
+                    throw new ArgumentException("--control-api-url requires exactly one value.");
+                }
+
+                commandLineControlApiUrl = arguments[++index];
+                continue;
+            }
+
             throw new ArgumentException($"Unsupported desktop option '{argument}'.");
         }
 
@@ -104,12 +119,20 @@ internal sealed record DesktopLaunchOptions(
                 "The development fixture is allowed only for an explicit loopback application URL.");
         }
 
+        string? configuredControlApiUrl = commandLineControlApiUrl
+            ?? readEnvironmentVariable(ControlApiUrlEnvironmentVariable)
+            ?? (IsLoopbackDevelopmentOrigin(applicationUri) ? DefaultDevelopmentControlApiUrl : null);
+        Uri? controlApiUri = configuredControlApiUrl is null
+            ? null
+            : ParseIdentityProviderUri(configuredControlApiUrl);
+
         return new DesktopLaunchOptions(
             applicationUri,
             identityProviderUri,
             identityCertificateSha256,
             fixtureUri,
-            startInFixture);
+            startInFixture,
+            controlApiUri);
     }
 
     private static Uri ParseApplicationUri(string value)
@@ -137,7 +160,7 @@ internal sealed record DesktopLaunchOptions(
     }
 
     private static bool IsLoopbackDevelopmentOrigin(Uri uri) =>
-        uri.IsLoopback && uri.Port is 4173 or 4174;
+        uri.IsLoopback && uri.Port is 4173 or 4174 or 5173;
 
     private static Uri ParseIdentityProviderUri(string value)
     {

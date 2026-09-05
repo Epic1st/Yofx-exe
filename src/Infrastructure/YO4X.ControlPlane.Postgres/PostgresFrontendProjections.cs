@@ -138,7 +138,13 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
             strategy.version,
             strategy.rating_average,
             strategy.rating_count,
-            strategy.active_users,
+            (
+                select count(distinct bot.user_id)::integer
+                from bots.bots as bot
+                where bot.tenant_id = strategy.tenant_id
+                  and bot.strategy_id = strategy.id
+                  and bot.status in ('STARTING', 'RUNNING')
+            ) as active_users,
             strategy.is_free,
             strategy.cloud_price_monthly_cents,
             strategy.cloud_price_yearly_cents,
@@ -243,7 +249,13 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
             strategy.version,
             strategy.rating_average,
             strategy.rating_count,
-            strategy.active_users,
+            (
+                select count(distinct bot.user_id)::integer
+                from bots.bots as bot
+                where bot.tenant_id = strategy.tenant_id
+                  and bot.strategy_id = strategy.id
+                  and bot.status in ('STARTING', 'RUNNING')
+            ) as active_users,
             strategy.is_free,
             strategy.cloud_price_monthly_cents,
             strategy.cloud_price_yearly_cents,
@@ -814,6 +826,26 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
         {
             await RequireStrategyAsync(transaction, actor, request.StrategyId, cancellationToken)
                 .ConfigureAwait(false);
+            await using (NpgsqlCommand entitlement = transaction.CreateCommand(
+                """
+                select 1
+                from marketplace.purchases as purchase
+                where purchase.tenant_id = @tenant_id
+                  and purchase.buyer_user_id = @user_id
+                  and purchase.strategy_id = @strategy_id
+                  and purchase.status = 'paid'
+                """))
+            {
+                AddUuid(entitlement, "tenant_id", actor.TenantId);
+                AddUuid(entitlement, "user_id", actor.UserId);
+                AddUuid(entitlement, "strategy_id", request.StrategyId);
+                if (await entitlement.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+                {
+                    throw new DomainException(
+                        "STRATEGY_PURCHASE_REQUIRED",
+                        "Acquire or purchase this strategy before creating a bot.");
+                }
+            }
             if (request.BrokerAccountId is Guid brokerAccountId)
             {
                 await using NpgsqlCommand account = transaction.CreateCommand(
@@ -890,6 +922,37 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
             .ConfigureAwait(false);
         await using (transaction.ConfigureAwait(false))
         {
+            if (request.Status is BotStatus.Starting or BotStatus.Running)
+            {
+                await using NpgsqlCommand exclusive = transaction.CreateCommand(
+                    """
+                    select 1
+                    from bots.bots as bot
+                    where bot.tenant_id = @tenant_id
+                      and bot.user_id = @user_id
+                      and bot.id = @bot_id
+                      and bot.broker_account_id is not null
+                      and exists
+                      (
+                          select 1
+                          from bots.bots as other
+                          where other.tenant_id = bot.tenant_id
+                            and other.broker_account_id = bot.broker_account_id
+                            and other.id <> bot.id
+                            and other.status in ('STARTING', 'RUNNING')
+                      )
+                    """);
+                AddUuid(exclusive, "tenant_id", actor.TenantId);
+                AddUuid(exclusive, "user_id", actor.UserId);
+                AddUuid(exclusive, "bot_id", botId);
+                if (await exclusive.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null)
+                {
+                    throw new DomainException(
+                        "BROKER_ACCOUNT_STRATEGY_IN_USE",
+                        "This MT5 account already has an active strategy.");
+                }
+            }
+
             int affected;
             await using (NpgsqlCommand update = transaction.CreateCommand(
                 """
@@ -3072,7 +3135,15 @@ public sealed class PostgresFrontendProjections : IFrontendProjectionApplication
             "order by strategy.rating_average desc, strategy.rating_count desc, strategy.id desc",
         "RECENT" => "order by strategy.updated_at desc, strategy.id desc",
         "NAME" => "order by strategy.name asc, strategy.id asc",
-        _ => "order by strategy.active_users desc, strategy.rating_average desc, strategy.id desc"
+        _ => """
+            order by (
+                select count(distinct bot.user_id)
+                from bots.bots as bot
+                where bot.tenant_id = strategy.tenant_id
+                  and bot.strategy_id = strategy.id
+                  and bot.status in ('STARTING', 'RUNNING')
+            ) desc, strategy.rating_average desc, strategy.id desc
+            """
     };
 
     private static string? NormalizeFilter(string? value)

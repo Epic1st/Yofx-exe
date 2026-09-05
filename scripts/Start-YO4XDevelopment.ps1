@@ -43,7 +43,7 @@ $credentialWriterExe = Join-Path $workspaceRoot "src\Tools\YO4X.LocalCredentialW
 $frontendRoot = Join-Path $workspaceRoot "src\Frontend\YO4X.Web"
 $vite = Join-Path $frontendRoot "node_modules\vite\bin\vite.js"
 $desktopProject = Join-Path $workspaceRoot "src\Apps\YO4X.Desktop\YO4X.Desktop.csproj"
-$desktopExe = Join-Path $workspaceRoot "artifacts\desktop\YO4X.Desktop\win-x64\YO4X.exe"
+$desktopExe = Join-Path $developmentRoot "desktop\YO4X.exe"
 $identityPfx = Join-Path $certificateRoot "loopback-https.pfx"
 $postgresCertificate = Join-Path $certificateRoot "postgres-server.crt"
 $postgresPrivateKey = Join-Path $certificateRoot "postgres-server.key"
@@ -336,7 +336,8 @@ if (-not $SkipBuild) {
         finally { Pop-Location }
     }
     & $dotnet publish $desktopProject --configuration Release --runtime win-x64 `
-        --self-contained false --output (Split-Path $desktopExe -Parent) --nologo
+        --self-contained false --output (Split-Path $desktopExe -Parent) --nologo `
+        -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false
     if ($LASTEXITCODE -ne 0) { throw "Desktop publish failed." }
 }
 
@@ -475,7 +476,7 @@ if (-not $NoDesktop) {
     $desktopProcess = Start-Process -FilePath $desktopExe -WorkingDirectory (Split-Path $desktopExe -Parent) `
         -ArgumentList @('--app-url', 'http://127.0.0.1:5173/', '--identity-url',
         'https://127.0.0.1:7210/', '--development-identity-certificate-sha256',
-        $identityCertificateSha256) -PassThru
+        $identityCertificateSha256, '--control-api-url', 'https://127.0.0.1:7209/') -PassThru
 }
 if ($null -ne $desktopProcess) {
     $processRecords += [pscustomobject]@{ name='desktop'; pid=$desktopProcess.Id; executable=$desktopExe; startTimeUtc=$desktopProcess.StartTime.ToUniversalTime().ToString('O') }

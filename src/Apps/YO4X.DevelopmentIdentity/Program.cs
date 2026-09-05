@@ -22,8 +22,9 @@ app.Use(async (context, next) =>
     context.Response.Headers.CacheControl = "no-store";
     context.Response.Headers.XContentTypeOptions = "nosniff";
     context.Response.Headers.XFrameOptions = "DENY";
+    string allowedFormActions = string.Join(' ', LocalIdentityContract.AllowedFrontendOrigins);
     context.Response.Headers.ContentSecurityPolicy =
-        $"default-src 'none'; style-src 'self'; form-action 'self' {LocalIdentityContract.FrontendOrigin}; frame-ancestors 'none'; base-uri 'none'";
+        $"default-src 'none'; style-src 'self'; form-action 'self' {allowedFormActions}; frame-ancestors 'none'; base-uri 'none'";
     await next(context).ConfigureAwait(false);
 });
 app.UseHttpsRedirection();

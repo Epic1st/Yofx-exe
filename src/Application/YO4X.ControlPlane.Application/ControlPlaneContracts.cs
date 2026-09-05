@@ -50,7 +50,8 @@ public sealed record CreateBrokerAccount(
     string Server,
     string MaskedLogin,
     string BindingFingerprint,
-    BrokerAccountEnvironment Environment);
+    BrokerAccountEnvironment Environment,
+    ulong LoginNumber);
 
 /// <summary>
 /// One MetaTrader 5 server the dashboard may offer. A directory entry that this

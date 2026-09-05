@@ -128,7 +128,13 @@ export async function installDevelopmentAuthBridge(
       // A failed or interrupted quiet restore must never cause a later manual sign-in callback
       // to be mistaken for that restore and have a real callback error swallowed.
       takeRestoreMarker();
-      await manager.signinRedirect();
+      // A manual sign-in must rotate the server-side YO4X session. Reusing an existing
+      // identity-provider cookie can return a perfectly valid access token whose session_id
+      // has already been revoked or expired in the control-plane database, which sends the
+      // desktop straight back to its sign-in entry point. `prompt=login` makes this button a
+      // real authentication boundary; the credential handler creates and provisions a fresh
+      // session before the authorization response is issued.
+      await manager.signinRedirect({ prompt: 'login' });
     },
     getAccessToken: async () => {
       const user = callbackUser ?? await manager.getUser();

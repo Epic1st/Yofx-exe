@@ -20,9 +20,11 @@ public static class DevelopmentIdentityStartupGuard
         if (!Uri.TryCreate(LocalIdentityContract.Issuer, UriKind.Absolute, out Uri? issuer)
             || !issuer.IsLoopback
             || issuer.Scheme != Uri.UriSchemeHttps
-            || !Uri.TryCreate(LocalIdentityContract.FrontendOrigin, UriKind.Absolute, out Uri? frontend)
-            || !frontend.IsLoopback
-            || frontend.Scheme != Uri.UriSchemeHttp)
+            || LocalIdentityContract.AllowedFrontendOrigins.Any(value =>
+                !Uri.TryCreate(value, UriKind.Absolute, out Uri? frontend)
+                || !frontend.IsLoopback
+                || frontend.Scheme != Uri.UriSchemeHttp
+                || frontend.GetLeftPart(UriPartial.Authority) != value))
         {
             throw new InvalidOperationException("The local identity endpoints must remain loopback-only.");
         }

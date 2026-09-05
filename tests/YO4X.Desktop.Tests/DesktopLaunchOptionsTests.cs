@@ -16,6 +16,7 @@ public sealed class DesktopLaunchOptionsTests
             "http://127.0.0.1:4173/?fixture=dashboard",
             options.DevelopmentFixtureUri!.AbsoluteUri);
         Assert.False(options.StartInDevelopmentFixture);
+        Assert.Equal("https://127.0.0.1:7209/", options.ControlApiUri!.AbsoluteUri);
         Assert.Equal(options.ApplicationUri, options.InitialUri);
     }
 

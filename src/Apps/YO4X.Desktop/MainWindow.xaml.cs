@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
@@ -117,6 +118,27 @@ public partial class MainWindow : Window
             ConfigureBrowser(Browser.CoreWebView2);
             await Browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
                 "Object.defineProperty(window,'__YO4X_DESKTOP_SHELL__',{value:true,writable:false,configurable:false});");
+            if (options.ApplicationUri.IsLoopback
+                && options.ApplicationUri.Port is 4173 or 4174)
+            {
+                var runtimeConfig = new
+                {
+                    apiOrigin = options.ControlApiUri?.GetLeftPart(UriPartial.Authority),
+                    identity = options.IdentityProviderUri is null
+                        ? null
+                        : new
+                        {
+                            authority = options.IdentityProviderUri.GetLeftPart(UriPartial.Authority),
+                            clientId = "yo4x-web-development",
+                            redirectUri = new Uri(options.ApplicationUri, "/auth/callback").AbsoluteUri
+                        }
+                };
+                await Browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+                    "Object.defineProperty(window,'__YO4X_RUNTIME_CONFIG__',{value:Object.freeze("
+                    + JsonSerializer.Serialize(runtimeConfig)
+                    + "),writable:false,configurable:false});");
+            }
+
             Navigate(options.InitialUri);
         }
         catch (WebView2RuntimeNotFoundException)
@@ -150,6 +172,7 @@ public partial class MainWindow : Window
         core.DownloadStarting += Core_DownloadStarting;
         core.PermissionRequested += Core_PermissionRequested;
         core.BasicAuthenticationRequested += Core_BasicAuthenticationRequested;
+        core.ClientCertificateRequested += Core_ClientCertificateRequested;
         core.ServerCertificateErrorDetected += Core_ServerCertificateErrorDetected;
         core.NavigationCompleted += Core_NavigationCompleted;
         core.HistoryChanged += Core_HistoryChanged;
@@ -178,35 +201,244 @@ public partial class MainWindow : Window
         {
             using JsonDocument document = JsonDocument.Parse(raw);
             JsonElement root = document.RootElement;
-            if (!root.TryGetProperty("type", out JsonElement type)
-                || !string.Equals(type.GetString(), "yo4x-window", StringComparison.Ordinal)
-                || !root.TryGetProperty("command", out JsonElement command))
+            if (!root.TryGetProperty("type", out JsonElement type))
             {
                 return;
             }
 
-            string? windowCommand = command.GetString();
-            _ = Dispatcher.InvokeAsync(() =>
+            string? messageType = type.GetString();
+            if (string.Equals(messageType, "yo4x-window", StringComparison.Ordinal))
             {
-                switch (windowCommand)
+                if (!root.TryGetProperty("command", out JsonElement command))
                 {
-                    case "minimise":
-                        WindowState = WindowState.Minimized;
-                        break;
-                    case "maximise":
-                        WindowState = WindowState == WindowState.Maximized
-                            ? WindowState.Normal
-                            : WindowState.Maximized;
-                        break;
-                    case "close":
-                        Close();
-                        break;
+                    return;
                 }
-            });
+
+                string? windowCommand = command.GetString();
+                _ = Dispatcher.InvokeAsync(() =>
+                {
+                    switch (windowCommand)
+                    {
+                        case "minimise":
+                            WindowState = WindowState.Minimized;
+                            break;
+                        case "maximise":
+                            WindowState = WindowState == WindowState.Maximized
+                                ? WindowState.Normal
+                                : WindowState.Maximized;
+                            break;
+                        case "close":
+                            Close();
+                            break;
+                    }
+                });
+                return;
+            }
+
+            if (!string.Equals(messageType, "yo4x-local", StringComparison.Ordinal)
+                || !root.TryGetProperty("id", out JsonElement idElement)
+                || !root.TryGetProperty("command", out JsonElement localCommand))
+            {
+                return;
+            }
+
+            string? requestId = idElement.GetString();
+            string? commandName = localCommand.GetString();
+            if (string.IsNullOrWhiteSpace(requestId) || string.IsNullOrWhiteSpace(commandName))
+            {
+                return;
+            }
+
+            JsonElement payload = root.TryGetProperty("payload", out JsonElement payloadElement)
+                ? payloadElement.Clone()
+                : default;
+            CoreWebView2 core = Browser.CoreWebView2;
+            _ = Task.Run(() => HandleLocalCommandAsync(core, requestId, commandName, payload));
         }
         catch (JsonException)
         {
         }
+    }
+
+    private async Task HandleLocalCommandAsync(
+        CoreWebView2 core,
+        string requestId,
+        string command,
+        JsonElement payload)
+    {
+        string? error = null;
+        try
+        {
+            switch (command)
+            {
+                case "store-credential":
+                    await StoreLocalCredentialAsync(payload).ConfigureAwait(false);
+                    break;
+                case "start-bot":
+                    string botIdText = ReadString(payload, "id");
+                    string accessToken = ReadString(payload, "accessToken");
+                    string controlApiOrigin = ReadString(payload, "controlApiOrigin");
+                    if (!Guid.TryParse(botIdText, out Guid startBotId)
+                        || accessToken.Length is < 20 or > 16_384
+                        || !Uri.TryCreate(controlApiOrigin, UriKind.Absolute, out Uri? controlOrigin)
+                        || !IsApprovedControlOrigin(controlOrigin))
+                    {
+                        throw new InvalidOperationException("The authorized local start request is invalid.");
+                    }
+                    await DesktopLocalRuntime.StartAuthorizedBotAsync(
+                            startBotId,
+                            controlOrigin,
+                            accessToken,
+                            options.DevelopmentIdentityCertificateSha256,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                    break;
+                case "stop-bot":
+                    string? botId = payload.ValueKind == JsonValueKind.Object
+                        && payload.TryGetProperty("id", out JsonElement id)
+                            ? id.GetString()
+                            : null;
+                    if (string.IsNullOrWhiteSpace(botId))
+                    {
+                        throw new InvalidOperationException("The bot identifier is required.");
+                    }
+
+                    await DesktopLocalRuntime.StopBotAsync(botId, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    break;
+                default:
+                    throw new InvalidOperationException("The local runtime command is not supported.");
+            }
+        }
+        catch (Exception exception)
+        {
+            error = exception.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (error.Length == 0)
+            {
+                error = "The local runtime command failed.";
+            }
+
+            if (error.Length > 500)
+            {
+                error = error[..500];
+            }
+        }
+
+        string response = JsonSerializer.Serialize(new
+        {
+            type = "yo4x-local-result",
+            id = requestId,
+            ok = error is null,
+            error
+        });
+        try
+        {
+            await Dispatcher.InvokeAsync(() => core.PostWebMessageAsJson(response));
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task StoreLocalCredentialAsync(JsonElement payload)
+    {
+        string loginText = ReadString(payload, "login");
+        string server = ReadString(payload, "server");
+        string bindingFingerprint = ReadString(payload, "bindingFingerprint");
+        string password = ReadString(payload, "password");
+        if (!DesktopLocalRuntime.TryParseLogin(loginText, out ulong login)
+            || string.IsNullOrWhiteSpace(server)
+            || string.IsNullOrWhiteSpace(bindingFingerprint)
+            || string.IsNullOrWhiteSpace(password))
+        {
+            throw new InvalidOperationException("The local credential request is invalid.");
+        }
+
+        byte[] passwordUtf8 = Encoding.UTF8.GetBytes(password);
+        try
+        {
+            await DesktopLocalRuntime.StoreCredentialAsync(
+                    login,
+                    server,
+                    bindingFingerprint,
+                    passwordUtf8,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passwordUtf8);
+        }
+    }
+
+    private static DesktopBotInstance ReadBotInstance(JsonElement payload)
+    {
+        string id = ReadString(payload, "id");
+        string name = ReadString(payload, "name");
+        string strategyId = ReadString(payload, "strategyId");
+        string strategyName = ReadString(payload, "strategyName");
+        if (string.IsNullOrWhiteSpace(id)
+            || string.IsNullOrWhiteSpace(name)
+            || string.IsNullOrWhiteSpace(strategyId)
+            || string.IsNullOrWhiteSpace(strategyName))
+        {
+            throw new InvalidOperationException("The local start request is invalid.");
+        }
+
+        string? brokerAccountId = ReadOptionalString(payload, "brokerAccountId");
+        var bot = new DesktopBotInstance(
+            id,
+            name,
+            strategyId,
+            strategyName,
+            string.IsNullOrWhiteSpace(brokerAccountId) ? null : brokerAccountId,
+            ReadOptionalString(payload, "maskedLogin"),
+            ReadOptionalString(payload, "symbol") ?? "XAUUSDm",
+            ReadOptionalString(payload, "riskLabel") ?? "Default",
+            "STARTING",
+            "LOCAL",
+            null,
+            null,
+            [],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow)
+        {
+            Server = ReadOptionalString(payload, "server") ?? "",
+            Timeframe = ReadOptionalString(payload, "timeframe") ?? "M1"
+        };
+        return bot;
+    }
+
+    private bool IsApprovedControlOrigin(Uri origin)
+    {
+        if (origin.UserInfo.Length != 0 || origin.PathAndQuery != "/" || origin.Fragment.Length != 0)
+            return false;
+        Uri normalized = new UriBuilder(origin.Scheme, origin.Host, origin.Port).Uri;
+        Uri application = new UriBuilder(
+            options.ApplicationUri.Scheme, options.ApplicationUri.Host, options.ApplicationUri.Port).Uri;
+        Uri? configured = options.ControlApiUri is null
+            ? null
+            : new UriBuilder(
+                options.ControlApiUri.Scheme, options.ControlApiUri.Host, options.ControlApiUri.Port).Uri;
+        return normalized == application || normalized == configured;
+    }
+
+    private static string ReadString(JsonElement payload, string name)
+    {
+        if (payload.ValueKind != JsonValueKind.Object
+            || !payload.TryGetProperty(name, out JsonElement value)
+            || value.ValueKind != JsonValueKind.String)
+        {
+            return "";
+        }
+
+        return value.GetString() ?? "";
+    }
+
+    private static string? ReadOptionalString(JsonElement payload, string name)
+    {
+        string value = ReadString(payload, name);
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private void Core_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
@@ -289,11 +521,21 @@ public partial class MainWindow : Window
         StatusText.Text = "A browser credential challenge was blocked.";
     }
 
+    private void Core_ClientCertificateRequested(
+        object? sender,
+        CoreWebView2ClientCertificateRequestedEventArgs e)
+    {
+        // The control plane permits client certificates because workload-only routes
+        // enforce mTLS. Interactive user routes use bearer tokens, so the desktop
+        // browser must explicitly continue without selecting a certificate.
+        e.Handled = true;
+    }
+
     private void Core_ServerCertificateErrorDetected(
         object? sender,
         CoreWebView2ServerCertificateErrorDetectedEventArgs e)
     {
-        if (IsPinnedDevelopmentIdentityCertificate(e))
+        if (IsPinnedDevelopmentCertificate(e))
         {
             e.Action = CoreWebView2ServerCertificateErrorAction.AlwaysAllow;
             return;
@@ -303,16 +545,14 @@ public partial class MainWindow : Window
         StatusText.Text = "Navigation with an invalid TLS certificate was blocked.";
     }
 
-    private bool IsPinnedDevelopmentIdentityCertificate(
+    private bool IsPinnedDevelopmentCertificate(
         CoreWebView2ServerCertificateErrorDetectedEventArgs e)
     {
         if (options.DevelopmentIdentityCertificateSha256 is null
-            || options.IdentityProviderUri is null
             || e.ErrorStatus != CoreWebView2WebErrorStatus.CertificateIsInvalid
             || !Uri.TryCreate(e.RequestUri, UriKind.Absolute, out Uri? requested)
             || requested.Scheme != Uri.UriSchemeHttps
-            || requested.Host != options.IdentityProviderUri.Host
-            || requested.Port != options.IdentityProviderUri.Port)
+            || !IsPinnedDevelopmentOrigin(requested))
         {
             return false;
         }
@@ -334,6 +574,18 @@ public partial class MainWindow : Window
         {
             return false;
         }
+    }
+
+    private bool IsPinnedDevelopmentOrigin(Uri requested)
+    {
+        static bool Matches(Uri requestedUri, Uri? configuredUri) =>
+            configuredUri is not null
+            && configuredUri.IsLoopback
+            && requestedUri.Host.Equals(configuredUri.Host, StringComparison.OrdinalIgnoreCase)
+            && requestedUri.Port == configuredUri.Port;
+
+        return Matches(requested, options.IdentityProviderUri)
+            || Matches(requested, options.ControlApiUri);
     }
 
     private void Core_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)

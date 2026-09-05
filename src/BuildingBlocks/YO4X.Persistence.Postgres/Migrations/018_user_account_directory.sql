@@ -120,8 +120,25 @@ create index purchases_buyer_idx
 create index purchases_listing_idx
     on marketplace.purchases (tenant_id, listing_id);
 
-select control.apply_tenant_rls('identity.user_credentials'::regclass);
-select control.apply_tenant_rls('identity.user_profiles'::regclass);
+alter table identity.user_credentials enable row level security;
+alter table identity.user_credentials force row level security;
+create policy tenant_select on identity.user_credentials
+    for select using (tenant_id = (select control.current_tenant_id()));
+create policy tenant_insert on identity.user_credentials
+    for insert with check (tenant_id = (select control.current_tenant_id()));
+create policy tenant_update on identity.user_credentials
+    for update using (tenant_id = (select control.current_tenant_id()))
+    with check (tenant_id = (select control.current_tenant_id()));
+
+alter table identity.user_profiles enable row level security;
+alter table identity.user_profiles force row level security;
+create policy tenant_select on identity.user_profiles
+    for select using (tenant_id = (select control.current_tenant_id()));
+create policy tenant_insert on identity.user_profiles
+    for insert with check (tenant_id = (select control.current_tenant_id()));
+create policy tenant_update on identity.user_profiles
+    for update using (tenant_id = (select control.current_tenant_id()))
+    with check (tenant_id = (select control.current_tenant_id()));
 
 alter table marketplace.listings enable row level security;
 alter table marketplace.listings force row level security;

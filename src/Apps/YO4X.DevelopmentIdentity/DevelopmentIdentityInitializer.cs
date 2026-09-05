@@ -25,8 +25,6 @@ internal sealed class DevelopmentIdentityInitializer(
             ClientType = ClientTypes.Public,
             ConsentType = ConsentTypes.Implicit,
             DisplayName = "YO4X local web development client",
-            RedirectUris = { new Uri(LocalIdentityContract.RedirectUri) },
-            PostLogoutRedirectUris = { new Uri(LocalIdentityContract.PostLogoutRedirectUri) },
             Permissions =
             {
                 Permissions.Endpoints.Authorization,
@@ -39,6 +37,10 @@ internal sealed class DevelopmentIdentityInitializer(
             },
             Requirements = { Requirements.Features.ProofKeyForCodeExchange }
         };
+        foreach (string redirectUri in LocalIdentityContract.RedirectUris)
+            descriptor.RedirectUris.Add(new Uri(redirectUri));
+        foreach (string redirectUri in LocalIdentityContract.PostLogoutRedirectUris)
+            descriptor.PostLogoutRedirectUris.Add(new Uri(redirectUri));
         if (application is null)
         {
             await applications.CreateAsync(descriptor, cancellationToken).ConfigureAwait(false);

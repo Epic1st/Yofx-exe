@@ -19,6 +19,16 @@ interface Yo4xAuthBridge {
   beginLogin?: (intent?: 'sign-in' | 'create-account') => Promise<void>;
 }
 
+interface Yo4xRuntimeConfig {
+  readonly apiOrigin?: string;
+  readonly identity?: {
+    readonly authority?: string;
+    readonly clientId?: string;
+    readonly redirectUri?: string;
+  };
+}
+
 interface Window {
   __YO4X_AUTH__?: Yo4xAuthBridge;
+  __YO4X_RUNTIME_CONFIG__?: Yo4xRuntimeConfig;
 }

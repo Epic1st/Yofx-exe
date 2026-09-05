@@ -71,7 +71,18 @@ internal sealed class DesktopLiveBotHost : IDisposable
 
     internal bool HasSessions => !sessions.IsEmpty;
 
-    internal async Task StartAsync(DesktopBotInstance bot, CancellationToken cancellationToken)
+    internal Task StartAsync(DesktopBotInstance bot, CancellationToken cancellationToken) =>
+        StartCoreAsync(bot, null, cancellationToken);
+
+    internal Task StartAuthorizedAsync(
+        DesktopExecutionBundle bundle,
+        CancellationToken cancellationToken) =>
+        StartCoreAsync(bundle.Bot, bundle, cancellationToken);
+
+    private async Task StartCoreAsync(
+        DesktopBotInstance bot,
+        DesktopExecutionBundle? authorized,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(bot);
         await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -91,23 +102,35 @@ internal sealed class DesktopLiveBotHost : IDisposable
             byte[] assembly = [];
             try
             {
-                DesktopStrategyInfo strategy = LocalTradingEngine.Instance.FindStrategy(bot.StrategyId, bot.StrategyName)
-                    ?? throw Rejected("The bot's strategy is not available on this device.");
-                string symbol = string.IsNullOrWhiteSpace(bot.Symbol) ? strategy.Symbol : bot.Symbol.Trim();
+                DesktopStrategyInfo? strategy = authorized is null
+                    ? LocalTradingEngine.Instance.FindStrategy(bot.StrategyId, bot.StrategyName)
+                    : null;
+                if (authorized is null && strategy is null)
+                    throw Rejected("The bot's strategy is not available on this device.");
+                string symbol = string.IsNullOrWhiteSpace(bot.Symbol) ? strategy?.Symbol ?? "XAUUSDm" : bot.Symbol.Trim();
                 if (string.IsNullOrWhiteSpace(symbol))
                 {
                     symbol = "XAUUSDm";
                 }
 
-                string timeframe = string.IsNullOrWhiteSpace(bot.Timeframe) ? strategy.Timeframe : bot.Timeframe.Trim();
+                string timeframe = string.IsNullOrWhiteSpace(bot.Timeframe) ? strategy?.Timeframe ?? "M1" : bot.Timeframe.Trim();
                 if (string.IsNullOrWhiteSpace(timeframe))
                 {
                     timeframe = "M1";
                 }
 
                 string server = ResolveServer(bot);
-                ulong login = await ResolveLoginAsync(bot, server, cancellationToken).ConfigureAwait(false);
+                ulong login = authorized?.Login
+                    ?? await ResolveLoginAsync(bot, server, cancellationToken).ConfigureAwait(false);
                 string credentialKey = LocalCredentialKey.Create(login, server);
+                if (authorized is not null
+                    && !string.Equals(
+                        credentialKey,
+                        authorized.BindingFingerprint,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw Rejected("The execution bundle does not match the local MT5 credential binding.");
+                }
                 var vault = new DpapiLocalMt5CredentialVault(vaultRoot);
                 using LocalMt5Credential? credential = await vault
                     .OpenAsync(credentialKey, cancellationToken)
@@ -143,7 +166,9 @@ internal sealed class DesktopLiveBotHost : IDisposable
                 LocalTradingEngine.Instance.ApplyBrokerSnapshot(snapshot, symbol);
                 Journal(bot.Id, $"connected login {snapshot.Login} on {snapshot.Server} equity {snapshot.Equity:F2}");
 
-                LoadedStrategy loaded = LoadStrategy(strategy, login, server);
+                LoadedStrategy loaded = authorized is null
+                    ? LoadStrategy(strategy!, login, server)
+                    : LoadAuthorizedStrategy(authorized, login, server);
                 assembly = loaded.AssemblyBytes;
                 IReadOnlyList<Mql5Bar> seed = DownloadSeed(broker, timeframe);
                 var initialized = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -509,6 +534,32 @@ internal sealed class DesktopLiveBotHost : IDisposable
         throw Rejected("No runnable .yo4x package or .mq5 source was found for this strategy.");
     }
 
+    private static LoadedStrategy LoadAuthorizedStrategy(
+        DesktopExecutionBundle bundle,
+        ulong login,
+        string server)
+    {
+        StrategyLicenseClaims claims = bundle.License.Claims;
+        var context = new StrategyLicenseValidationContext(
+            claims.TenantId,
+            claims.UserId,
+            claims.StrategyId,
+            claims.StrategyVersion ?? throw new InvalidDataException("The license has no strategy version."),
+            claims.AssemblySha256 ?? throw new InvalidDataException("The license has no assembly digest."),
+            login,
+            server,
+            DateTimeOffset.UtcNow);
+        (Yo4xStrategyManifest manifest, byte[] assembly) = Yo4xStrategyPackage.UnpackAndValidate(
+            bundle.Package,
+            bundle.License,
+            context,
+            bundle.PublicationPublicKeyPem,
+            bundle.LicensePublicKeyPem,
+            bundle.AesKey,
+            bundle.HmacKey);
+        return new LoadedStrategy(manifest, assembly, null);
+    }
+
     private static string ResolveMq5Source(DesktopStrategyInfo strategy)
     {
         if (!string.IsNullOrWhiteSpace(strategy.FilePath)
@@ -799,6 +850,11 @@ internal sealed class DesktopLiveBotHost : IDisposable
 
     private static string ResolveServer(DesktopBotInstance bot)
     {
+        if (!string.IsNullOrWhiteSpace(bot.Server))
+        {
+            return bot.Server.Trim();
+        }
+
         foreach (DesktopAccountInfo account in LocalTradingEngine.Instance.GetAccounts())
         {
             if (!string.IsNullOrWhiteSpace(bot.BrokerAccountId)
@@ -966,6 +1022,12 @@ internal sealed class DesktopLiveBotHost : IDisposable
 
     private static string SafeMessage(Exception exception)
     {
+        while (exception is System.Reflection.TargetInvocationException
+               && exception.InnerException is not null)
+        {
+            exception = exception.InnerException;
+        }
+
         string message = exception.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
         if (string.IsNullOrWhiteSpace(message))
         {

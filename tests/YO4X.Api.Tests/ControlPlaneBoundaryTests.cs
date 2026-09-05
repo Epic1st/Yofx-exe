@@ -775,7 +775,7 @@ public sealed class ControlPlaneBoundaryTests
 
         foreach (string field in new[]
         {
-            "BrokerProfileId", "Server", "MaskedLogin", "BindingFingerprint", "Environment"
+            "BrokerProfileId", "Server", "MaskedLogin", "BindingFingerprint", "Environment", "LoginNumber"
         })
         {
             Assert.Contains(field, request, StringComparison.Ordinal);
@@ -787,12 +787,11 @@ public sealed class ControlPlaneBoundaryTests
     }
 
     /// <summary>
-    /// The link dialog now collects a broker password, so the wire body carries
-    /// one. This pins the shape of that path: the password goes to the on-device
-    /// vault and the persistence layer never sees it.
+    /// The link dialog still collects a broker password, but Control Plane
+    /// accepts metadata only. The desktop writes the secret to DPAPI.
     /// </summary>
     [Fact]
-    public void BrokerAccountLinkSendsThePasswordOnlyToTheOnDeviceCredentialVault()
+    public void BrokerAccountLinkPersistsMetadataWithoutAcceptingAPassword()
     {
         string program = ReadRepositoryFile(
             "src",
@@ -803,25 +802,25 @@ public sealed class ControlPlaneBoundaryTests
             program,
             "user.MapPost(\"/broker-accounts\"",
             "user.MapBrokerAccountDiscovery();");
+        string body = ReadRepositoryFile(
+            "src",
+            "Apps",
+            "YO4X.ControlPlane.Api",
+            "BrokerAccountRegistrationBody.cs");
 
-        // The plaintext is scoped and erased, is refused off-device, and is
-        // handed to the vault rather than to the application layer.
-        Assert.Contains("using Utf8Secret password = request.Password;", endpoint, StringComparison.Ordinal);
-        // Still loopback-only, but a dual-stack socket surfaces a local caller as
-        // ::ffff:127.0.0.1, which IPAddress.IsLoopback answers false for. The mapped
-        // form is folded down to IPv4 first so an on-device caller is not refused.
-        Assert.Contains(
-            "!IPAddress.IsLoopback(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip)",
-            endpoint,
-            StringComparison.Ordinal);
-        Assert.Contains("credentialVault.StoreAsync(", endpoint, StringComparison.Ordinal);
+        Assert.DoesNotContain("request.Password", endpoint, StringComparison.Ordinal);
+        Assert.DoesNotContain("credentialVault.StoreAsync(", endpoint, StringComparison.Ordinal);
+        Assert.DoesNotContain("Utf8Secret Password", body, StringComparison.Ordinal);
         Assert.Contains("BrokerAccountLinkValidation.ToApplicationRequest(", endpoint, StringComparison.Ordinal);
+        Assert.Contains("login_number", ReadRepositoryFile(
+            "src",
+            "Infrastructure",
+            "YO4X.ControlPlane.Postgres",
+            "PostgresBrokerAccountMutations.cs"), StringComparison.Ordinal);
 
-        // The application call must receive the mapped, password-free request.
         string applicationCall = Slice(endpoint, "application.CreateBrokerAccountAsync(", ");");
         Assert.DoesNotContain("password", applicationCall, StringComparison.OrdinalIgnoreCase);
 
-        // Nothing in the persistence path may name the secret at all.
         string mutations = ReadRepositoryFile(
             "src",
             "Infrastructure",

@@ -1,174 +1,98 @@
 import http from 'http';
+import https from 'https';
 import fs from 'fs';
-import path from 'path';
 import crypto from 'crypto';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const PORT = 5184;
-const ROOT_DIR = path.resolve(__dirname, '../../../');
-const TESTING_MQ5_DIR = path.join(ROOT_DIR, 'Testing', 'Mq5');
-const APP_DATA_DIR = path.join(process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local'), 'YO4X', 'data');
-const DESKTOP_STRAT_DIR = path.join(ROOT_DIR, 'artifacts', 'desktop', 'YO4X.Desktop', 'win-x64', 'strategies');
+const CONTROL_API_ORIGIN = process.env.YO4X_CONTROL_API_ORIGIN || 'https://127.0.0.1:7209';
+const PUBLICATION_SECRET_FILE = process.env.YO4X_MARKETPLACE_PUBLICATION_SECRET_FILE
+  || 'C:\\Users\\Dev23\\Desktop\\admin\\data\\marketplace-publication.secret';
+const ADMIN_USER_FILE = process.env.YO4X_ADMIN_USER_FILE
+  || 'C:\\Users\\Dev23\\Desktop\\admin\\data\\admin-user.json';
+const sessions = new Map();
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
-fs.mkdirSync(TESTING_MQ5_DIR, { recursive: true });
-fs.mkdirSync(APP_DATA_DIR, { recursive: true });
-fs.mkdirSync(DESKTOP_STRAT_DIR, { recursive: true });
+function parseCookies(header = '') {
+  return Object.fromEntries(header.split(';').map(value => value.trim().split('='))
+    .filter(parts => parts.length === 2).map(([key, value]) => [key, decodeURIComponent(value)]));
+}
 
-function getStrategies() {
-  const strategies = [];
-  if (fs.existsSync(TESTING_MQ5_DIR)) {
-    const files = fs.readdirSync(TESTING_MQ5_DIR);
-    for (const f of files) {
-      if (f.endsWith('.yo4x') || f.endsWith('.mq5')) {
-        const full = path.join(TESTING_MQ5_DIR, f);
-        const stat = fs.statSync(full);
-        const base = f.replace(/\.(yo4x|mq5)$/i, '');
-        const isYo4x = f.endsWith('.yo4x');
-        strategies.push({
-          id: crypto.createHash('sha256').update(base).digest('hex').substring(0, 36),
-          name: base,
-          slug: base.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-          file: f,
-          format: isYo4x ? '.yo4x' : '.mq5',
-          size: `${(stat.size / 1024).toFixed(1)} KB`,
-          symbol: 'XAUUSDm',
-          timeframe: 'M1',
-          version: '1.0.0',
-          author: 'YO4X Admin',
-          updatedAt: stat.mtime.toISOString(),
-          isDrm: isYo4x
-        });
-      }
-    }
+function sessionFor(req) {
+  const token = parseCookies(req.headers.cookie).yo4x_admin_session;
+  if (!token) return null;
+  const session = sessions.get(token);
+  if (!session || session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return null;
   }
-  return strategies;
+  return { token, ...session };
 }
 
-function getOverviewData() {
-  const strategies = getStrategies();
-  return {
-    serverTime: new Date().toISOString(),
-    totalUsers: 2,
-    totalAccounts: 2,
-    totalStrategies: strategies.length,
-    totalActiveBots: 1,
-    users: [
-      {
-        id: '019c8d27-763d-7000-8000-000000000002',
-        email: 'admin@yo4x.com',
-        role: 'SUPER_ADMIN',
-        createdAt: '2026-08-25T08:00:00.000Z',
-        lastLoginAt: new Date().toISOString(),
-        status: 'ACTIVE'
-      },
-      {
-        id: '019c8d27-763d-7000-8000-000000000001',
-        email: 'priyanshu@yo4x.com',
-        role: 'TRADER',
-        createdAt: '2026-09-01T09:00:00.000Z',
-        lastLoginAt: new Date().toISOString(),
-        status: 'ACTIVE'
-      }
-    ],
-    accounts: [
-      {
-        id: '019c8d27-763d-7000-8000-000000000010',
-        login: '434094289',
-        accountName: 'priyanshu',
-        server: 'Exness-MT5Trial7',
-        maskedLogin: '****4289',
-        environment: 'DEMO',
-        accountMode: 'HEDGING',
-        balance: 500500.00,
-        equity: 500550.18,
-        floatingPnL: 50.18,
-        margin: 159.37,
-        freeMargin: 500390.81,
-        openTradesCount: 14,
-        connected: true,
-        updatedAt: new Date().toISOString()
-      },
-      {
-        id: '019c8d27-763d-7000-8000-000000000020',
-        login: '433470984',
-        accountName: 'Standard',
-        server: 'Exness-MT5Trial7',
-        maskedLogin: '****0984',
-        environment: 'DEMO',
-        accountMode: 'HEDGING',
-        balance: 10000.00,
-        equity: 10000.00,
-        floatingPnL: 0.0,
-        margin: 0.0,
-        freeMargin: 10000.00,
-        openTradesCount: 0,
-        connected: false,
-        updatedAt: new Date().toISOString()
-      }
-    ],
-    bots: [
-      {
-        id: '019c8d27-763d-7000-8000-000000000050',
-        name: 'Private EA V1.00',
-        strategyName: 'Private EA V1.00',
-        symbol: 'XAUUSDm',
-        status: 'RUNNING',
-        maskedLogin: '****4289',
-        account: '434094289 (priyanshu)',
-        todayProfit: 50.18,
-        todayTrades: 14
-      }
-    ],
-    strategies
-  };
+function verifyAdmin(email, password) {
+  if (!fs.existsSync(ADMIN_USER_FILE) || typeof password !== 'string') return false;
+  const user = JSON.parse(fs.readFileSync(ADMIN_USER_FILE, 'utf8'));
+  if (typeof user.Email !== 'string' || email.toLowerCase() !== user.Email.toLowerCase()) return false;
+  const expected = Buffer.from(user.PasswordHash, 'base64');
+  const actual = crypto.pbkdf2Sync(password, Buffer.from(user.Salt, 'base64'), user.Iterations, expected.length, 'sha256');
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
-function packageToYo4x(name, sourceCode, meta = {}) {
-  const metadata = {
-    PackageFormatVersion: '1.0.0',
-    PackageId: crypto.randomUUID(),
-    PackageCreatedAt: new Date().toISOString(),
-    StrategyId: crypto.randomUUID(),
-    Slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-    Name: name,
-    AuthorName: meta.author || 'YO4X Admin',
-    AuthorInitials: 'YA',
-    Category: meta.category || 'Proprietary Algorithm',
-    Symbol: meta.symbol || 'XAUUSDm',
-    Timeframe: meta.timeframe || 'M1',
-    Version: meta.version || '1.0.0',
-    Description: meta.description || `High performance trading algorithm for ${meta.symbol || 'XAUUSDm'}.`,
-    IsDrmProtected: true,
-    RatingAverage: 4.9,
-    RatingCount: 24,
-    ActiveUsers: 8,
-    IsFree: true,
-    CloudPriceMonthlyCents: 0,
-    CloudPriceYearlyCents: 0,
-    Currency: 'USD',
-    Inputs: [
-      { Name: 'InpLotSize', Label: 'Trade Volume / Lots', Type: 'double', DefaultValue: '0.02' },
-      { Name: 'InpStopLoss', Label: 'Stop Loss (Points)', Type: 'int', DefaultValue: '150' },
-      { Name: 'InpTakeProfit', Label: 'Take Profit (Points)', Type: 'int', DefaultValue: '250' },
-      { Name: 'InpTrailingStop', Label: 'Trailing Stop (Points)', Type: 'int', DefaultValue: '80' },
-      { Name: 'InpMagicNumber', Label: 'Magic Number ID', Type: 'int', DefaultValue: '887766' }
-    ]
-  };
-
-  const metaJson = JSON.stringify(metadata, null, 2);
-  const metaBytes = Buffer.from(metaJson, 'utf8');
-  const sourceBytes = Buffer.from(sourceCode || '// MQL5 Bytecode', 'utf8');
-
-  const container = Buffer.alloc(16 + metaBytes.length + sourceBytes.length);
-  container.write('YO4X_PACKAGE_V1\0', 0, 16, 'ascii');
-  container.writeUInt32LE(metaBytes.length, 12);
-  metaBytes.copy(container, 16);
-  sourceBytes.copy(container, 16 + metaBytes.length);
-
-  return { container, metadata };
+function readJsonBody(req, maximumBytes = 5 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let length = 0;
+    req.on('data', chunk => {
+      length += chunk.length;
+      if (length > maximumBytes) {
+        reject(new Error('Request body is too large.'));
+        req.destroy();
+      } else chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch { reject(new Error('Request body is not valid JSON.')); }
+    });
+    req.on('error', reject);
+  });
+}
+function controlRequest(method, route, body) {
+  const target = new URL(route, CONTROL_API_ORIGIN);
+  if (target.protocol !== 'https:' || target.hostname !== '127.0.0.1') {
+    throw new Error('The development admin portal accepts only the pinned loopback Control Plane origin.');
+  }
+  const secret = fs.readFileSync(PUBLICATION_SECRET_FILE, 'utf8').trim();
+  const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8');
+  return new Promise((resolve, reject) => {
+    const request = https.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      path: target.pathname + target.search,
+      method,
+      rejectUnauthorized: false,
+      headers: {
+        Accept: 'application/json',
+        'X-YO4X-Admin-Secret': secret,
+        ...(payload === null ? {} : {
+          'Content-Type': 'application/json',
+          'Content-Length': payload.length,
+        }),
+      },
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let value;
+        try { value = text.length === 0 ? {} : JSON.parse(text); }
+        catch { value = { error: 'Control Plane returned an invalid response.' }; }
+        resolve({ status: response.statusCode || 502, value });
+      });
+    });
+    request.on('error', reject);
+    if (payload !== null) request.write(payload);
+    request.end();
+  });
 }
 
 const HTML_PORTAL = `<!DOCTYPE html>
@@ -249,7 +173,7 @@ const HTML_PORTAL = `<!DOCTYPE html>
       </div>
       <div class="form-group">
         <label>Password</label>
-        <input type="password" id="passwordInput" class="form-control" value="Password123!" required />
+        <input type="password" id="passwordInput" class="form-control" autocomplete="current-password" required />
       </div>
       <button type="submit" class="btn">Sign In to Admin Portal</button>
     </form>
@@ -270,24 +194,24 @@ const HTML_PORTAL = `<!DOCTYPE html>
       <!-- Stats Grid -->
       <div class="grid-stats">
         <div class="stat-card">
-          <div class="stat-label">Connected MT5 Account</div>
-          <div class="stat-value" id="statConnectedAcc">434094289</div>
-          <div class="stat-meta" id="statServer">Exness-MT5Trial7 (Hedging)</div>
+          <div class="stat-label">Registered Users</div>
+          <div class="stat-value" id="statUsers">0</div>
+          <div class="stat-meta">Central identity database</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">Live MT5 Balance</div>
-          <div class="stat-value" id="statBalance">$500,500.00</div>
-          <div class="stat-meta" id="statEquity">Equity: $500,550.18 (+50.18)</div>
+          <div class="stat-label">Linked MT5 Accounts</div>
+          <div class="stat-value" id="statAccounts">0</div>
+          <div class="stat-meta">Passwords remain in local vaults</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">Published Strategies (.yo4x)</div>
-          <div class="stat-value" id="statStrategies">3</div>
-          <div class="stat-meta">OTA Synchronized to Desktop</div>
+          <div class="stat-value" id="statStrategies">0</div>
+          <div class="stat-meta">Stored by Control Plane</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">Active Bots Running</div>
           <div class="stat-value" id="statBots">1</div>
-          <div class="stat-meta">Local Process Supervisor</div>
+          <div class="stat-meta">Reported by desktop runtimes</div>
         </div>
       </div>
 
@@ -340,12 +264,10 @@ const HTML_PORTAL = `<!DOCTYPE html>
           <thead>
             <tr>
               <th>Name</th>
-              <th>Format</th>
               <th>Symbol</th>
               <th>Version</th>
-              <th>Size</th>
               <th>Updated</th>
-              <th>Action</th>
+              <th>License</th>
             </tr>
           </thead>
           <tbody id="strategiesTable"></tbody>
@@ -360,14 +282,11 @@ const HTML_PORTAL = `<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th>Account Login</th>
-              <th>Name</th>
+              <th>Account</th>
               <th>Server</th>
-              <th>Balance</th>
-              <th>Equity</th>
-              <th>Floating PnL</th>
-              <th>Open Positions</th>
+              <th>Environment</th>
               <th>Status</th>
+              <th>Updated</th>
             </tr>
           </thead>
           <tbody id="accountsTable"></tbody>
@@ -378,9 +297,11 @@ const HTML_PORTAL = `<!DOCTYPE html>
   </div>
 
   <script>
-    let isAuthed = localStorage.getItem('yo4x_admin_token') === 'true';
+    let isAuthed = false;
 
-    function checkAuth() {
+    async function checkAuth() {
+      try { isAuthed = (await fetch('/api/session')).ok; }
+      catch { isAuthed = false; }
       if (isAuthed) {
         document.getElementById('loginSection').style.display = 'none';
         document.getElementById('dashboardSection').style.display = 'block';
@@ -391,25 +312,27 @@ const HTML_PORTAL = `<!DOCTYPE html>
       }
     }
 
-    document.getElementById('loginForm').addEventListener('submit', (e) => {
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const email = document.getElementById('emailInput').value.trim();
       const pass = document.getElementById('passwordInput').value;
-      if (email && pass.length >= 6) {
-        isAuthed = true;
-        localStorage.setItem('yo4x_admin_token', 'true');
-        checkAuth();
+      const response = await fetch('/api/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password: pass })
+      });
+      if (response.ok) {
+        document.getElementById('passwordInput').value = '';
+        await checkAuth();
       } else {
         const err = document.getElementById('loginAlert');
-        err.textContent = 'Invalid credentials. Password must be >= 6 characters.';
+        err.textContent = 'Invalid admin credentials.';
         err.style.display = 'block';
       }
     });
 
-    document.getElementById('logoutBtn').addEventListener('click', () => {
-      isAuthed = false;
-      localStorage.removeItem('yo4x_admin_token');
-      checkAuth();
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      await checkAuth();
     });
 
     function handleFileSelected(e) {
@@ -426,44 +349,42 @@ const HTML_PORTAL = `<!DOCTYPE html>
       reader.readAsText(file);
     }
 
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, character => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      })[character]);
+    }
+
     async function loadOverview() {
       try {
         const res = await fetch('/api/overview');
         const data = await res.json();
         
-        document.getElementById('statConnectedAcc').textContent = data.accounts[0]?.login || '434094289';
-        document.getElementById('statServer').textContent = (data.accounts[0]?.server || 'Exness-MT5Trial7') + ' (Hedging)';
-        document.getElementById('statBalance').textContent = '$' + (data.accounts[0]?.balance || 500500).toLocaleString('en-US', { minimumFractionDigits: 2 });
-        document.getElementById('statEquity').textContent = 'Equity: $' + (data.accounts[0]?.equity || 500550.18).toLocaleString('en-US', { minimumFractionDigits: 2 });
+        if (!res.ok) { if (res.status === 401) await checkAuth(); return; }
+        document.getElementById('statUsers').textContent = data.totalUsers;
+        document.getElementById('statAccounts').textContent = data.totalAccounts;
         document.getElementById('statStrategies').textContent = data.totalStrategies;
         document.getElementById('statBots').textContent = data.totalActiveBots;
 
         const sTbody = document.getElementById('strategiesTable');
         sTbody.innerHTML = data.strategies.map(s => \`
           <tr>
-            <td><strong>\${s.name}</strong></td>
-            <td><span class="pill pill-blue">\${s.format}</span></td>
-            <td>\${s.symbol}</td>
-            <td>\${s.version}</td>
-            <td>\${s.size}</td>
+            <td><strong>\${escapeHtml(s.name)}</strong></td>
+            <td>\${escapeHtml(s.symbol)}</td>
+            <td>\${escapeHtml(s.version)}</td>
             <td>\${new Date(s.updatedAt).toLocaleTimeString()}</td>
-            <td>
-              <button class="btn btn-danger" onclick="deleteStrategy('\${s.id}', '\${s.file}')">Delete</button>
-            </td>
+            <td><span class="pill \${s.isFree ? 'pill-green' : 'pill-blue'}">\${s.isFree ? 'FREE' : 'PAID'}</span></td>
           </tr>
         \`).join('');
 
         const aTbody = document.getElementById('accountsTable');
         aTbody.innerHTML = data.accounts.map(a => \`
           <tr>
-            <td><strong>\${a.login}</strong></td>
-            <td>\${a.accountName}</td>
-            <td>\${a.server}</td>
-            <td>$\${a.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-            <td>$\${a.equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-            <td style="color: \${a.floatingPnL >= 0 ? '#34d399' : '#f87171'}">+\$\${a.floatingPnL.toFixed(2)}</td>
-            <td>\${a.openTradesCount} open</td>
-            <td><span class="pill \${a.connected ? 'pill-green' : 'pill-blue'}">\${a.connected ? 'CONNECTED' : 'DISCONNECTED'}</span></td>
+            <td><strong>\${escapeHtml(a.maskedLogin)}</strong></td>
+            <td>\${escapeHtml(a.server)}</td>
+            <td>\${escapeHtml(a.environment)}</td>
+            <td><span class="pill \${a.state === 'ACTIVE' ? 'pill-green' : 'pill-blue'}">\${escapeHtml(a.state)}</span></td>
+            <td>\${new Date(a.updatedAt).toLocaleTimeString()}</td>
           </tr>
         \`).join('');
 
@@ -490,7 +411,7 @@ const HTML_PORTAL = `<!DOCTYPE html>
         });
         const json = await res.json();
         if (res.ok) {
-          showAlert('Strategy "' + name + '" successfully compiled and packaged into .yo4x! Auto-synced to desktop.', 'success');
+          showAlert('Strategy "' + name + '" was compiled by Control Plane, stored centrally, and published to the catalogue.', 'success');
           document.getElementById('stratName').value = '';
           document.getElementById('mq5Code').value = '';
           document.getElementById('fileSelectedLabel').textContent = 'Click to browse Expert Advisor source';
@@ -518,7 +439,10 @@ const HTML_PORTAL = `<!DOCTYPE html>
 
     function showAlert(msg, type) {
       const el = document.getElementById('alertBox');
-      el.innerHTML = '<div class="alert alert-' + type + '">' + msg + '</div>';
+      const alert = document.createElement('div');
+      alert.className = 'alert alert-' + (type === 'success' ? 'success' : 'danger');
+      alert.textContent = msg;
+      el.replaceChildren(alert);
       setTimeout(() => { el.innerHTML = ''; }, 6000);
     }
 
@@ -528,69 +452,107 @@ const HTML_PORTAL = `<!DOCTYPE html>
 </body>
 </html>`;
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
   const pathname = parsedUrl.pathname;
 
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
+  if (pathname === '/api/login' && req.method === 'POST') {
+    try {
+      const body = await readJsonBody(req, 16 * 1024);
+      if (!verifyAdmin(String(body.email || '').trim(), body.password)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid admin credentials.' }));
+        return;
+      }
+      const token = crypto.randomBytes(32).toString('base64url');
+      sessions.set(token, { expiresAt: Date.now() + SESSION_TTL_MS });
+      res.writeHead(204, {
+        'Set-Cookie': `yo4x_admin_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`
+      });
+      res.end();
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+
+  if (pathname === '/api/session' && req.method === 'GET') {
+    res.writeHead(sessionFor(req) ? 204 : 401);
     res.end();
+    return;
+  }
+
+  if (pathname === '/api/logout' && req.method === 'POST') {
+    const session = sessionFor(req);
+    if (session) sessions.delete(session.token);
+    res.writeHead(204, { 'Set-Cookie': 'yo4x_admin_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
+    res.end();
+    return;
+  }
+
+  if (pathname.startsWith('/api/') && !sessionFor(req)) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Admin authentication is required.' }));
     return;
   }
 
   // 1. API: Overview
   if (pathname === '/api/overview' && req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(getOverviewData()));
+    controlRequest('GET', '/internal/v1/marketplace/admin-overview').then(result => {
+      res.writeHead(result.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.value));
+    }).catch(error => {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    });
     return;
   }
 
   // 2. API: Upload & Package MQL5 -> .yo4x
   if (pathname === '/api/strategies/upload' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const data = JSON.parse(body);
+    try {
+        const data = await readJsonBody(req);
         const name = (data.name || 'Custom EA').trim();
-        const { container, metadata } = packageToYo4x(name, data.sourceCode, data);
-
-        const yo4xFileName = `${name}.yo4x`;
-        fs.writeFileSync(path.join(TESTING_MQ5_DIR, yo4xFileName), container);
-        fs.writeFileSync(path.join(DESKTOP_STRAT_DIR, yo4xFileName), container);
-
-        if (data.sourceCode) {
-          fs.writeFileSync(path.join(TESTING_MQ5_DIR, `${name}.mq5`), data.sourceCode, 'utf8');
-        }
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, fileName: yo4xFileName, metadata }));
+        const source = Buffer.from(data.sourceCode || '', 'utf8');
+        if (source.length === 0) throw new Error('MQL5 source is required.');
+        const result = await controlRequest('POST', '/internal/v1/marketplace/mql5-publications', {
+          uploadId: crypto.randomUUID(),
+          sourceName: `${name}.mq5`,
+          sourceSha256: crypto.createHash('sha256').update(source).digest('hex'),
+          sourceBase64: source.toString('base64'),
+          name,
+          version: (data.version || '1.0.0').trim(),
+          author: 'YO4X Admin',
+          description: `Publisher-verified strategy ${name}.`,
+          symbol: (data.symbol || 'XAUUSDm').trim(),
+          timeframe: (data.timeframe || 'M1').trim(),
+          category: 'Proprietary Algorithm',
+          summary: `YO4X marketplace strategy ${name}.`,
+          monthlyCents: 0,
+          yearlyCents: 0,
+          currency: 'USD',
+        });
+        res.writeHead(result.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result.status < 300
+          ? { success: true, ...result.value }
+          : { error: result.value.title || result.value.error || 'Publication failed.' }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
-    });
     return;
   }
 
   // 3. API: Delete Strategy
   if (pathname.startsWith('/api/strategies/') && req.method === 'DELETE') {
-    const fileName = decodeURIComponent(pathname.replace('/api/strategies/', ''));
-    try {
-      const p1 = path.join(TESTING_MQ5_DIR, fileName);
-      const p2 = path.join(DESKTOP_STRAT_DIR, fileName);
-      if (fs.existsSync(p1)) fs.unlinkSync(p1);
-      if (fs.existsSync(p2)) fs.unlinkSync(p2);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Published strategies must be unlisted through Control Plane.' }));
     return;
   }
 
@@ -599,10 +561,10 @@ const server = http.createServer((req, res) => {
   res.end(HTML_PORTAL);
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`=======================================================`);
   console.log(`  YO4X ADMIN PORTAL ACTIVE ON http://localhost:${PORT}`);
   console.log(`  Admin Email:    admin@yo4x.com`);
-  console.log(`  Default Pass:   Password123!`);
+  console.log(`  Authentication: PBKDF2 credential file`);
   console.log(`=======================================================`);
 });

@@ -15,6 +15,7 @@ public partial class App : Application
 
         try
         {
+            DesktopEnvironmentFile.Load();
             // 1. Start In-Process Local Web & Trading Server
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             localServer = new LocalServerHost(baseDir);

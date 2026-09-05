@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.WebUtilities;
 
 namespace YO4X.DevelopmentIdentity.Controllers;
 
@@ -144,8 +145,28 @@ public sealed class AccountController(
 
     private IActionResult SafeLocalRedirect(string? returnUrl) =>
         IsAuthorizationReturnUrl(returnUrl)
-            ? LocalRedirect(returnUrl!)
+            ? LocalRedirect(ConsumeLoginPrompt(returnUrl!))
             : Redirect(LocalIdentityContract.FrontendOrigin + "/auth/sign-in");
+
+    // `prompt=login` is a one-time instruction to show this credential form. Sending it back to
+    // /connect/authorize after the form succeeds would challenge the new cookie again and create
+    // an endless sign-in loop. Preserve the OIDC state/PKCE parameters while consuming only that
+    // one instruction.
+    private static string ConsumeLoginPrompt(string returnUrl)
+    {
+        int queryIndex = returnUrl.IndexOf('?', StringComparison.Ordinal);
+        if (queryIndex < 0)
+        {
+            return returnUrl;
+        }
+
+        IEnumerable<KeyValuePair<string, string?>> parameters = QueryHelpers
+            .ParseQuery(returnUrl[(queryIndex + 1)..])
+            .Where(parameter => !string.Equals(parameter.Key, "prompt", StringComparison.Ordinal))
+            .SelectMany(parameter => parameter.Value.Select(value =>
+                new KeyValuePair<string, string?>(parameter.Key, value)));
+        return returnUrl[..queryIndex] + QueryString.Create(parameters);
+    }
 
     private string SafeReturnUrl(string? returnUrl) =>
         IsAuthorizationReturnUrl(returnUrl)

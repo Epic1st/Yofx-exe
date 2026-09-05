@@ -97,8 +97,6 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const maskedLoginPattern = /^[*]{1,96}[0-9]{0,4}$/u;
 const lowercaseSha256Pattern = /^[0-9a-f]{64}$/u;
 const mt5LoginPattern = /^[0-9]{1,20}$/u;
-/** Mirrors LocalMt5Credential.MaximumPasswordBytes, measured in UTF-8 bytes. */
-const maximumBrokerPasswordBytes = 512;
 const dateOnlyPattern = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 const journalCursorPattern = /^[A-Za-z0-9_.:=-]{1,512}$/u;
 
@@ -204,21 +202,6 @@ function isSubmittableInputList(inputs: readonly BacktestInputValue[]): boolean 
   return true;
 }
 
-/**
- * The bounds the on-device credential file format can represent without
- * ambiguity, checked here so an unusable password is refused before it is put
- * on the wire. Edge whitespace is rejected rather than trimmed: trimming would
- * silently store a different secret than the person typed.
- */
-function isSubmittableBrokerPassword(value: string): boolean {
-  const byteLength = new TextEncoder().encode(value).length;
-  return byteLength >= 1
-    && byteLength <= maximumBrokerPasswordBytes
-    && !/[\u0000\r\n]/u.test(value)
-    && !/^[ \t]/u.test(value)
-    && !/[ \t]$/u.test(value);
-}
-
 function isCalendarDate(value: string): boolean {
   if (!dateOnlyPattern.test(value)) {
     return false;
@@ -277,6 +260,7 @@ export interface ControlPlaneClient {
   ): Promise<readonly StrategyReviewView[]>;
   getBots(signal?: AbortSignal): Promise<readonly BotView[]>;
   getBot(botId: string, signal?: AbortSignal): Promise<BotView>;
+  acquireStrategy(strategyId: string, signal?: AbortSignal): Promise<void>;
   createBot(bot: CreateBotRequest, signal?: AbortSignal): Promise<BotView>;
   changeBotStatus(botId: string, status: BotStatus, signal?: AbortSignal): Promise<BotView>;
   getBotUptime(days?: number, signal?: AbortSignal): Promise<BotUptimeProjection>;
@@ -467,16 +451,9 @@ export function createControlPlaneClient(
         || brokerAccount.environment !== 'DEMO') {
         return Promise.reject(new Error('The broker-account registration request is invalid.'));
       }
-      if (!isSubmittableBrokerPassword(brokerAccount.password)) {
-        return Promise.reject(new Error(
-          'The broker password must not be empty, start or end with a space, or contain a line break.',
-        ));
-      }
       if (!idempotencyKeyPattern.test(idempotencyKey)) {
         return Promise.reject(new Error('The broker-account registration idempotency key is invalid.'));
       }
-      // POST with the secret in the body, never a query string: a URL is logged
-      // by proxies, kept in history, and echoed in a Referer header.
       return request('/v1/broker-accounts', decodeBrokerAccountView, signal, {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
@@ -487,7 +464,6 @@ export function createControlPlaneClient(
           maskedLogin: brokerAccount.maskedLogin,
           bindingFingerprint: brokerAccount.bindingFingerprint,
           environment: 'DEMO',
-          password: brokerAccount.password,
         },
       });
     },
@@ -613,6 +589,15 @@ export function createControlPlaneClient(
         return Promise.reject(new Error('The bot identifier is invalid.'));
       }
       return request(`/v1/bots/${encodeURIComponent(botId)}`, decodeBotView, signal);
+    },
+    acquireStrategy: (strategyId, signal) => {
+      if (!uuidPattern.test(strategyId)) {
+        return Promise.reject(new Error('The strategy identifier is invalid.'));
+      }
+      return request('/v1/marketplace/purchases', () => undefined, signal, {
+        method: 'POST',
+        body: { strategyId },
+      });
     },
     createBot: (bot, signal) => {
       if (!uuidPattern.test(bot.strategyId)

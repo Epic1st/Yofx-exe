@@ -10,10 +10,13 @@ using YO4X.ControlPlane.Postgres;
 using YO4X.Deployments;
 using YO4X.Identity;
 
+EnvironmentFileLoader.Load();
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.Limits.MaxRequestBodySize = 1024 * 1024;
+    // Signed marketplace uploads can carry a 64 MiB package as Base64. A path-
+    // aware limit below keeps every normal API request at the original 1 MiB.
+    options.Limits.MaxRequestBodySize = 90L * 1024 * 1024;
     options.ConfigureHttpsDefaults(https =>
         https.ClientCertificateMode = ClientCertificateMode.AllowCertificate);
 });
@@ -30,11 +33,40 @@ builder.Services.TryAddRuntimeControlPostgres(builder.Configuration, builder.Env
 builder.Services.TryAddScoped<IControlPlaneApplication, UnavailableControlPlaneApplication>();
 builder.Services.TryAddScoped<IFrontendProjectionApplication, UnavailableFrontendProjectionApplication>();
 builder.Services.TryAddScoped<IRuntimeControlPlaneApplication, UnavailableRuntimeControlPlaneApplication>();
-builder.Services.TryAddScoped<IBotExecutionCoordinator, UnavailableBotExecutionCoordinator>();
+builder.Services.TryAddScoped<IBotExecutionCoordinator, ProjectionBotExecutionCoordinator>();
 builder.Services.AddSingleton<ControlPlaneReadinessProbe>();
+builder.Services.AddHostedService<LocalBotRunExpiryService>();
 builder.Services.AddDevelopmentMt5ConnectionProbe(builder.Configuration, builder.Environment);
 builder.Services.AddLocalBrokerCredentialVault(builder.Configuration);
 builder.Services.TryAddLocalBotExecution(builder.Configuration, builder.Environment);
+string[] frontendOrigins = builder.Configuration
+    .GetSection("Frontend:AllowedOrigins")
+    .Get<string[]>()
+    ?? (builder.Environment.IsDevelopment()
+        ? ["http://127.0.0.1:5173", "http://127.0.0.1:4173", "http://127.0.0.1:4174"]
+        : []);
+foreach (string origin in frontendOrigins)
+{
+    if (!Uri.TryCreate(origin, UriKind.Absolute, out Uri? parsed)
+        || parsed.GetLeftPart(UriPartial.Authority) != origin
+        || parsed.Scheme != Uri.UriSchemeHttps
+           && (parsed.Scheme != Uri.UriSchemeHttp || !parsed.IsLoopback))
+        throw new InvalidOperationException("Frontend allowed origins must be exact HTTPS origins or HTTP loopback origins.");
+}
+if (frontendOrigins.Length > 0)
+{
+    builder.Services.AddCors(options => options.AddPolicy("desktop-frontend", policy =>
+        policy.WithOrigins(frontendOrigins)
+            .WithHeaders(
+                "Accept",
+                "Authorization",
+                "Content-Type",
+                ApiHeaders.IdempotencyKey,
+                ApiHeaders.IfMatch,
+                ApiHeaders.CorrelationId)
+            .WithMethods("GET", "POST", "PUT", "OPTIONS")
+            .AllowCredentials()));
+}
 
 // Password members bind straight from the request bytes into a buffer this
 // process can erase, so no broker password is ever materialized as a string.
@@ -42,8 +74,27 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(json =>
     json.SerializerOptions.Converters.Add(new Utf8SecretJsonConverter()));
 
 WebApplication app = builder.Build();
+app.Use(async (context, next) =>
+{
+    Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature? feature =
+        context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+    if (feature is { IsReadOnly: false })
+    {
+        feature.MaxRequestBodySize = context.Request.Path.StartsWithSegments(
+            "/internal/v1/marketplace/publications", StringComparison.Ordinal)
+            || context.Request.Path.StartsWithSegments(
+                "/internal/v1/marketplace/mql5-publications", StringComparison.Ordinal)
+                ? 90L * 1024 * 1024
+                : 1024 * 1024;
+    }
+    await next(context);
+});
 app.UseYo4xApiFoundation();
 app.UseYo4xHttpsOnly();
+if (frontendOrigins.Length > 0)
+{
+    app.UseCors("desktop-frontend");
+}
 app.UseYo4xProblemStatusCodes();
 app.UseRequestTimeouts();
 app.UseAuthentication();
@@ -169,27 +220,8 @@ user.MapPost("/broker-accounts", async (
     CreateBrokerAccountBody request,
     HttpContext context,
     IControlPlaneApplication application,
-    ILocalBrokerCredentialVault credentialVault,
     CancellationToken cancellationToken) =>
 {
-    // The plaintext lives in this one scope and is erased when it leaves, on
-    // every path including a rejected request or a failed vault write.
-    using Utf8Secret password = request.Password;
-
-    // A broker password may only be handed to a control plane running on the
-    // same device as the DPAPI vault it is destined for. Anything reached over
-    // a network has no vault to write to and must not hold the secret at all.
-    IPAddress? ip = context.Connection.RemoteIpAddress;
-    if (ip is null
-        || !IPAddress.IsLoopback(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip))
-    {
-        return ApiProblems.Create(
-            context,
-            StatusCodes.Status403Forbidden,
-            "LOCAL_CREDENTIAL_BOUNDARY_REQUIRES_LOOPBACK",
-            "A broker password can be submitted only to a control plane running on this device.");
-    }
-
     BrokerAccountLinkRequest link = BrokerAccountLinkValidation.Validate(request);
     BrokerAccountView account = await application.CreateBrokerAccountAsync(
         ToUserActor(context.User),
@@ -197,37 +229,10 @@ user.MapPost("/broker-accounts", async (
         ToMetadata(context),
         cancellationToken);
 
-    // Authorization first, secret second: the account row proves this tenant may
-    // link this server before any password reaches disk, and it records only the
-    // opaque binding reference that names the vault entry.
-    await credentialVault.StoreAsync(
-        link.Login,
-        link.Server,
-        link.CredentialKey,
-        password,
-        cancellationToken);
     context.Response.Headers.CacheControl = "no-store";
     context.Response.Headers.Pragma = "no-cache";
     return Results.Created($"/v1/broker-accounts/{account.Id:D}", account);
-})
-// Added before the precondition filter so it wraps it: a request rejected for a
-// missing idempotency key has already been bound, and its password must be
-// erased even though the handler never ran.
-.AddEndpointFilter(async (context, next) =>
-{
-    try
-    {
-        return await next(context);
-    }
-    finally
-    {
-        foreach (object? argument in context.Arguments)
-        {
-            (argument as CreateBrokerAccountBody)?.Dispose();
-        }
-    }
-})
-.AddEndpointFilter(new MutationPreconditionFilter());
+}).AddEndpointFilter(new MutationPreconditionFilter());
 
 // Approving a directory server is what makes it linkable for the caller's own
 // tenant. It is deliberately one server per request: there is no bulk route.
@@ -249,6 +254,7 @@ user.MapPost("/broker-server-approvals", async (
 
 user.MapBrokerAccountDiscovery();
 user.MapFrontendProjections();
+user.MapMarketplaceUserEndpoints();
 user.MapDevelopmentMt5ConnectionProbe(builder.Configuration, builder.Environment);
 
 user.MapGet("/broker-accounts/{brokerAccountId:guid}", async (

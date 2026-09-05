@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ControlPlaneClient } from '../../../api/controlPlaneClient';
 import type { BrokerAccountRegistrationOption, BrokerAccountView } from '../../../api/contracts';
 import { isUnauthorized } from '../../../api/problemDetails';
+import { storeDesktopBrokerCredential } from '../../../app/desktopShell';
 import {
   createBrokerAccountRegistrationBinding,
   createRegistrationIdempotencyKey,
@@ -133,6 +134,12 @@ export function useBrokerAccountDiscovery({
         createRegistrationIdempotencyKey(),
         controller.signal,
       );
+      await storeDesktopBrokerCredential({
+        login: binding.request.login,
+        server: binding.request.server,
+        bindingFingerprint: binding.request.bindingFingerprint,
+        password: binding.password,
+      });
       if (controller.signal.aborted) {
         return false;
       }

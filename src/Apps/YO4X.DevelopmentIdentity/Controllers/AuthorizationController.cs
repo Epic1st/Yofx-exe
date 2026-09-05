@@ -118,12 +118,13 @@ public sealed class AuthorizationController(
         identity.SetClaim(Claims.EmailVerified, "true");
         identity.SetClaim("tenant_id", user.TenantId.ToString("D"));
         identity.SetClaim("session_id", user.SessionId.ToString("D"));
+        identity.SetClaim("assurance", "password");
         principal.SetScopes(scopes);
         principal.SetResources(LocalIdentityContract.ControlPlaneAudience);
         principal.SetDestinations(static claim => claim.Type switch
         {
             Claims.Subject or Claims.Email or Claims.EmailVerified
-                or "tenant_id" or "session_id" =>
+                or "tenant_id" or "session_id" or "assurance" =>
                 [Destinations.AccessToken, Destinations.IdentityToken],
             Claims.Name => [Destinations.AccessToken, Destinations.IdentityToken],
             _ => [Destinations.AccessToken]

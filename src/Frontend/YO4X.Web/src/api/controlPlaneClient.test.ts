@@ -223,7 +223,6 @@ describe('ControlPlaneClient', () => {
       maskedLogin: '******78',
       bindingFingerprint: '1d3117beb8259101cea0f14baa65355341dd53834d817ece8d9cad9a2603aada',
       environment: 'DEMO',
-      password: 'synthetic-link-secret',
     }, '0123456789abcdef0123456789abcdef0123456789abcdef');
 
     const [url, init] = fetchMock.mock.calls[0]!;
@@ -238,35 +237,13 @@ describe('ControlPlaneClient', () => {
       maskedLogin: '******78',
       bindingFingerprint: '1d3117beb8259101cea0f14baa65355341dd53834d817ece8d9cad9a2603aada',
       environment: 'DEMO',
-      password: 'synthetic-link-secret',
     });
+    expect(String(init?.body).toLowerCase()).not.toContain('password');
     // The secret travels in the request body and nowhere else. A URL is kept in
     // history, logged by proxies, and echoed in a Referer header.
     expect(url.toString()).not.toContain('synthetic-link-secret');
     expect(url.toString()).not.toContain('12345678');
     expect(JSON.stringify(init?.headers)).not.toContain('synthetic-link-secret');
-  });
-
-  it('refuses a password the on-device credential store cannot represent', async () => {
-    const fetchMock = vi.fn(async () => new Response());
-    const client = createControlPlaneClient('https://control.example', fetchMock);
-    const base = {
-      brokerProfileId: '30000000-0000-4000-8000-000000000003',
-      server: 'Broker-Demo',
-      login: '12345678',
-      maskedLogin: '******78',
-      bindingFingerprint: '1d3117beb8259101cea0f14baa65355341dd53834d817ece8d9cad9a2603aada',
-      environment: 'DEMO' as const,
-    };
-
-    for (const password of ['', ' leading', 'trailing ', 'has\nbreak', 'x'.repeat(513)]) {
-      await expect(client.createBrokerAccount(
-        { ...base, password },
-        '0123456789abcdef0123456789abcdef',
-      )).rejects.toThrow('broker password');
-    }
-
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects unsafe broker registration before authentication or fetch', async () => {
@@ -282,7 +259,6 @@ describe('ControlPlaneClient', () => {
       maskedLogin: '12345678',
       bindingFingerprint: '1d3117beb8259101cea0f14baa65355341dd53834d817ece8d9cad9a2603aada',
       environment: 'DEMO',
-      password: 'synthetic-link-secret',
     }, '0123456789abcdef0123456789abcdef')).rejects.toThrow('registration request');
 
     expect(getAccessToken).not.toHaveBeenCalled();
