@@ -23,8 +23,10 @@ interface AppShellProps {
   readonly searchTerm: string;
   readonly onSearchTermChange: (value: string) => void;
   readonly account: TopBarAccount | null;
+  readonly accounts: readonly TopBarAccount[];
   readonly user: TopBarUser;
   readonly onOpenAccount: () => void;
+  readonly onSelectAccount: (accountId: string) => void;
   readonly onOpenSettings: () => void;
   readonly onSignOut?: (() => void) | undefined;
 
@@ -44,8 +46,10 @@ export function AppShell({
   searchTerm,
   onSearchTermChange,
   account,
+  accounts,
   user,
   onOpenAccount,
+  onSelectAccount,
   onOpenSettings,
   onSignOut,
   children,
@@ -70,8 +74,10 @@ export function AppShell({
               searchTerm={searchTerm}
               onSearchTermChange={onSearchTermChange}
               account={account}
+              accounts={accounts}
               user={user}
               onOpenAccount={onOpenAccount}
+              onSelectAccount={onSelectAccount}
               onOpenSettings={onOpenSettings}
               {...(onSignOut !== undefined ? { onSignOut } : {})}
             />

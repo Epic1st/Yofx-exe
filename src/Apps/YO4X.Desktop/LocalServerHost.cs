@@ -81,7 +81,7 @@ public sealed class LocalServerHost
     {
         try
         {
-            await DesktopLiveBotHost.Instance.StopAllAsync().ConfigureAwait(false);
+            await DesktopLocalRuntime.StopAllBotsAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -89,7 +89,7 @@ public sealed class LocalServerHost
 
         if (host != null)
         {
-            await host.StopAsync(cancellationToken);
+            await host.StopAsync(cancellationToken).ConfigureAwait(false);
             host.Dispose();
             host = null;
         }

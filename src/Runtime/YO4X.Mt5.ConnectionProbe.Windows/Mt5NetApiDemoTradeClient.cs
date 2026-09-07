@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.Loader;
@@ -314,6 +315,50 @@ public sealed class Mt5NetApiDemoTradeClient : IMt5TradeGateway, IDisposable
             environment,
             ResolveMarginMode(),
             tradingEnabled);
+    }
+
+    /// <summary>Reads every position or pending order currently held by the broker.</summary>
+    public IReadOnlyList<Mt5OpenOrder> ReadOpenOrders()
+    {
+        RequireConnectedSession();
+        MethodInfo? opened = apiType.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(method => method.Name == "GetOpenedOrders"
+                && method.GetParameters().Length == 2);
+        if (opened is null)
+        {
+            throw new MissingMethodException(apiType.FullName, "GetOpenedOrders");
+        }
+
+        ParameterInfo[] parameters = opened.GetParameters();
+        object sort = Enum.ToObject(parameters[0].ParameterType, 0);
+        if (opened.Invoke(instance, [sort, true]) is not IList orders)
+        {
+            return [];
+        }
+
+        var result = new List<Mt5OpenOrder>(orders.Count);
+        foreach (object? order in orders)
+        {
+            if (order is null)
+            {
+                continue;
+            }
+
+            Type type = order.GetType();
+            result.Add(new Mt5OpenOrder(
+                Read<long>(type, order, "Ticket"),
+                Read<string>(type, order, "Symbol") ?? string.Empty,
+                Read<object>(type, order, "Type")?.ToString() ?? string.Empty,
+                Read<double>(type, order, "Lots"),
+                Read<double>(type, order, "OpenPrice"),
+                Read<double>(type, order, "StopLoss"),
+                Read<double>(type, order, "TakeProfit"),
+                Read<double>(type, order, "Profit"),
+                Read<DateTime>(type, order, "OpenTime"),
+                Read<string>(type, order, "Comment") ?? string.Empty));
+        }
+
+        return result;
     }
 
     private Mt5AccountMarginMode ResolveMarginMode()

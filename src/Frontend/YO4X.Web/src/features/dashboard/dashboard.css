@@ -10,6 +10,71 @@
   gap: 8px;
 }
 
+/* ----------------------------------------------------- selected account ---- */
+
+.dashboard-account {
+  margin-bottom: 24px;
+}
+
+.dashboard-account__head {
+  align-items: flex-end;
+}
+
+.dashboard-account__subtitle {
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.dashboard-account__freshness {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.dashboard-account__metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dashboard-account__metrics .stat-tile__value {
+  overflow: hidden;
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-account__metric--positive {
+  color: var(--color-positive-text);
+}
+
+.dashboard-account__metric--negative {
+  color: var(--color-negative);
+}
+
+.dashboard-account__metric--neutral {
+  color: var(--color-text-primary);
+}
+
+.dashboard-account__warning {
+  margin-bottom: 8px;
+  color: var(--color-negative);
+  font-size: 12px;
+}
+
+.dashboard-account__empty {
+  margin-bottom: 0;
+}
+
+@media (max-width: 1200px) {
+  .dashboard-account__metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 /* --------------------------------------------------------------- stats ---- */
 
 .dashboard-stats {

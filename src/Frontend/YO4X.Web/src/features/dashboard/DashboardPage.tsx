@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   BotHost,
   BotStatus,
   BotView,
+  BrokerAccountView,
   DashboardStatView,
   DashboardSummaryView,
   StrategyCatalogPage,
@@ -14,6 +15,7 @@ import type { AppView } from '../../app/navigation';
 import { useResource } from '../../app/useResource';
 import { Icon } from '../../shared/ui/Icon';
 import { StrategyCard, StrategyCardSkeleton } from '../strategies/StrategyCard';
+import { useDesktopAccountSnapshot } from './useDesktopAccountSnapshot';
 import './dashboard.css';
 
 const cloudBannerStorageKey = 'yo4x.dashboard.cloud-banner.dismissed';
@@ -146,6 +148,7 @@ function RunningRow({
 }
 
 export interface DashboardPageProps {
+  readonly selectedAccount: BrokerAccountView | null;
   readonly onNavigate: (view: AppView, strategyId?: string) => void;
   readonly onLinkAccount: () => void;
   readonly onRunOnCloud: () => void;
@@ -155,10 +158,24 @@ export interface DashboardPageProps {
  * The landing page: portfolio statistics, the cloud upsell banner, the bots
  * running right now and a six-card preview of the strategy catalog.
  */
-export function DashboardPage({ onNavigate, onLinkAccount, onRunOnCloud }: DashboardPageProps) {
+export function DashboardPage({
+  selectedAccount,
+  onNavigate,
+  onLinkAccount,
+  onRunOnCloud,
+}: DashboardPageProps) {
   const client = useControlPlaneClient();
   const [category, setCategory] = useState<string | null>(null);
   const [cloudBannerDismissed, setCloudBannerDismissed] = useState(readCloudBannerDismissed);
+  const desktopAccountSelection = useMemo(
+    () => selectedAccount === null ? null : {
+      id: selectedAccount.id,
+      maskedLogin: selectedAccount.maskedLogin,
+      server: selectedAccount.server,
+    },
+    [selectedAccount?.id, selectedAccount?.maskedLogin, selectedAccount?.server],
+  );
+  const liveAccount = useDesktopAccountSnapshot(desktopAccountSelection);
 
   const loadSummary = useCallback(
     (signal: AbortSignal) => client.getDashboardSummary(signal),
@@ -185,6 +202,8 @@ export function DashboardPage({ onNavigate, onLinkAccount, onRunOnCloud }: Dashb
   }, [catalog.state]);
 
   const summaryValue = summary.state.status === 'ready' ? summary.state.value : null;
+  const liveAccountValue = liveAccount.state.status === 'ready' ? liveAccount.state.value : null;
+  const liveAccountWarning = liveAccount.state.status === 'ready' ? liveAccount.state.warning : null;
   const catalogValue = catalog.state.status === 'ready' ? catalog.state.value : null;
   const categories =
     catalog.state.status === 'ready' ? catalog.state.value.categories : cachedCategories;
@@ -219,6 +238,76 @@ export function DashboardPage({ onNavigate, onLinkAccount, onRunOnCloud }: Dashb
           </button>
         </div>
       </div>
+
+      <section className="dashboard-account" aria-labelledby="selected-account-heading">
+        <div className="dashboard-section-head dashboard-account__head">
+          <div>
+            <h2 className="section-title" id="selected-account-heading">Selected account</h2>
+            <p className="dashboard-account__subtitle">
+              {selectedAccount === null
+                ? 'Link an MT5 account to see its live broker summary.'
+                : `${selectedAccount.maskedLogin} · ${selectedAccount.server}`}
+            </p>
+          </div>
+          {liveAccountValue !== null ? (
+            <div className="dashboard-account__freshness">
+              <span className="dot dot--live" aria-hidden="true" />
+              MT5 API · updated {new Date(liveAccountValue.observedAt).toLocaleTimeString()}
+            </div>
+          ) : null}
+        </div>
+
+        {selectedAccount === null ? (
+          <div className="empty-state dashboard-account__empty">
+            <button type="button" className="btn btn--primary" onClick={onLinkAccount}>
+              Link account
+            </button>
+          </div>
+        ) : null}
+
+        {liveAccount.state.status === 'loading' ? (
+          <div className="dashboard-account__metrics" aria-label="Loading selected account summary">
+            {[0, 1, 2, 3, 4, 5].map((key) => (
+              <div className="dashboard-stat-skeleton" key={key} aria-hidden="true">
+                <div className="skeleton dashboard-stat-skeleton__label" />
+                <div className="skeleton dashboard-stat-skeleton__value" />
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {liveAccount.state.status === 'error' ? (
+          <div className="empty-state dashboard-account__empty">
+            <p>{liveAccount.state.error}</p>
+            <button type="button" className="btn btn--row" onClick={liveAccount.reload}>
+              Try again
+            </button>
+          </div>
+        ) : null}
+
+        {liveAccountValue !== null ? (
+          <>
+            {liveAccountWarning !== null ? (
+              <div className="dashboard-account__warning">
+                Showing the last broker response. Refresh failed: {liveAccountWarning}
+              </div>
+            ) : null}
+            <div className="dashboard-account__metrics">
+              <AccountMetric label="Balance" value={formatMoney(liveAccountValue.balance, liveAccountValue.currency)} />
+              <AccountMetric label="Equity" value={formatMoney(liveAccountValue.equity, liveAccountValue.currency)} />
+              <AccountMetric
+                label="Floating P/L"
+                value={formatMoney(liveAccountValue.floatingPnL, liveAccountValue.currency)}
+                tone={liveAccountValue.floatingPnL > 0 ? 'positive' : liveAccountValue.floatingPnL < 0 ? 'negative' : 'neutral'}
+              />
+              <AccountMetric label="Used margin" value={formatMoney(liveAccountValue.margin, liveAccountValue.currency)} />
+              <AccountMetric label="Free margin" value={formatMoney(liveAccountValue.freeMargin, liveAccountValue.currency)} />
+              <AccountMetric label="Open trades" value={countFormat.format(liveAccountValue.openTrades.length)} />
+            </div>
+
+          </>
+        ) : null}
+      </section>
 
       {summary.state.status === 'loading' && (
         <div className="dashboard-stats">
@@ -416,6 +505,23 @@ export function DashboardPage({ onNavigate, onLinkAccount, onRunOnCloud }: Dashb
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function AccountMetric({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly tone?: 'positive' | 'negative' | 'neutral';
+}) {
+  return (
+    <div className="stat-tile">
+      <div className="stat-tile__label">{label}</div>
+      <div className={`stat-tile__value dashboard-account__metric--${tone}`}>{value}</div>
     </div>
   );
 }

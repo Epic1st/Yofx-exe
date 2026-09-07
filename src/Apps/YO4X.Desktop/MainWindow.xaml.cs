@@ -13,6 +13,10 @@ namespace YO4X.Desktop;
 
 public partial class MainWindow : Window
 {
+    private static readonly JsonSerializerOptions WebMessageJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
     private readonly DesktopLaunchOptions options;
     private readonly DesktopNavigationPolicy navigationPolicy;
 
@@ -267,6 +271,7 @@ public partial class MainWindow : Window
         JsonElement payload)
     {
         string? error = null;
+        object? result = null;
         try
         {
             switch (command)
@@ -306,6 +311,40 @@ public partial class MainWindow : Window
                     await DesktopLocalRuntime.StopBotAsync(botId, CancellationToken.None)
                         .ConfigureAwait(false);
                     break;
+                case "resume-interrupted-bots":
+                    string resumeAccessToken = ReadString(payload, "accessToken");
+                    string resumeControlApiOrigin = ReadString(payload, "controlApiOrigin");
+                    if (resumeAccessToken.Length is < 20 or > 16_384
+                        || !Uri.TryCreate(resumeControlApiOrigin, UriKind.Absolute, out Uri? resumeControlOrigin)
+                        || !IsApprovedControlOrigin(resumeControlOrigin))
+                    {
+                        throw new InvalidOperationException("The authorized local recovery request is invalid.");
+                    }
+                    result = await DesktopLocalRuntime.ResumeInterruptedBotsAsync(
+                            resumeControlOrigin,
+                            resumeAccessToken,
+                            options.DevelopmentIdentityCertificateSha256,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                    break;
+                case "get-account-snapshot":
+                    string brokerAccountId = ReadString(payload, "brokerAccountId");
+                    string server = ReadString(payload, "server");
+                    string maskedLogin = ReadString(payload, "maskedLogin");
+                    if (!Guid.TryParse(brokerAccountId, out _)
+                        || string.IsNullOrWhiteSpace(server)
+                        || string.IsNullOrWhiteSpace(maskedLogin))
+                    {
+                        throw new InvalidOperationException("The selected broker account is invalid.");
+                    }
+
+                    result = await DesktopLiveBotHost.Instance.ReadAccountSnapshotAsync(
+                            brokerAccountId,
+                            server,
+                            maskedLogin,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                    break;
                 default:
                     throw new InvalidOperationException("The local runtime command is not supported.");
             }
@@ -329,8 +368,9 @@ public partial class MainWindow : Window
             type = "yo4x-local-result",
             id = requestId,
             ok = error is null,
-            error
-        });
+            error,
+            payload = result
+        }, WebMessageJson);
         try
         {
             await Dispatcher.InvokeAsync(() => core.PostWebMessageAsJson(response));

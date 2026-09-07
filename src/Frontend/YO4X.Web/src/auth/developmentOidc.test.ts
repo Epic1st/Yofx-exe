@@ -190,6 +190,24 @@ describe('development OIDC bridge', () => {
     }))).rejects.toThrow('state mismatch');
   });
 
+  it('returns an expired single-use authorization code to the sign-in entry point', async () => {
+    window.history.replaceState({}, '', '/auth/callback?code=spent&state=state');
+    const signinRedirectCallback = vi.fn().mockRejectedValue(
+      new Error('The specified authorization code is no longer valid.'),
+    );
+
+    const bridge = await installDevelopmentAuthBridge(config, () => ({
+      signinRedirectCallback,
+      signinRedirect: vi.fn(),
+      getUser: vi.fn().mockResolvedValue(null),
+    }));
+
+    expect(bridge.restoring).toBe(false);
+    expect(window.location.pathname).toBe('/');
+    expect(window.location.search).toBe('');
+    await expect(window.__YO4X_AUTH__!.getAccessToken()).resolves.toBeNull();
+  });
+
   it('routes account creation to the real registration UI while preserving the PKCE authorization request', () => {
     const authorization = 'https://127.0.0.1:7210/connect/authorize?client_id=yo4x-web-development&code_challenge=challenge&state=state';
     const registration = new URL(createRegistrationUrl(authorization, config.authority));

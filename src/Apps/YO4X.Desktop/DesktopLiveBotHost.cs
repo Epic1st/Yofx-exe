@@ -173,13 +173,20 @@ internal sealed class DesktopLiveBotHost : IDisposable
                 IReadOnlyList<Mql5Bar> seed = DownloadSeed(broker, timeframe);
                 var initialized = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 stop = new CancellationTokenSource();
-                var session = new RunningSession(bot.Id, bot.Name, broker, assembly, enableFile, stop);
+                var session = new RunningSession(
+                    bot.Id,
+                    bot.Name,
+                    bot.BrokerAccountId,
+                    broker,
+                    assembly,
+                    enableFile,
+                    stop);
                 session.QuotePoll = new Timer(
                     _ =>
                     {
                         try
                         {
-                            if (Interlocked.CompareExchange(ref session.QuotePollGate, 1, 0) != 0)
+                            if (!session.BrokerReadGate.Wait(0))
                             {
                                 return;
                             }
@@ -190,7 +197,7 @@ internal sealed class DesktopLiveBotHost : IDisposable
                             }
                             finally
                             {
-                                Interlocked.Exchange(ref session.QuotePollGate, 0);
+                                session.BrokerReadGate.Release();
                             }
                         }
                         catch
@@ -325,6 +332,184 @@ internal sealed class DesktopLiveBotHost : IDisposable
             {
             }
         }
+    }
+
+    internal async Task<DesktopBrokerAccountSnapshot> ReadAccountSnapshotAsync(
+        string brokerAccountId,
+        string server,
+        string maskedLogin,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(brokerAccountId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(server);
+        ArgumentException.ThrowIfNullOrWhiteSpace(maskedLogin);
+
+        RunningSession? active = sessions.Values.FirstOrDefault(session =>
+            string.Equals(
+                session.BrokerAccountId,
+                brokerAccountId,
+                StringComparison.OrdinalIgnoreCase));
+        if (active is not null)
+        {
+            await active.BrokerReadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                Mt5LiveAccountSnapshot account = active.Broker.ReadAccountSnapshot();
+                IReadOnlyList<Mt5OpenOrder> orders = active.Broker.ReadOpenOrders();
+                LocalTradingEngine.Instance.ApplyBrokerSnapshot(account, active.Broker.Symbol);
+                return ToDesktopSnapshot(brokerAccountId, maskedLogin, server, account, orders);
+            }
+            finally
+            {
+                active.BrokerReadGate.Release();
+            }
+        }
+
+        ulong login = await ResolveLoginAsync(maskedLogin, server, cancellationToken)
+            .ConfigureAwait(false);
+        string credentialKey = LocalCredentialKey.Create(login, server);
+        var vault = new DpapiLocalMt5CredentialVault(vaultRoot);
+        using LocalMt5Credential? credential = await vault.OpenAsync(credentialKey, cancellationToken)
+            .ConfigureAwait(false);
+        if (credential is null)
+        {
+            throw Rejected("The selected account's MT5 credential is not stored on this device.");
+        }
+
+        string artifact = ResolveMt5Artifact();
+        IReadOnlyList<(string Host, int Port)> endpoints = await ResolveEndpointsAsync(server, cancellationToken)
+            .ConfigureAwait(false);
+        return credential.UsePassword(passwordUtf8 => ReadAccountFromEndpoints(
+            brokerAccountId,
+            maskedLogin,
+            server,
+            artifact,
+            login,
+            Encoding.UTF8.GetString(passwordUtf8),
+            endpoints));
+    }
+
+    private static DesktopBrokerAccountSnapshot ReadAccountFromEndpoints(
+        string brokerAccountId,
+        string maskedLogin,
+        string selectedServer,
+        string artifact,
+        ulong login,
+        string password,
+        IReadOnlyList<(string Host, int Port)> endpoints)
+    {
+        Exception? last = null;
+        foreach ((string host, int port) in endpoints)
+        {
+            try
+            {
+                using var reader = Mt5NetApiAccountReader.Create(artifact, login, password, host, port);
+                reader.SetConnectTimeout(12_000);
+                reader.Connect();
+                Mt5AccountState account = reader.ReadAccount();
+                if (!reader.Connected || account.Login != login)
+                {
+                    throw new InvalidDataException("The broker returned a different account identity.");
+                }
+
+                if (!account.AccountType.Contains("demo", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException("Only a confirmed MT5 demo account can be read in this build.");
+                }
+
+                IReadOnlyList<Mt5OpenOrder> orders = reader.ReadOpenOrders();
+                var live = new Mt5LiveAccountSnapshot(
+                    account.Login,
+                    account.Company,
+                    account.Currency,
+                    selectedServer,
+                    account.Balance,
+                    account.Equity,
+                    account.Margin,
+                    account.FreeMargin,
+                    account.Profit,
+                    0,
+                    Mt5TradingEnvironment.Demo,
+                    Mt5AccountMarginMode.Unknown,
+                    false);
+                return ToDesktopSnapshot(
+                    brokerAccountId,
+                    maskedLogin,
+                    account.ServerName,
+                    live,
+                    orders);
+            }
+            catch (Exception exception) when (IsRetryable(exception))
+            {
+                last = exception;
+            }
+        }
+
+        throw Rejected(
+            "The selected MT5 account could not be read through an approved broker endpoint."
+            + (last is null ? string.Empty : " " + SafeMessage(last)));
+    }
+
+    private static DesktopBrokerAccountSnapshot ToDesktopSnapshot(
+        string brokerAccountId,
+        string maskedLogin,
+        string requestedServer,
+        Mt5LiveAccountSnapshot account,
+        IReadOnlyList<Mt5OpenOrder> orders)
+    {
+        double? marginLevel = account.Margin > 0
+            ? account.Equity / account.Margin * 100.0
+            : null;
+        DesktopOpenTradeSnapshot[] openTrades = orders
+            .Where(order => order.Ticket > 0 && !string.IsNullOrWhiteSpace(order.Symbol))
+            .Take(1_000)
+            .Select(order => new DesktopOpenTradeSnapshot(
+                order.Ticket,
+                order.Symbol.Trim(),
+                NormalizeOrderSide(order.Type),
+                order.Volume,
+                order.OpenPrice,
+                order.StopLoss > 0 ? order.StopLoss : null,
+                order.TakeProfit > 0 ? order.TakeProfit : null,
+                order.Profit,
+                order.OpenTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+                SafeOrderComment(order.Comment)))
+            .ToArray();
+        return new DesktopBrokerAccountSnapshot(
+            brokerAccountId,
+            true,
+            maskedLogin,
+            string.IsNullOrWhiteSpace(account.Server) ? requestedServer : account.Server.Trim(),
+            string.IsNullOrWhiteSpace(account.Company) ? "MetaTrader 5 broker" : account.Company.Trim(),
+            string.IsNullOrWhiteSpace(account.Currency) ? "USD" : account.Currency.Trim(),
+            account.Balance,
+            account.Equity,
+            account.Margin,
+            account.FreeMargin,
+            account.Profit,
+            marginLevel,
+            account.Leverage,
+            account.TradingEnabled,
+            DateTimeOffset.UtcNow,
+            openTrades);
+    }
+
+    private static string NormalizeOrderSide(string value)
+    {
+        if (value.Contains("buy", StringComparison.OrdinalIgnoreCase)) return "BUY";
+        if (value.Contains("sell", StringComparison.OrdinalIgnoreCase)) return "SELL";
+        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int orderType))
+        {
+            if (orderType is 0 or 2 or 4 or 6) return "BUY";
+            if (orderType is 1 or 3 or 5 or 7) return "SELL";
+        }
+        return "OTHER";
+    }
+
+    private static string SafeOrderComment(string? value)
+    {
+        string safe = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return safe.Length <= 200 ? safe : safe[..200];
     }
 
     public void Dispose()
@@ -809,19 +994,25 @@ internal sealed class DesktopLiveBotHost : IDisposable
     private async Task<ulong> ResolveLoginAsync(
         DesktopBotInstance bot,
         string server,
+        CancellationToken cancellationToken) =>
+        await ResolveLoginAsync(bot.MaskedLogin, server, cancellationToken).ConfigureAwait(false);
+
+    private async Task<ulong> ResolveLoginAsync(
+        string? maskedLogin,
+        string server,
         CancellationToken cancellationToken)
     {
-        if (bot.MaskedLogin is "****4289" or "*******89")
+        if (maskedLogin is "****4289" or "*******89")
         {
             return 434094289UL;
         }
 
-        if (bot.MaskedLogin is "****0984" or "*******84")
+        if (maskedLogin is "****0984" or "*******84")
         {
             return 433470984UL;
         }
 
-        string? suffix = ExtractLoginSuffix(bot.MaskedLogin);
+        string? suffix = ExtractLoginSuffix(maskedLogin);
         var vault = new DpapiLocalMt5CredentialVault(vaultRoot);
         if (!Directory.Exists(vaultRoot))
         {
@@ -1070,6 +1261,7 @@ internal sealed class DesktopLiveBotHost : IDisposable
     private sealed class RunningSession(
         string botId,
         string botName,
+        string? brokerAccountId,
         Mt5NetApiDemoTradeClient broker,
         byte[] assembly,
         string enableFile,
@@ -1077,17 +1269,19 @@ internal sealed class DesktopLiveBotHost : IDisposable
     {
         internal string BotId { get; } = botId;
         internal string BotName { get; } = botName;
+        internal string? BrokerAccountId { get; } = brokerAccountId;
         internal Mt5NetApiDemoTradeClient Broker { get; } = broker;
+        internal SemaphoreSlim BrokerReadGate { get; } = new(1, 1);
         internal byte[] Assembly { get; } = assembly;
         internal string EnableFile { get; } = enableFile;
         internal CancellationTokenSource Stop { get; } = stop;
         internal Task? Task { get; set; }
         internal Timer? QuotePoll { get; set; }
-        internal int QuotePollGate;
 
         public void Dispose()
         {
             QuotePoll?.Dispose();
+            BrokerReadGate.Dispose();
             Stop.Dispose();
             Broker.Dispose();
             CryptographicOperations.ZeroMemory(Assembly);
@@ -1100,6 +1294,9 @@ internal sealed class DesktopLiveBotHost : IDisposable
 
     private sealed class JournalingTradeGateway(IMt5TradeGateway inner, string botId, string botName) : IMt5TradeGateway
     {
+        private const int BrokerCommentLimit = 31;
+        private readonly string ownershipTag = "Y4X:" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(botId)))[..12];
         private int quotesSeen;
         private Action<DateTime, double, double>? observer;
 
@@ -1138,6 +1335,10 @@ internal sealed class DesktopLiveBotHost : IDisposable
 
         public Mt5LiveAccountSnapshot ReadAccountSnapshot() => inner.ReadAccountSnapshot();
 
+        public IReadOnlyList<Mt5OpenOrder> ReadOpenOrders() => inner.ReadOpenOrders()
+            .Where(order => order.Comment.StartsWith(ownershipTag + "|", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
         public Mt5LiveSymbolSnapshot? ReadSymbolSnapshot() => inner.ReadSymbolSnapshot();
 
         public async Task<Mt5DemoOrderReceipt> SendAsync(
@@ -1149,8 +1350,11 @@ internal sealed class DesktopLiveBotHost : IDisposable
             string comment,
             CancellationToken cancellationToken = default)
         {
+            string ownedComment = ownershipTag + "|" + (comment ?? string.Empty).Trim();
+            if (ownedComment.Length > BrokerCommentLimit)
+                ownedComment = ownedComment[..BrokerCommentLimit];
             Mt5DemoOrderReceipt receipt = await inner
-                .SendAsync(side, volume, price, stopLoss, takeProfit, comment, cancellationToken)
+                .SendAsync(side, volume, price, stopLoss, takeProfit, ownedComment, cancellationToken)
                 .ConfigureAwait(false);
             string journalSide = side is Mt5DemoSide.Buy or Mt5DemoSide.BuyLimit or Mt5DemoSide.BuyStop
                 ? "BUY"

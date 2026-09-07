@@ -14,6 +14,16 @@ internal static class DesktopLocalRuntime
 {
     private static readonly ConcurrentDictionary<string, ControlSession> ControlSessions =
         new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<Guid, byte> InterruptedBots = new();
+    private static readonly DesktopRecoveryStore Recovery = DesktopRecoveryStore.CreateDefault();
+
+    internal static void BeginDesktopSession()
+    {
+        foreach (Guid botId in Recovery.BeginSession())
+            InterruptedBots.TryAdd(botId, 0);
+    }
+
+    internal static void CompleteDesktopSession() => Recovery.CompleteCleanShutdown();
     internal static async Task StoreCredentialAsync(
         ulong login,
         string server,
@@ -57,10 +67,15 @@ internal static class DesktopLocalRuntime
         Uri controlApiOrigin,
         string accessToken,
         string? developmentCertificateSha256,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool retainIntentOnFailure = false)
     {
         if (ControlSessions.ContainsKey(botId.ToString("D")))
+        {
+            InterruptedBots.TryRemove(botId, out _);
             return;
+        }
+        Recovery.RecordStart(botId);
         var control = new DesktopControlPlaneRuntime(
             controlApiOrigin, accessToken, developmentCertificateSha256);
         DesktopExecutionBundle? acquired = null;
@@ -89,9 +104,18 @@ internal static class DesktopLocalRuntime
                 TimeSpan.FromSeconds(20));
             control = null!;
             acquired = null;
+            InterruptedBots.TryRemove(botId, out _);
         }
         catch
         {
+            try
+            {
+                await DesktopLiveBotHost.Instance.StopAsync(botId.ToString("D"), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+            }
             if (acquired is not null)
             {
                 try
@@ -107,6 +131,8 @@ internal static class DesktopLocalRuntime
                 {
                 }
             }
+            if (!retainIntentOnFailure)
+                Recovery.RecordStopped(botId);
             throw;
         }
         finally
@@ -118,6 +144,11 @@ internal static class DesktopLocalRuntime
 
     internal static async Task StopBotAsync(string botId, CancellationToken cancellationToken)
     {
+        if (Guid.TryParse(botId, out Guid parsedBotId))
+        {
+            InterruptedBots.TryRemove(parsedBotId, out _);
+            Recovery.RecordStopped(parsedBotId);
+        }
         await DesktopLiveBotHost.Instance.StopAsync(botId, cancellationToken).ConfigureAwait(false);
         if (ControlSessions.TryRemove(botId, out ControlSession? session))
         {
@@ -131,6 +162,63 @@ internal static class DesktopLocalRuntime
             {
                 session.Dispose();
             }
+        }
+    }
+
+    internal static async Task<IReadOnlyList<DesktopBotRecoveryResult>> ResumeInterruptedBotsAsync(
+        Uri controlApiOrigin,
+        string accessToken,
+        string? developmentCertificateSha256,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<DesktopBotRecoveryResult>();
+        foreach (Guid botId in InterruptedBots.Keys.OrderBy(id => id))
+        {
+            try
+            {
+                await StartAuthorizedBotAsync(
+                        botId,
+                        controlApiOrigin,
+                        accessToken,
+                        developmentCertificateSha256,
+                        cancellationToken,
+                        retainIntentOnFailure: true)
+                    .ConfigureAwait(false);
+                results.Add(new DesktopBotRecoveryResult(botId, true, null));
+            }
+            catch (Exception exception)
+            {
+                string error = exception.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+                results.Add(new DesktopBotRecoveryResult(
+                    botId,
+                    false,
+                    error.Length > 300 ? error[..300] : error));
+            }
+        }
+        return results;
+    }
+
+    internal static async Task StopAllBotsAsync(CancellationToken cancellationToken = default)
+    {
+        foreach (string botId in ControlSessions.Keys)
+        {
+            try
+            {
+                await StopBotAsync(botId, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
+        try
+        {
+            await DesktopLiveBotHost.Instance.StopAllAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            InterruptedBots.Clear();
+            CompleteDesktopSession();
         }
     }
 
@@ -228,3 +316,5 @@ internal static class DesktopLocalRuntime
         }
     }
 }
+
+internal sealed record DesktopBotRecoveryResult(Guid BotId, bool Resumed, string? Error);

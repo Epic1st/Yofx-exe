@@ -108,7 +108,8 @@ export async function installDevelopmentAuthBridge(
       // A restore attempt answers login_required whenever no identity session exists. For a
       // visitor who simply is not signed in that is the expected answer, not a failure worth
       // reporting; a callback the application did not initiate still surfaces its error.
-      if (!wasRestore || callbackError !== 'login_required') {
+      if ((!wasRestore || callbackError !== 'login_required')
+        && !isExpiredAuthorizationCode(error)) {
         throw error;
       }
     }
@@ -143,6 +144,27 @@ export async function installDevelopmentAuthBridge(
   };
 
   return { restoring };
+}
+
+/**
+ * A browser refresh can replay an OAuth authorization code after the identity provider has
+ * already redeemed it. That code can never be reused, so retaining the callback URL only
+ * creates a permanent error screen. Recover to the signed-out entry point while continuing to
+ * surface state, nonce, configuration, and other callback failures.
+ */
+function isExpiredAuthorizationCode(error: unknown): boolean {
+  const errorCode = typeof error === 'object' && error !== null && 'error' in error
+    ? (error as { readonly error?: unknown }).error
+    : null;
+  if (errorCode === 'invalid_grant') {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  return message.includes('authorization code')
+    && (message.includes('no longer valid')
+      || message.includes('expired')
+      || message.includes('already been redeemed'));
 }
 
 /**

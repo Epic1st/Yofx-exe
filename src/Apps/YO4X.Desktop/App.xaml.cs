@@ -8,6 +8,8 @@ namespace YO4X.Desktop;
 public partial class App : Application
 {
     private LocalServerHost? localServer;
+    private bool startupCompleted;
+    private bool cleanShutdownRequested;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -16,6 +18,7 @@ public partial class App : Application
         try
         {
             DesktopEnvironmentFile.Load();
+            DesktopLocalRuntime.BeginDesktopSession();
             // 1. Start In-Process Local Web & Trading Server
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             localServer = new LocalServerHost(baseDir);
@@ -29,7 +32,9 @@ public partial class App : Application
                 Environment.GetEnvironmentVariable);
 
             MainWindow = new MainWindow(options);
+            MainWindow.Closing += (_, _) => cleanShutdownRequested = true;
             MainWindow.Show();
+            startupCompleted = true;
         }
         catch (ArgumentException exception)
         {
@@ -51,12 +56,22 @@ public partial class App : Application
         }
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
-        if (localServer != null)
+        try
         {
-            await localServer.StopAsync();
+            if (startupCompleted && cleanShutdownRequested && localServer != null)
+                Task.Run(() => localServer.StopAsync()).GetAwaiter().GetResult();
+            else if (startupCompleted && cleanShutdownRequested)
+                DesktopLocalRuntime.CompleteDesktopSession();
         }
-        base.OnExit(e);
+        catch
+        {
+            // Exit must continue even if the local server has already stopped.
+        }
+        finally
+        {
+            base.OnExit(e);
+        }
     }
 }

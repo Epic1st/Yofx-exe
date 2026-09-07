@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createControlPlaneClient } from '../api/controlPlaneClient';
 import type {
   BotView,
@@ -35,7 +35,9 @@ import {
   type AppView,
 } from './navigation';
 import {
+  isDesktopShell,
   sendDesktopWindowCommand,
+  resumeInterruptedDesktopBots,
   startDesktopBot,
   storeDesktopBrokerCredential,
   toDesktopBotStartRequest,
@@ -50,6 +52,22 @@ async function authorizationHeader(): Promise<Record<string, string>> {
 
 /** The shell build, shown in the title bar. Sourced from package.json. */
 const shellVersion = '0.1.0';
+const selectedAccountStorageKey = 'yo4x.selected-broker-account';
+
+function readSelectedAccountId(): string | null {
+  try {
+    return window.localStorage.getItem(selectedAccountStorageKey);
+  } catch {
+    return null;
+  }
+}
+
+function storeSelectedAccountId(accountId: string): void {
+  try {
+    window.localStorage.setItem(selectedAccountStorageKey, accountId);
+  } catch {
+  }
+}
 
 type ConfigState =
   | { readonly valid: true; readonly value: RuntimeConfig }
@@ -249,6 +267,8 @@ function WorkspaceShell(props: {
   const client = useControlPlaneClient();
   // Bumped when per-bot settings are saved, so the bots list re-reads what it shows.
   const [botsReloadToken, setBotsReloadToken] = useState(0);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(readSelectedAccountId);
+  const recoveryAttempted = useRef(false);
 
   const accounts = useResource((signal) => client.getBrokerAccounts(signal), [client]);
   const bots = useResource((signal) => client.getBots(signal), [client]);
@@ -259,8 +279,43 @@ function WorkspaceShell(props: {
     [client],
   );
 
-  const account = accounts.state.status === 'ready' ? (accounts.state.value[0] ?? null) : null;
+  const accountList = accounts.state.status === 'ready' ? accounts.state.value : [];
+  const account = accountList.find((candidate) =>
+    candidate.id.toLowerCase() === selectedAccountId?.toLowerCase())
+    ?? accountList[0]
+    ?? null;
   const bridgeValue = bridge.state.status === 'ready' ? bridge.state.value : null;
+
+  useEffect(() => {
+    if (!isDesktopShell() || bots.state.status !== 'ready' || recoveryAttempted.current) return;
+    recoveryAttempted.current = true;
+    void resumeInterruptedDesktopBots()
+      .then((results) => {
+        if (results.length > 0) bots.reload();
+        const failed = results.filter((result) => !result.resumed);
+        if (failed.length > 0) {
+          setOverlay({
+            kind: 'error',
+            title: 'Some local bots could not be recovered',
+            detail: failed.map((result) => result.error ?? `Bot ${result.botId} could not restart.`).join(' '),
+          });
+        }
+      })
+      .catch((error) => {
+        setOverlay({
+          kind: 'error',
+          title: 'Local bot recovery failed',
+          detail: userFacingProblem(error),
+        });
+      });
+  }, [bots, setOverlay]);
+
+  useEffect(() => {
+    if (account !== null && account.id !== selectedAccountId) {
+      setSelectedAccountId(account.id);
+      storeSelectedAccountId(account.id);
+    }
+  }, [account, selectedAccountId]);
 
   const counts: Partial<Record<AppView, number>> = {};
   if (bots.state.status === 'ready') {
@@ -281,13 +336,18 @@ function WorkspaceShell(props: {
   const submitLink = useCallback(
     async (login: string, option: BrokerAccountRegistrationOption, password: string) => {
       const binding = await createBrokerAccountRegistrationBinding(login, option, password);
-      await client.createBrokerAccount(binding.request, createRegistrationIdempotencyKey());
+      const created = await client.createBrokerAccount(
+        binding.request,
+        createRegistrationIdempotencyKey(),
+      );
       await storeDesktopBrokerCredential({
         login: binding.request.login,
         server: binding.request.server,
         bindingFingerprint: binding.request.bindingFingerprint,
         password: binding.password,
       });
+      setSelectedAccountId(created.id);
+      storeSelectedAccountId(created.id);
       accounts.reload();
       return true;
     },
@@ -343,6 +403,7 @@ function WorkspaceShell(props: {
     navigate,
     searchTerm: props.searchTerm,
     botsReloadToken,
+    selectedAccount: account,
     onManageBot: (target: BotView) => {
       setOverlay({ kind: 'bot-settings', bot: target });
     },
@@ -377,8 +438,19 @@ function WorkspaceShell(props: {
               maskedLogin: account.maskedLogin,
               server: account.server,
               connected: bridgeValue?.connected ?? false,
+              id: account.id,
             }
       }
+      accounts={accountList.map((candidate) => ({
+        id: candidate.id,
+        maskedLogin: candidate.maskedLogin,
+        server: candidate.server,
+        connected: candidate.id === account?.id && (bridgeValue?.connected ?? false),
+      }))}
+      onSelectAccount={(accountId) => {
+        setSelectedAccountId(accountId);
+        storeSelectedAccountId(accountId);
+      }}
       user={{ initials: initials(props.maskedEmail), displayName: props.maskedEmail }}
       onOpenAccount={() => {
         if (account === null) {
@@ -453,6 +525,7 @@ function renderPage(context: {
   readonly navigate: (view: AppView, strategyId?: string) => void;
   readonly searchTerm: string;
   readonly botsReloadToken: number;
+  readonly selectedAccount: BrokerAccountView | null;
   readonly onManageBot: (bot: BotView) => void;
   readonly onLinkAccount: () => void;
   readonly onManageAccount: (account: BrokerAccountView) => void;
@@ -465,6 +538,7 @@ function renderPage(context: {
     case 'dashboard':
       return (
         <DashboardPage
+          selectedAccount={context.selectedAccount}
           onNavigate={navigate}
           onLinkAccount={context.onLinkAccount}
           onRunOnCloud={() => navigate('cloud')}
@@ -500,7 +574,7 @@ function renderPage(context: {
     case 'cloud':
       return <CloudPage onNavigate={navigate} />;
     case 'journal':
-      return <JournalPage onNavigate={navigate} />;
+      return <JournalPage selectedAccount={context.selectedAccount} onNavigate={navigate} />;
     case 'settings':
       return (
         <SettingsPage

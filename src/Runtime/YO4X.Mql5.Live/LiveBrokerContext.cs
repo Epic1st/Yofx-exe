@@ -54,6 +54,69 @@ public sealed class LiveBrokerContext : IMql5MarketContext, IMql5DelayContext
         this.digits = digits;
         symbolSpec = broker.ReadSymbolSnapshot();
         this.journal = journal;
+        ImportBrokerState();
+    }
+
+    private void ImportBrokerState()
+    {
+        foreach (Mt5OpenOrder brokerOrder in broker.ReadOpenOrders())
+        {
+            if (brokerOrder.Ticket <= 0
+                || !string.Equals(brokerOrder.Symbol, Symbol, StringComparison.OrdinalIgnoreCase)
+                || !TryResolveSide(brokerOrder.Type, out Mt5DemoSide side, out bool pending))
+            {
+                continue;
+            }
+
+            var receipt = new Mt5DemoOrderReceipt(
+                brokerOrder.Ticket,
+                brokerOrder.Symbol,
+                side,
+                brokerOrder.Volume,
+                brokerOrder.OpenPrice,
+                brokerOrder.OpenTime,
+                brokerOrder.Profit,
+                default);
+            (pending ? pendingOrders : open).Add(receipt);
+            positionInfo[receipt.Ticket] = (brokerOrder.StopLoss, brokerOrder.TakeProfit, 0L);
+        }
+
+        if (open.Count > 0 || pendingOrders.Count > 0)
+            journal($"adopted broker state: {open.Count} position(s), {pendingOrders.Count} pending order(s)");
+    }
+
+    private static bool TryResolveSide(string value, out Mt5DemoSide side, out bool pending)
+    {
+        string normalized = (value ?? string.Empty)
+            .Trim()
+            .Replace("ORDER_TYPE_", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace(" ", string.Empty, StringComparison.Ordinal)
+            .ToUpperInvariant();
+        int type = int.TryParse(normalized, out int numeric) ? numeric : normalized switch
+        {
+            "BUY" => 0,
+            "SELL" => 1,
+            "BUYLIMIT" => 2,
+            "SELLLIMIT" => 3,
+            "BUYSTOP" => 4,
+            "SELLSTOP" => 5,
+            "BUYSTOPLIMIT" => 6,
+            "SELLSTOPLIMIT" => 7,
+            _ => -1,
+        };
+        pending = type >= 2;
+        side = type switch
+        {
+            0 => Mt5DemoSide.Buy,
+            1 => Mt5DemoSide.Sell,
+            2 => Mt5DemoSide.BuyLimit,
+            3 => Mt5DemoSide.SellLimit,
+            4 or 6 => Mt5DemoSide.BuyStop,
+            5 or 7 => Mt5DemoSide.SellStop,
+            _ => default,
+        };
+        return type is >= 0 and <= 7;
     }
 
     /// <summary>Positions this context opened and has not yet closed.</summary>

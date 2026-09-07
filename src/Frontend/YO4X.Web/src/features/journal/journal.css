@@ -61,12 +61,24 @@
   font-weight: 500;
 }
 
+.journal-result__status {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
 .journal-skeleton {
   height: 12px;
   margin-right: 16px;
 }
 
 .journal-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 12px 0 0;
   font-size: 12.5px;
 }

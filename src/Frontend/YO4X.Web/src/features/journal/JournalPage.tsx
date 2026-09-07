@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { JournalEntryView } from '../../api/contracts';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { BrokerAccountView, JournalEntryView } from '../../api/contracts';
 import type { JournalQuery } from '../../api/controlPlaneClient';
 import { userFacingProblem } from '../../api/problemDetails';
 import { useControlPlaneClient } from '../../app/ClientContext';
 import type { AppView } from '../../app/navigation';
 import { useResource } from '../../app/useResource';
 import { Icon } from '../../shared/ui/Icon';
+import { useDesktopAccountSnapshot } from '../dashboard/useDesktopAccountSnapshot';
 import './journal.css';
 
 /** Grid template shared by the table head and every table row. */
-const journalColumns = '1.3fr 1.6fr 0.9fr 0.7fr 0.8fr 0.9fr 0.9fr 1fr';
+const journalColumns = '1.2fr 1fr 1.4fr 0.9fr 0.7fr 0.7fr 0.9fr 0.9fr 1fr';
 
 const pageSize = 50;
 
@@ -76,9 +77,17 @@ function csvField(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-function buildCsv(entries: readonly JournalEntryView[]): string {
-  const header = ['Opened at', 'Closed at', 'Bot', 'Symbol', 'Side', 'Volume', 'Entry', 'Exit', 'Result', 'Currency'];
+interface JournalDisplayEntry extends Omit<JournalEntryView, 'side'> {
+  readonly side: 'BUY' | 'SELL' | 'OTHER';
+  readonly ticket: number | null;
+  readonly status: 'OPEN' | 'CLOSED';
+}
+
+function buildCsv(entries: readonly JournalDisplayEntry[]): string {
+  const header = ['Ticket', 'Status', 'Opened at', 'Closed at', 'Bot', 'Symbol', 'Side', 'Volume', 'Entry', 'Exit', 'Result', 'Currency'];
   const lines = entries.map((entry) => [
+    entry.ticket === null ? '' : String(entry.ticket),
+    entry.status,
     entry.openedAt,
     entry.closedAt ?? '',
     entry.botName ?? '',
@@ -102,14 +111,24 @@ function downloadSupported(): boolean {
 }
 
 export interface JournalPageProps {
+  readonly selectedAccount: BrokerAccountView | null;
   readonly onNavigate: (view: AppView, strategyId?: string) => void;
 }
 
-export function JournalPage(_props: JournalPageProps) {
+export function JournalPage({ selectedAccount }: JournalPageProps) {
   const client = useControlPlaneClient();
   const [rangeId, setRangeId] = useState<string>(defaultRange.id);
   const range = rangeOptions.find((option) => option.id === rangeId) ?? defaultRange;
   const from = range.days === null ? undefined : calendarDateDaysAgo(range.days);
+  const desktopAccountSelection = useMemo(
+    () => selectedAccount === null ? null : {
+      id: selectedAccount.id,
+      maskedLogin: selectedAccount.maskedLogin,
+      server: selectedAccount.server,
+    },
+    [selectedAccount?.id, selectedAccount?.maskedLogin, selectedAccount?.server],
+  );
+  const brokerJournal = useDesktopAccountSnapshot(desktopAccountSelection);
 
   const journal = useResource(
     (signal) => {
@@ -157,7 +176,31 @@ export function JournalPage(_props: JournalPageProps) {
     }
   }, [client, cursor, from]);
 
-  const entries = state.status === 'ready' ? [...state.value.items, ...appended] : [];
+  const centralEntries: readonly JournalDisplayEntry[] = state.status === 'ready'
+    ? [...state.value.items, ...appended].map((entry) => ({ ...entry, ticket: null, status: 'CLOSED' as const }))
+    : [];
+  const brokerSnapshot = brokerJournal.state.status === 'ready' ? brokerJournal.state.value : null;
+  const brokerEntries: readonly JournalDisplayEntry[] = brokerSnapshot !== null
+    ? brokerSnapshot.openTrades
+      .filter((trade) => from === undefined || trade.openedAtBrokerTime.slice(0, 10) >= from)
+      .map((trade) => ({
+        id: `mt5-${brokerSnapshot.brokerAccountId}-${trade.ticket}`,
+        ticket: trade.ticket,
+        status: 'OPEN' as const,
+        botId: null,
+        botName: trade.comment || 'MT5 position',
+        symbol: trade.symbol,
+        side: trade.side,
+        volume: trade.volume,
+        entryPrice: trade.openPrice,
+        exitPrice: null,
+        resultAmount: trade.floatingPnL,
+        currency: brokerSnapshot.currency,
+        openedAt: trade.openedAtBrokerTime,
+        closedAt: null,
+      }))
+    : [];
+  const entries = [...brokerEntries, ...centralEntries];
   const canExport = downloadSupported();
 
   const exportCsv = useCallback(() => {
@@ -237,6 +280,7 @@ export function JournalPage(_props: JournalPageProps) {
         <div className="table">
           <div className="table__head" style={{ gridTemplateColumns: journalColumns }}>
             <div>Time</div>
+            <div>Ticket</div>
             <div>Bot</div>
             <div>Symbol</div>
             <div>Side</div>
@@ -249,7 +293,7 @@ export function JournalPage(_props: JournalPageProps) {
           {state.status === 'loading'
             ? Array.from({ length: 9 }, (_unused, index) => (
               <div key={index} className="table__row" style={{ gridTemplateColumns: journalColumns }}>
-                {Array.from({ length: 8 }, (_cell, cellIndex) => (
+                {Array.from({ length: 9 }, (_cell, cellIndex) => (
                   <div key={cellIndex} className="skeleton journal-skeleton" />
                 ))}
               </div>
@@ -269,7 +313,7 @@ export function JournalPage(_props: JournalPageProps) {
             </div>
           ) : null}
 
-          {state.status === 'ready' && entries.length === 0 ? (
+          {state.status === 'ready' && brokerJournal.state.status !== 'loading' && entries.length === 0 ? (
             <p className="empty-state">
               No orders in this range. Every order the bridge sends to your broker is recorded here, including the
               ones a bot cancels.
@@ -279,9 +323,10 @@ export function JournalPage(_props: JournalPageProps) {
           {entries.map((entry) => (
             <div key={entry.id} className="table__row" style={{ gridTemplateColumns: journalColumns }}>
               <div className="journal-cell mono">{formatTime(entry.openedAt)}</div>
+              <div className="journal-cell mono">{entry.ticket ?? '—'}</div>
               <div className="journal-bot">{entry.botName ?? '—'}</div>
               <div className="journal-cell mono">{entry.symbol}</div>
-              <div className={entry.side === 'BUY' ? 'journal-side text-positive' : 'journal-side text-negative'}>
+              <div className={entry.side === 'BUY' ? 'journal-side text-positive' : entry.side === 'SELL' ? 'journal-side text-negative' : 'journal-side'}>
                 {entry.side}
               </div>
               <div className="journal-cell mono">{volumeFormat.format(entry.volume)}</div>
@@ -299,11 +344,25 @@ export function JournalPage(_props: JournalPageProps) {
                 }
               >
                 {entry.resultAmount === null ? '—' : formatSignedAmount(entry.resultAmount, entry.currency)}
+                {entry.status === 'OPEN' ? <span className="journal-result__status">Floating</span> : null}
               </div>
             </div>
           ))}
         </div>
       </div>
+
+      {brokerJournal.state.status === 'error' ? (
+        <div className="journal-error text-negative" role="alert">
+          <span>Live broker orders could not be loaded. {brokerJournal.state.error}</span>
+          <button type="button" className="btn btn--row" onClick={brokerJournal.reload}>Try again</button>
+        </div>
+      ) : null}
+
+      {brokerJournal.state.status === 'ready' && brokerJournal.state.warning !== null ? (
+        <p className="journal-error text-negative" role="alert">
+          Showing the last broker response. Refresh failed: {brokerJournal.state.warning}
+        </p>
+      ) : null}
 
       {pageError === null ? null : (
         <p className="journal-error text-negative" role="alert">

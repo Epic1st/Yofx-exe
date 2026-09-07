@@ -6,6 +6,7 @@ import { Icon } from '../../shared/ui/Icon';
  * left, linked trading account and the signed-in user on the right.
  */
 export interface TopBarAccount {
+  readonly id: string;
   readonly maskedLogin: string;
   readonly server: string;
   readonly connected: boolean;
@@ -23,8 +24,10 @@ interface TopBarProps {
   readonly onSearchTermChange: (value: string) => void;
   /** The linked MT5 account, or `null` when the user has not linked one. */
   readonly account: TopBarAccount | null;
+  readonly accounts: readonly TopBarAccount[];
   readonly user: TopBarUser;
   readonly onOpenAccount: () => void;
+  readonly onSelectAccount: (accountId: string) => void;
   readonly onOpenSettings: () => void;
   readonly onSignOut?: (() => void) | undefined;
 }
@@ -36,8 +39,10 @@ export function TopBar({
   searchTerm,
   onSearchTermChange,
   account,
+  accounts,
   user,
   onOpenAccount,
+  onSelectAccount,
   onOpenSettings,
   onSignOut,
 }: TopBarProps) {
@@ -74,11 +79,7 @@ export function TopBar({
             <Icon name="chevron-down" size={12} className="account-pill__chevron" />
           </button>
         ) : (
-          <button
-            type="button"
-            className="account-pill"
-            onClick={onOpenAccount}
-          >
+          <div className="account-pill">
             <span
               className={account.connected ? 'dot dot--live' : 'dot dot--idle'}
               aria-hidden="true"
@@ -87,10 +88,21 @@ export function TopBar({
               {account.connected ? 'Account connected.' : 'Account disconnected.'}
             </span>
             <img className="account-pill__logo" src="/assets/mt5-logo.png" alt="MetaTrader 5" />
-            <span className="account-pill__login">{account.maskedLogin}</span>
-            <span className="account-pill__server">{account.server}</span>
+            <label className="sr-only" htmlFor="selected-broker-account">Selected MT5 account</label>
+            <select
+              id="selected-broker-account"
+              className="account-pill__select"
+              value={account.id}
+              onChange={(event) => onSelectAccount(event.target.value)}
+            >
+              {accounts.map((candidate) => (
+                <option value={candidate.id} key={candidate.id}>
+                  {candidate.maskedLogin} · {candidate.server}
+                </option>
+              ))}
+            </select>
             <Icon name="chevron-down" size={12} className="account-pill__chevron" />
-          </button>
+          </div>
         )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

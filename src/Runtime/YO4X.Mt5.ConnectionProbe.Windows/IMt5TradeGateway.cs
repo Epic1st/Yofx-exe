@@ -13,6 +13,8 @@ public interface IMt5TradeGateway
 
     Mt5LiveAccountSnapshot ReadAccountSnapshot();
 
+    IReadOnlyList<Mt5OpenOrder> ReadOpenOrders() => [];
+
     Mt5LiveSymbolSnapshot? ReadSymbolSnapshot() => null;
 
     Task<Mt5DemoOrderReceipt> SendAsync(
